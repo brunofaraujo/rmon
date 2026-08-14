@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Ocorrencias - RMonitor{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Ocorrencias</h1><div class="sub">{{ rows|length }} registro(s) &middot; erros/criticos (24h, ruido filtrado)</div></div>
+  <a class="btn" href="/ocorrencias">&#8635; Atualizar</a>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar origem, mensagem, servidor...">
+  <select id="f-server" class="input">
+    <option value="">Todos os servidores</option>
+    {% for s in rows|map(attribute='server')|unique|sort %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+  </select>
+  <select id="f-level" class="input">
+    <option value="">Todos os niveis</option>
+    {% for l in rows|map(attribute='level')|unique|sort %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
+  </select>
+  <span class="muted small" id="vis-count"></span>
+</div>
+
+{% if not rows %}<div class="alert ok small">Nenhuma ocorrencia relevante no momento.</div>{% endif %}
+<div class="table-wrap">
+  <table class="tbl" id="occ-table">
+    <thead><tr>
+      <th class="sortable" data-key="server">Servidor <span class="arrow"></span></th>
+      <th class="sortable" data-key="level">Nivel <span class="arrow"></span></th>
+      <th class="sortable" data-key="provider">Origem <span class="arrow"></span></th>
+      <th class="sortable" data-key="id">ID <span class="arrow"></span></th>
+      <th class="sortable" data-key="count">Qtd <span class="arrow"></span></th>
+      <th class="sortable" data-key="last">Ultima <span class="arrow"></span></th>
+      <th>Mensagem</th>
+    </tr></thead>
+    <tbody>
+      {% for e in rows %}
+      <tr class="orow" data-server="{{ e.server }}" data-level="{{ e.level }}" data-provider="{{ e.provider }}"
+          data-id="{{ e.id }}" data-count="{{ e.count }}" data-last="{{ e.last }}"
+          data-text="{{ (e.server ~ ' ' ~ e.provider ~ ' ' ~ e.message ~ ' ' ~ (e.level or '')) | lower }}">
+        <td class="muted">{{ e.server }}</td>
+        <td><span class="pill red">{{ e.level or 'Erro' }}</span></td>
+        <td><b>{{ e.provider }}</b></td>
+        <td class="mono">{{ e.id }}</td>
+        <td class="mono">{{ e.count }}</td>
+        <td class="muted small">{{ e.last }}</td>
+        <td class="muted small">{{ e.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q'), fS = document.getElementById('f-server'), fL = document.getElementById('f-level');
+  var tbody = document.querySelector('#occ-table tbody');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr.orow'));
+  var vis = document.getElementById('vis-count');
+  var sortKey = null, dir = 1;
+  var p = new URLSearchParams(location.search); if (p.get('server')) fS.value = p.get('server');
+  function apply() {
+    var t = q.value.trim().toLowerCase(), s = fS.value, l = fL.value, n = 0;
+    rows.forEach(function (r) {
+      var ok = (!t || r.getAttribute('data-text').indexOf(t) >= 0)
+            && (!s || r.getAttribute('data-server') === s)
+            && (!l || r.getAttribute('data-level') === l);
+      r.style.display = ok ? '' : 'none'; if (ok) n++;
+    });
+    vis.textContent = n + ' visivel(is)';
+  }
+  function sortBy(k) {
+    if (sortKey === k) dir = -dir; else { sortKey = k; dir = 1; }
+    var num = (k === 'id' || k === 'count');
+    rows.slice().sort(function (a, b) {
+      var va = a.getAttribute('data-' + k) || '', vb = b.getAttribute('data-' + k) || '';
+      return (num ? (parseInt(va, 10) || 0) - (parseInt(vb, 10) || 0) : va.toLowerCase().localeCompare(vb.toLowerCase())) * dir;
+    }).forEach(function (r) { tbody.appendChild(r); });
+    document.querySelectorAll('th.sortable .arrow').forEach(function (x) { x.textContent = ''; });
+    var th = document.querySelector('th.sortable[data-key="' + k + '"] .arrow'); if (th) th.textContent = dir > 0 ? ' ▲' : ' ▼';
+  }
+  [q, fS, fL].forEach(function (el) { el.addEventListener('input', apply); el.addEventListener('change', apply); });
+  document.querySelectorAll('th.sortable').forEach(function (th) { th.addEventListener('click', function () { sortBy(th.getAttribute('data-key')); }); });
+  apply();
+})();
+</script>
+{% endblock %}

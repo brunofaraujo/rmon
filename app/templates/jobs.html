@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Jobs - RMonitor{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Centro de Jobs</h1><div class="sub">pool RM &middot; janela de {{ window }} min (GJOBXEXECUCAO)</div></div>
+  <div class="pills">
+    {% for m in [15, 60, 240, 1440] %}<a class="pill {{ 'green' if window==m else '' }}" href="/jobs?min={{ m }}">{{ m }}min</a>{% endfor %}
+  </div>
+</div>
+
+{% if not pool %}
+  <div class="alert">SQL nao configurado (RMON_SQL_*). Rode <code>definir-sql.sh</code>.</div>
+{% elif pool.error %}
+  <div class="alert">Erro ao consultar o SQL: {{ pool.error }}</div>
+{% else %}
+  <div class="kpis">
+    <div class="kpi ok"><div class="val txt-green">{{ pool.ok }}</div><div class="lbl">Sucesso</div></div>
+    <div class="kpi {{ 'bad' if pool.failed else 'ok' }}"><div class="val {{ 'txt-red' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Falhas</div></div>
+    <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total processado</div></div>
+    <div class="kpi"><div class="val">{{ pool.by_server|length }}</div><div class="lbl">Executores</div></div>
+    <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Solicitantes</div></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr))">
+    <div class="panel">
+      <h2>Por executor</h2>
+      <div class="table-wrap"><table class="tbl">
+        <thead><tr><th>Executor (SERVIDOR)</th><th>Servidor monitorado</th><th>OK</th><th>Falha</th><th>Total</th></tr></thead>
+        <tbody>
+          {% for s in pool.by_server %}
+          <tr><td><b>{{ s.host }}</b></td>
+            <td class="muted small">{{ s.label or '—' }}</td>
+            <td class="txt-green">{{ s.ok }}</td>
+            <td class="{{ 'txt-red' if s.failed else '' }}">{{ s.failed }}</td>
+            <td class="mono">{{ s.total }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Solicitantes (ranking)</h2>
+      <div class="pills">
+        {% for rq in pool.top_requesters %}<span class="pill">{{ rq.user }} &middot; {{ rq.c }}</span>{% endfor %}
+        {% if not pool.top_requesters %}<span class="muted small">Sem execucoes na janela.</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Falhas recentes <span class="muted small">({{ pool.recent_failures|length }})</span></h2>
+    {% if pool.recent_failures %}
+    <div class="table-wrap scroll-y"><table class="tbl">
+      <thead><tr><th>Quando</th><th>IDJOB</th><th>Executor</th><th>Solicitante</th><th>Mensagem</th></tr></thead>
+      <tbody>
+        {% for f in pool.recent_failures %}
+        <tr><td class="muted small">{{ f.when }}</td><td class="mono">{{ f.idjob }}</td>
+          <td class="muted small">{{ f.servidor }}</td><td>{{ f.user }}</td>
+          <td class="muted small">{{ f.msg }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<div class="alert ok small">Nenhuma falha na janela de {{ window }} min. 🎉</div>{% endif %}
+  </div>
+{% endif %}
+{% endblock %}

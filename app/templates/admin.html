@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Admin - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Administracao</h1><div class="sub">configuracoes do site e usuarios</div></div></div>
+{% if ok %}<div class="alert ok">Configuracoes salvas.</div>{% endif %}
+
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+  <div class="panel">
+    <h2>Interface</h2>
+    <form method="post" action="/admin/config">
+      <label class="muted small">Atualizacao automatica (segundos)</label>
+      <input class="input" type="number" name="refresh" min="10" max="3600" value="{{ ui.refresh }}" style="width:100%;margin:.3rem 0 .8rem">
+      <label class="muted small">Tema padrao (novos visitantes)</label>
+      <select class="input" name="theme" style="width:100%;margin:.3rem 0 1rem">
+        <option value="dark" {{ 'selected' if ui.theme=='dark' else '' }}>Escuro</option>
+        <option value="light" {{ 'selected' if ui.theme=='light' else '' }}>Claro</option>
+      </select>
+      <h2 style="margin-top:.4rem">Limiares de alerta</h2>
+      <div class="metrics-2" style="margin:.6rem 0 1rem">
+        <div><label class="muted small">Disco C: %</label><input class="input" type="number" name="disk_pct" min="1" max="100" value="{{ alerts.disk_pct }}" style="width:100%"></div>
+        <div><label class="muted small">Memoria %</label><input class="input" type="number" name="mem_pct" min="1" max="100" value="{{ alerts.mem_pct }}" style="width:100%"></div>
+        <div><label class="muted small">App lento (ms)</label><input class="input" type="number" name="app_ms" min="100" max="60000" value="{{ alerts.app_ms }}" style="width:100%"></div>
+      </div>
+      <button type="submit" class="btn primary">Salvar</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Usuarios <span class="muted small">({{ users|length }})</span></h2>
+    <p class="muted small">Gerenciar: <code>sudo /opt/rmon/.venv/bin/python /opt/rmon/deploy/usuarios.py --help</code></p>
+    <div class="table-wrap"><table class="tbl">
+      <thead><tr><th>Login</th><th>Nome</th><th>Papel</th><th>Ativo</th><th>Ult. login</th></tr></thead>
+      <tbody>
+        {% for u in users %}
+        <tr><td><b>{{ u.username }}</b><br><span class="faint small">{{ u.email or '' }}</span></td>
+          <td class="muted small">{{ u.full_name or '-' }}</td>
+          <td><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span></td>
+          <td>{{ 'sim' if u.active else 'nao' }}</td>
+          <td class="muted small">{{ u.last_login or '-' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</div>
+{% endblock %}

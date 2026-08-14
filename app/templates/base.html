@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}RMonitor{% endblock %}</title>
+  <script>
+    (function () { try { var t = localStorage.getItem('rmon-theme') || '{{ default_theme }}'; if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {} })();
+  </script>
+  {% block head %}{% endblock %}
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% set path = request.url.path %}
+  {% set authed = request.session.get('user') %}
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="dot">R</span>
+      <span><span class="name">RMonitor</span> <small>TOTVS RM</small></span>
+    </a>
+    {% if authed %}
+    <input type="checkbox" id="navtoggle" class="nav-toggle">
+    <label for="navtoggle" class="nav-burger" aria-label="Menu">&#9776;</label>
+    <nav class="nav">
+      <a href="/" class="{{ 'active' if path == '/' else '' }}">Painel</a>
+      <a href="/jobs" class="{{ 'active' if path.startswith('/jobs') else '' }}">Jobs</a>
+      <a href="/ocorrencias" class="{{ 'active' if path.startswith('/ocorrencias') else '' }}">Ocorrencias</a>
+      <a href="/sessions" class="{{ 'active' if path.startswith('/sessions') else '' }}">Sessoes</a>
+      {% if request.session.get('role') == 'admin' %}
+      <a href="/logs" class="{{ 'active' if path.startswith('/logs') else '' }}">Logs</a>
+      <a href="/admin" class="{{ 'active' if path.startswith('/admin') else '' }}">Admin</a>
+      {% endif %}
+    </nav>
+    {% endif %}
+    <span class="spacer"></span>
+    {% if authed %}
+    <a class="alert-badge" id="alert-badge" href="/" hidden><span class="pulse"></span> <span id="alert-n">0</span></a>
+    {% endif %}
+    <button class="icon-btn" id="theme-btn" type="button" title="Alternar tema" aria-label="Alternar tema">&#9790;</button>
+    {% if authed %}
+    <div class="userchip">
+      <a class="userchip-link" href="/profile" title="Meu perfil">
+        <span class="avatar">{{ request.session.get('user','?')[:1] | upper }}</span>
+        <span class="uname">{{ request.session.get('user') }}</span>
+      </a>
+      <a class="btn ghost small" href="/logout">Sair</a>
+    </div>
+    {% endif %}
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="foot">RMonitor v{{ version or '' }} &middot; monitoramento TOTVS RM</footer>
+
+  <script>
+  (function () {
+    var btn = document.getElementById('theme-btn');
+    function cur() { return document.documentElement.getAttribute('data-theme') || 'dark'; }
+    function setIcon() { if (btn) btn.innerHTML = cur() === 'light' ? '&#9728;' : '&#9790;'; }
+    setIcon();
+    if (btn) btn.addEventListener('click', function () {
+      var next = cur() === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('rmon-theme', next); } catch (e) {}
+      setIcon();
+    });
+
+    var badge = document.getElementById('alert-badge');
+    if (badge) {
+      var nEl = document.getElementById('alert-n');
+      function refresh() {
+        fetch('/api/status', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) {
+            if (!d) return;
+            var issues = 0;
+            (d.servers || []).forEach(function (s) {
+              if (!s.reachable) { issues++; return; }
+              (s.services || []).forEach(function (x) { if (x.status !== 'Running') issues++; });
+            });
+            if (issues > 0) { nEl.textContent = issues; badge.hidden = false;
+              badge.title = issues + ' alerta(s): servidor/servico com problema'; }
+            else { badge.hidden = true; }
+          }).catch(function () {});
+      }
+      refresh();
+      setInterval(refresh, 30000);
+    }
+
+    var ACT = { start: 'Iniciar', stop: 'Parar', restart: 'Reiniciar' };
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('.svc-action') : null;
+      if (!b) return;
+      e.preventDefault(); e.stopPropagation();
+      var srv = b.getAttribute('data-server'), svc = b.getAttribute('data-service'), act = b.getAttribute('data-action') || 'restart';
+      if (!confirm((ACT[act] || act) + ' o servico "' + svc + '" em ' + srv + '?')) return;
+      b.disabled = true; var old = b.innerHTML; b.innerHTML = '...';
+      var fd = new FormData(); fd.append('server', srv); fd.append('service', svc); fd.append('action', act);
+      fetch('/service/action', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          alert(d.ok ? ('Servico reiniciado: ' + svc) : ('Falha: ' + (d.msg || 'erro')));
+          if (d.ok) { setTimeout(function () { location.reload(); }, 1500); }
+          else { b.disabled = false; b.innerHTML = old; }
+        }).catch(function () { alert('Erro de rede'); b.disabled = false; b.innerHTML = old; });
+    });
+
+    document.addEventListener('click', function (e) {
+      var o = e.target.closest ? e.target.closest('.occ-link') : null;
+      if (!o) return;
+      e.preventDefault(); e.stopPropagation();
+      var href = o.getAttribute('data-href'); if (href) location.href = href;
+    });
+  })();
+  </script>
+</body>
+</html>

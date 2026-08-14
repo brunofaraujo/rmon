@@ -1,0 +1,377 @@
+"""Aplicacao FastAPI do RMonitor: login, dashboard e historico."""
+from __future__ import annotations
+
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+from . import __version__, db, jobstats
+from .collector import list_sessions, logoff_session, service_action
+from .config import load_inventory, load_settings
+from .scheduler import build_scheduler, poll_all
+from .security import verify_password
+
+log = logging.getLogger("rmon")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+def _fmt_dt(ts: float | None) -> str:
+    import datetime
+    if not ts:
+        return "-"
+    return datetime.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M:%S")
+
+
+def _fmt_dur(sec: float | None) -> str:
+    if not sec:
+        return "-"
+    sec = int(sec)
+    d, rem = divmod(sec, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _ = divmod(rem, 60)
+    return f"{d}d {h}h {m}m" if d else f"{h}h {m}m"
+
+
+templates.env.filters["dt"] = _fmt_dt
+templates.env.filters["dur"] = _fmt_dur
+templates.env.globals["ui_refresh"] = 60
+templates.env.globals["default_theme"] = "dark"
+
+
+def _apply_ui_globals() -> None:
+    ui = db.get_config("ui", {}) or {}
+    templates.env.globals["ui_refresh"] = int(ui.get("refresh", 60))
+    templates.env.globals["default_theme"] = ui.get("theme", "dark")
+
+# Estado do processo (preenchido no lifespan)
+STATE: dict = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = load_settings()
+    inv = load_inventory(settings.config_path)
+    db.init(settings.db_dsn)
+    db.init_db()
+    # seed do admin inicial (a partir do .env) se ainda nao houver usuarios
+    if db.count_users() == 0 and settings.admin_password_hash:
+        db.create_user(settings.admin_user, settings.admin_password_hash, role="admin")
+        log.info("usuario admin inicial '%s' criado no banco", settings.admin_user)
+    STATE.update(settings=settings, inv=inv)
+    _apply_ui_globals()
+
+    threading.Thread(target=poll_all, args=(inv, settings), daemon=True).start()
+
+    sched = build_scheduler(inv, settings)
+    sched.start()
+    STATE["scheduler"] = sched
+    log.info("RMonitor %s iniciado (%d servidores, intervalo %ds)",
+             __version__, len(inv.servers), inv.poll_interval_seconds)
+    try:
+        yield
+    finally:
+        sched.shutdown(wait=False)
+
+
+app = FastAPI(title="RMonitor (RMon)", version=__version__, lifespan=lifespan)
+
+# SessionMiddleware precisa da secret key no momento de montar o app.
+_boot_settings = load_settings()
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_boot_settings.secret_key or "dev-inseguro-troque",
+    session_cookie="rmon_session",
+    https_only=False,
+    same_site="lax",
+)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+def _settings():
+    return STATE["settings"]
+
+
+def _is_authed(request: Request) -> bool:
+    return bool(request.session.get("user"))
+
+
+def _role(request: Request) -> str:
+    return request.session.get("role", "viewer")
+
+
+def _ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "version": __version__}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request, erro: str | None = None):
+    if _is_authed(request):
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "erro": erro})
+
+
+@app.post("/login")
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    u = db.get_user(username)
+    ok = bool(u) and u["active"] and verify_password(password, u["password_hash"])
+    if not ok:
+        db.audit(username, "login_fail", "usuario/senha invalidos ou inativo", _ip(request))
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "erro": "Usuario ou senha invalidos."},
+            status_code=401,
+        )
+    request.session["user"] = username
+    request.session["role"] = u["role"]
+    db.touch_login(username)
+    db.audit(username, "login", None, _ip(request))
+    return RedirectResponse("/", status_code=302)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    db.audit(request.session.get("user"), "logout", None, _ip(request))
+    request.session.clear()
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    inv = STATE["inv"]
+    latest = {r["server"]: r for r in db.latest_per_server()}
+    rows = [{"cfg": srv, "data": latest.get(srv.name)} for srv in inv.servers]
+
+    summary = {"total": len(rows), "online": 0, "offline": 0, "services_down": 0, "alerts": 0}
+    for r in rows:
+        d = r["data"]
+        if d and d["reachable"]:
+            summary["online"] += 1
+            summary["services_down"] += sum(1 for s in (d["services"] or []) if s.get("status") != "Running")
+            summary["alerts"] += sum(int(e.get("count", 1)) for e in (d["events"] or []))
+        else:
+            summary["offline"] += 1
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "rows": rows, "summary": summary,
+         "interval": inv.poll_interval_seconds, "version": __version__},
+    )
+
+
+@app.get("/server/{name}", response_class=HTMLResponse)
+def server_detail(request: Request, name: str):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    hist = db.history(name, limit=120)
+    if not hist:
+        return templates.TemplateResponse(
+            "server.html",
+            {"request": request, "name": name, "hist": [], "current": None},
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        "server.html",
+        {"request": request, "name": name, "current": hist[0], "hist": hist},
+    )
+
+
+@app.get("/api/status")
+def api_status(request: Request):
+    if not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"servers": db.latest_per_server()}
+
+
+@app.get("/api/series")
+def api_series(request: Request, server: str, hours: int = 24):
+    if not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"server": server, "series": db.series(server, min(max(hours, 1), 168))}
+
+
+@app.post("/service/action")
+async def service_act(request: Request):
+    if not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if _role(request) != "admin":
+        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+    form = await request.form()
+    server_name, svc, action = form.get("server"), form.get("service"), (form.get("action") or "restart")
+    inv = STATE["inv"]
+    srv = {s.name: s for s in inv.servers}.get(server_name)
+    if not srv:
+        return JSONResponse({"ok": False, "msg": "servidor desconhecido"}, status_code=404)
+    ok, msg = service_action(srv, inv.winrm, svc, action)
+    db.audit(request.session.get("user"), f"service_{action}", f"{server_name}/{svc} -> {ok}: {msg}", _ip(request))
+    log.info("%s %s/%s por %s -> %s (%s)", action, server_name, svc, request.session.get("user"), ok, msg)
+    return JSONResponse({"ok": ok, "msg": msg})
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    try:
+        window = min(max(int(request.query_params.get("min", 60)), 5), 1440)
+    except ValueError:
+        window = 60
+    pool = jobstats.pool_summary(window)
+    inv = STATE["inv"]
+    hostmap = {s.jobs["servidor"].upper(): f"{s.name} ({s.host})"
+               for s in inv.servers if s.jobs and s.jobs.get("servidor")}
+    if pool and pool.get("by_server"):
+        for r in pool["by_server"]:
+            r["label"] = hostmap.get((r["host"] or "").upper())
+    return templates.TemplateResponse("jobs.html", {"request": request, "pool": pool, "window": window, "version": __version__})
+
+
+@app.get("/ocorrencias", response_class=HTMLResponse)
+def ocorrencias_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    rows = []
+    for r in db.latest_per_server():
+        for e in (r.get("events") or []):
+            rows.append({"server": r["server"], **e})
+    return templates.TemplateResponse("ocorrencias.html", {"request": request, "rows": rows, "version": __version__})
+
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile_get(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    u = db.get_user(request.session["user"])
+    return templates.TemplateResponse(
+        "profile.html", {"request": request, "u": u, "ok": request.query_params.get("ok"), "version": __version__})
+
+
+@app.post("/profile")
+async def profile_post(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    form = await request.form()
+    db.update_profile(request.session["user"], (form.get("full_name") or "").strip(), (form.get("email") or "").strip())
+    db.audit(request.session["user"], "profile_update", None, _ip(request))
+    return RedirectResponse("/profile?ok=1", status_code=303)
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    return templates.TemplateResponse("logs.html", {"request": request, "audit": db.recent_audit(500), "version": __version__})
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    ui = db.get_config("ui", {}) or {}
+    alerts = db.get_config("alerts", {}) or {}
+    return templates.TemplateResponse(
+        "admin.html",
+        {"request": request, "users": db.list_users(), "ok": request.query_params.get("ok"),
+         "ui": {"refresh": ui.get("refresh", 60), "theme": ui.get("theme", "dark")},
+         "alerts": {"disk_pct": alerts.get("disk_pct", 90), "mem_pct": alerts.get("mem_pct", 90), "app_ms": alerts.get("app_ms", 3000)},
+         "version": __version__},
+    )
+
+
+@app.post("/admin/config")
+async def admin_config(request: Request):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+
+    def _int(name, dflt, lo, hi):
+        try:
+            return max(lo, min(hi, int(form.get(name) or dflt)))
+        except ValueError:
+            return dflt
+    theme = form.get("theme", "dark")
+    db.set_config("ui", {"refresh": _int("refresh", 60, 10, 3600), "theme": theme if theme in ("dark", "light") else "dark"})
+    db.set_config("alerts", {"disk_pct": _int("disk_pct", 90, 1, 100), "mem_pct": _int("mem_pct", 90, 1, 100), "app_ms": _int("app_ms", 3000, 100, 60000)})
+    _apply_ui_globals()
+    db.audit(request.session.get("user"), "config_update", None, _ip(request))
+    return RedirectResponse("/admin?ok=1", status_code=303)
+
+
+@app.get("/sessions", response_class=HTMLResponse)
+def sessions_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    inv = STATE["inv"]
+    results: dict[str, dict] = {}
+    if inv.servers:
+        with ThreadPoolExecutor(max_workers=min(8, len(inv.servers))) as pool:
+            futs = {pool.submit(list_sessions, s, inv.winrm): s for s in inv.servers}
+            for fut, srv in futs.items():
+                try:
+                    results[srv.name] = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    results[srv.name] = {"error": f"{exc}", "sessions": []}
+    rows = [{"cfg": s, "res": results.get(s.name, {"error": None, "sessions": []})} for s in inv.servers]
+    total = sum(len(r["res"]["sessions"]) for r in rows)
+    flash = request.session.pop("flash", None)
+    return templates.TemplateResponse(
+        "sessions.html",
+        {"request": request, "rows": rows, "total": total, "flash": flash, "version": __version__},
+    )
+
+
+@app.post("/sessions/logoff")
+async def sessions_logoff(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        request.session["flash"] = "Acao requer perfil admin."
+        return RedirectResponse("/sessions", status_code=303)
+    form = await request.form()
+    targets = form.getlist("target")  # cada item: "server|id"
+    inv = STATE["inv"]
+    by_name = {s.name: s for s in inv.servers}
+    ok_count = 0
+    fails: list[str] = []
+    for t in targets:
+        server_name, _, sid = str(t).partition("|")
+        srv = by_name.get(server_name)
+        if not srv:
+            continue
+        success, msg = logoff_session(srv, inv.winrm, sid)
+        if success:
+            ok_count += 1
+            log.info("logoff %s sessao %s por %s", server_name, sid, request.session.get("user"))
+        else:
+            fails.append(f"{server_name}#{sid}: {msg}")
+            log.warning("logoff FALHOU %s sessao %s: %s", server_name, sid, msg)
+    parts = []
+    if ok_count:
+        parts.append(f"{ok_count} sessao(oes) encerrada(s).")
+    if fails:
+        parts.append("Falhas: " + "; ".join(fails))
+    if not targets:
+        parts.append("Nenhuma sessao selecionada.")
+    db.audit(request.session.get("user"), "logoff", " ".join(parts), _ip(request))
+    request.session["flash"] = " ".join(parts)
+    return RedirectResponse("/sessions", status_code=303)

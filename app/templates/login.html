@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Entrar - RMonitor{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand"><span class="dot">R</span><span class="name">RMonitor</span></div>
+    <p class="muted" style="text-align:center;margin:.2rem 0 0">Monitoramento TOTVS RM &middot; acesso restrito</p>
+    {% if erro %}<div class="alert" style="margin-top:1rem">{{ erro }}</div>{% endif %}
+    <form method="post" action="/login">
+      <label>Usuario</label>
+      <input class="input" type="text" name="username" autocomplete="username" autofocus required>
+      <label>Senha</label>
+      <input class="input" type="password" name="password" autocomplete="current-password" required>
+      <button type="submit" class="btn primary">Entrar</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

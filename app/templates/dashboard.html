@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Painel - RMonitor{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Painel</h1>
+    <div class="sub">Atualiza automaticamente a cada {{ ui_refresh }}s</div>
+  </div>
+  <a class="btn" href="/">&#8635; Atualizar</a>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="val">{{ summary.total }}</div><div class="lbl">Servidores</div></div>
+  <div class="kpi ok"><div class="val txt-green">{{ summary.online }}</div><div class="lbl">Online</div></div>
+  <div class="kpi {{ 'bad' if summary.offline else 'ok' }}">
+    <div class="val {{ 'txt-red' if summary.offline else '' }}">{{ summary.offline }}</div><div class="lbl">Sem contato</div></div>
+  <div class="kpi {{ 'bad' if summary.services_down else 'ok' }}">
+    <div class="val {{ 'txt-red' if summary.services_down else '' }}">{{ summary.services_down }}</div><div class="lbl">Servicos parados</div></div>
+  <div class="kpi {{ 'warn' if summary.alerts else 'ok' }}">
+    <div class="val {{ 'txt-amber' if summary.alerts else '' }}">{{ summary.alerts }}</div><div class="lbl">Ocorrencias (24h)</div></div>
+</div>
+
+{% if not rows %}<div class="alert">Nenhum servidor no inventario.</div>{% endif %}
+
+<div class="grid">
+{% for row in rows %}
+  {% set d = row.data %}
+  {% set reachable = d and d.reachable %}
+  {% set cpu = (d.cpu if d and d.cpu is not none else 0) | round(0, 'floor') | int %}
+  {% set mem = (d.mem_pct if d and d.mem_pct is not none else 0) | round(0, 'floor') | int %}
+  <a class="card" href="/server/{{ row.cfg.name }}">
+    <div class="card-top">
+      <div class="card-title"><span class="status-dot {{ 'up' if reachable else 'down' }}"></span>{{ row.cfg.name }}</div>
+      <span class="pill {{ 'green' if reachable else 'red' }}"><span class="d"></span>{{ 'ONLINE' if reachable else 'SEM CONTATO' }}</span>
+    </div>
+    <div class="host">{{ row.cfg.host }} &middot; perfil {{ row.cfg.cred }}</div>
+
+    {% if reachable %}
+      <div class="metrics-2">
+        <div class="metric">
+          <div class="row"><span class="k">CPU</span><span class="v">{{ cpu }}%</span></div>
+          <div class="bar"><span class="{{ 'crit' if cpu>=90 else 'warn' if cpu>=75 else '' }}" style="width:{{ cpu }}%"></span></div>
+        </div>
+        <div class="metric">
+          <div class="row"><span class="k">Memoria</span><span class="v">{{ mem }}%</span></div>
+          <div class="bar"><span class="{{ 'crit' if mem>=90 else 'warn' if mem>=75 else '' }}" style="width:{{ mem }}%"></span></div>
+        </div>
+      </div>
+
+      {% if d.services %}
+      <div class="pills">
+        {% for s in d.services %}
+          {% set running = s.status == 'Running' %}
+          <span class="svc">
+            <span class="pill {{ 'green' if running else 'red' }}" title="{{ s.status }}"><span class="d"></span>{{ s.name }}</span>
+            {% if running %}
+              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button>
+              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>
+            {% else %}
+              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>
+            {% endif %}
+          </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="pills">
+        {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} {{ dk.used_pct }}% &middot; {{ dk.free_gb }}GB</span>{% endfor %}
+        {% if d.users_count is not none %}<span class="pill">&#128100; {{ d.users_count }} usuarios</span>{% endif %}
+        {% if d.app_ok is not none %}<span class="pill {{ 'green' if d.app_ok else 'red' }}">App {{ 'OK' if d.app_ok else 'FALHA' }}</span>{% endif %}
+        {% if d.jobs %}{% if d.jobs.error %}<span class="pill red" title="{{ d.jobs.error }}">&#9881; Jobs: erro SQL</span>{% else %}<span class="pill {{ 'red' if d.jobs.failed and d.jobs.failed > 0 else 'green' }}">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} falha{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>{% endif %}{% endif %}
+        {% if d.events %}<span class="pill amber occ-link" data-href="/ocorrencias?server={{ row.cfg.name }}" title="Ver ocorrencias">{{ d.events | length }} ocorrencia(s)</span>{% endif %}
+      </div>
+    {% else %}
+      <div class="alert small">{{ d.error if d else 'aguardando primeira coleta...' }}</div>
+    {% endif %}
+
+    <div class="meta-row">
+      <span>uptime {{ d.uptime_sec | dur if d else '-' }}</span>
+      <span>{{ d.ts | dt if d else '-' }}</span>
+    </div>
+  </a>
+{% endfor %}
+</div>
+{% endblock %}

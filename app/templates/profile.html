@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Meu perfil - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Meu perfil</h1><div class="sub">dados da sua conta</div></div></div>
+{% if ok %}<div class="alert ok">Perfil atualizado.</div>{% endif %}
+
+<div class="panel" style="max-width:560px">
+  <form method="post" action="/profile">
+    <label class="muted small">Nome completo</label>
+    <input class="input" type="text" name="full_name" value="{{ u.full_name or '' }}" style="width:100%;margin:.3rem 0 .8rem">
+    <label class="muted small">E-mail</label>
+    <input class="input" type="email" name="email" value="{{ u.email or '' }}" style="width:100%;margin:.3rem 0 .8rem">
+    <label class="muted small">Login</label>
+    <input class="input" type="text" value="{{ u.username }}" disabled style="width:100%;margin:.3rem 0 .8rem;opacity:.7">
+    <label class="muted small">Papel</label>
+    <div style="margin:.4rem 0 1rem"><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span>
+      <span class="faint small">(alterado por um administrador)</span></div>
+    <button type="submit" class="btn primary">Salvar</button>
+  </form>
+</div>
+{% endblock %}

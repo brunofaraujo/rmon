@@ -1,0 +1,39 @@
+# Inventario de servidores Windows monitorados pelo RMonitor.
+# Copie para servers.yaml e ajuste. Credenciais WinRM ficam no .env, NAO aqui.
+
+poll_interval_seconds: 60
+
+winrm:
+  scheme: https            # https (5986, recomendado) ou http (5985)
+  port: 5986
+  transport: ntlm          # ntlm | kerberos | credssp
+  server_cert_validation: ignore   # ignore (self-signed) | validate
+  read_timeout_sec: 30
+  operation_timeout_sec: 25
+
+# Padroes aplicados a todos os servidores (podem ser sobrescritos por servidor)
+defaults:
+  services:
+    - "TOTVS RM.Host"      # RM.Host / servidor de aplicacao
+    - "MSSQLSERVER"        # SQL Server (instancia default)
+    - "W3SVC"              # IIS
+  eventlog:
+    logs: [System, Application]
+    level: 2               # 1=Critical, 2=Error, 3=Warning
+    max_events: 10
+
+servers:
+  - name: rm-app-01
+    host: 10.10.10.50
+    # services: [...]      # opcional: sobrescreve defaults.services
+    app_health:
+      url: "http://10.10.10.50:8051/"   # endpoint HTTP do RM para checar
+      expect_status: 200
+      timeout_sec: 8
+
+  - name: rm-db-01
+    host: 10.10.10.51
+    services:
+      - "MSSQLSERVER"
+      - "SQLSERVERAGENT"
+    # sem app_health (servidor de banco)

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Logs - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Logs do sistema</h1><div class="sub">{{ audit|length }} registros recentes &middot; acessos e acoes</div></div>
+  <a class="btn" href="/logs">&#8635; Atualizar</a>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar usuario, acao, detalhe, IP...">
+  <select id="f-action" class="input">
+    <option value="">Todas as acoes</option>
+    {% for a in audit|map(attribute='action')|unique|sort %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+  </select>
+  <span class="muted small" id="vis-count"></span>
+</div>
+
+<div class="table-wrap">
+  <table class="tbl" id="log-table">
+    <thead><tr>
+      <th class="sortable" data-key="ts">Quando <span class="arrow"> ▼</span></th>
+      <th class="sortable" data-key="user">Usuario <span class="arrow"></span></th>
+      <th class="sortable" data-key="action">Acao <span class="arrow"></span></th>
+      <th>Detalhe</th>
+      <th class="sortable" data-key="ip">IP <span class="arrow"></span></th>
+    </tr></thead>
+    <tbody>
+      {% for a in audit %}
+      <tr class="lrow" data-ts="{{ a.ts }}" data-user="{{ a.username or '' }}" data-action="{{ a.action }}" data-ip="{{ a.ip or '' }}"
+          data-text="{{ ((a.username or '') ~ ' ' ~ a.action ~ ' ' ~ (a.detail or '') ~ ' ' ~ (a.ip or '')) | lower }}">
+        <td class="muted small">{{ a.ts | dt }}</td>
+        <td>{{ a.username or '-' }}</td>
+        <td><span class="pill {{ 'red' if 'fail' in a.action else '' }}">{{ a.action }}</span></td>
+        <td class="muted small">{{ a.detail or '' }}</td>
+        <td class="faint small">{{ a.ip or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q'), fA = document.getElementById('f-action');
+  var tbody = document.querySelector('#log-table tbody');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr.lrow'));
+  var vis = document.getElementById('vis-count');
+  var sortKey = 'ts', dir = -1;
+  function apply() {
+    var t = q.value.trim().toLowerCase(), a = fA.value, n = 0;
+    rows.forEach(function (r) {
+      var ok = (!t || r.getAttribute('data-text').indexOf(t) >= 0) && (!a || r.getAttribute('data-action') === a);
+      r.style.display = ok ? '' : 'none'; if (ok) n++;
+    });
+    vis.textContent = n + ' visivel(is)';
+  }
+  function sortBy(k) {
+    if (sortKey === k) dir = -dir; else { sortKey = k; dir = 1; }
+    var num = (k === 'ts');
+    rows.slice().sort(function (a, b) {
+      var va = a.getAttribute('data-' + k) || '', vb = b.getAttribute('data-' + k) || '';
+      return (num ? (parseFloat(va) || 0) - (parseFloat(vb) || 0) : va.toLowerCase().localeCompare(vb.toLowerCase())) * dir;
+    }).forEach(function (r) { tbody.appendChild(r); });
+    document.querySelectorAll('th.sortable .arrow').forEach(function (x) { x.textContent = ''; });
+    var th = document.querySelector('th.sortable[data-key="' + k + '"] .arrow'); if (th) th.textContent = dir > 0 ? ' ▲' : ' ▼';
+  }
+  [q, fA].forEach(function (el) { el.addEventListener('input', apply); el.addEventListener('change', apply); });
+  document.querySelectorAll('th.sortable').forEach(function (th) { th.addEventListener('click', function () { sortBy(th.getAttribute('data-key')); }); });
+  apply();
+})();
+</script>
+{% endblock %}

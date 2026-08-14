@@ -1,0 +1,13 @@
+# Normalizacao de fim de linha. Evita que scripts commitados no Windows (CRLF)
+# quebrem ao rodar na VM Linux (erro "bad interpreter: ...^M").
+
+# Padrao: deixa o git decidir texto vs binario
+* text=auto
+
+# Arquivos que DEVEM ter LF (rodam no Linux)
+*.sh        text eol=lf
+*.py        text eol=lf
+*.service   text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+Makefile    text eol=lf

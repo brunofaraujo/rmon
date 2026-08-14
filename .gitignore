@@ -1,0 +1,37 @@
+# ---- Segredos e dados locais (NUNCA versionar) ----
+.env
+.env.*
+!.env.example
+
+# Inventario real (contem IPs/hostnames internos). Versione apenas o .example.
+config/servers.yaml
+
+# Notas internas de infraestrutura (IPs, fingerprints, procedimentos de recuperacao)
+NOTAS-VM.md
+
+# Banco de dados / dados de runtime
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Python ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Ferramentas / IDE ----
+.claude/settings.local.json
+.vscode/
+.idea/
+*.swp
+
+# ---- SO ----
+.DS_Store
+Thumbs.db

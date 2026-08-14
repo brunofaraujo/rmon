@@ -1,0 +1,28 @@
+[Unit]
+Description=RMonitor (RMon) - painel de monitoramento TOTVS RM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rmon
+Group=rmon
+WorkingDirectory=/opt/rmon
+# NAO usar EnvironmentFile aqui: o systemd interpreta escapes de barra invertida
+# (\r, \t, \u...) e corromperia usuarios no formato DOMINIO\usuario. A propria
+# aplicacao le /opt/rmon/.env com Python (parser correto, barra literal preservada).
+ExecStart=/opt/rmon/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+# Endurecimento do servico
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/rmon/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

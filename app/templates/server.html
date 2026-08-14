@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} - RMonitor{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 style="display:flex;align-items:center;gap:.6rem">
+      <span class="status-dot {{ 'up' if current and current.reachable else 'down' }}"></span>{{ name }}
+    </h1>
+    <div class="sub">{{ current.ts | dt if current else '-' }}</div>
+  </div>
+  <a class="btn" href="/">&larr; Painel</a>
+</div>
+
+{% if not current %}
+  <div class="alert">Sem dados para este servidor ainda.</div>
+{% elif not current.reachable %}
+  <div class="alert">Sem contato via WinRM. Ultimo erro: {{ current.error }}</div>
+{% else %}
+  {% set d = current %}
+  {% set cpu = (d.cpu if d.cpu is not none else 0) | round(0,'floor') | int %}
+  {% set mem = (d.mem_pct if d.mem_pct is not none else 0) | round(0,'floor') | int %}
+
+  <div class="panel">
+    <div class="stat-row">
+      <div class="stat">
+        <div class="v">{{ cpu }}%</div><div class="k">CPU</div>
+        <div class="bar" style="margin-top:.5rem"><span class="{{ 'crit' if cpu>=90 else 'warn' if cpu>=75 else '' }}" style="width:{{ cpu }}%"></span></div>
+      </div>
+      <div class="stat">
+        <div class="v">{{ mem }}%</div><div class="k">Memoria</div>
+        <div class="bar" style="margin-top:.5rem"><span class="{{ 'crit' if mem>=90 else 'warn' if mem>=75 else '' }}" style="width:{{ mem }}%"></span></div>
+      </div>
+      <div class="stat"><div class="v" style="font-size:1.1rem">{{ d.uptime_sec | dur }}</div><div class="k">Uptime</div></div>
+      <div class="stat"><div class="v">&#128100; {{ d.users_count if d.users_count is not none else '-' }}</div><div class="k">Usuarios logados</div></div>
+      {% if d.app_ok is not none %}
+      <div class="stat"><div class="v {{ 'txt-green' if d.app_ok else 'txt-red' }}">{{ 'OK' if d.app_ok else 'FALHA' }}</div><div class="k">App RM {% if d.app_ms is not none %}&middot; {{ d.app_ms }}ms{% endif %}</div></div>
+      {% endif %}
+      {% if d.jobs and not d.jobs.error %}
+      <div class="stat"><div class="v">{{ d.jobs.ok }} <span class="txt-red" style="font-size:1.1rem">/ {{ d.jobs.failed }}&#10007;</span></div><div class="k">Jobs {{ d.jobs.window_min }}min (ok/falha) &middot; {{ d.jobs.total }} total</div></div>
+      {% elif d.jobs and d.jobs.error %}
+      <div class="stat"><div class="v txt-red" style="font-size:1rem">erro SQL</div><div class="k">Jobs &middot; {{ d.jobs.error }}</div></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Discos</h2>
+    <div class="pills">
+      {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} &middot; {{ dk.used_pct }}% usado &middot; {{ dk.free_gb }}/{{ dk.size_gb }}GB</span>{% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Servicos monitorados</h2>
+    <div class="pills">
+      {% for s in d.services %}{% set running = s.status == 'Running' %}<span class="svc">
+        <span class="pill {{ 'green' if running else 'red' }}"><span class="d"></span>{{ s.name }}: {{ s.status }}</span>
+        {% if running %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button><button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>{% else %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>{% endif %}
+      </span>{% endfor %}
+      {% if not d.services %}<span class="muted small">Nenhum servico configurado.</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Ocorrencias recentes <span class="muted small">(erros/criticos, 24h, ruido filtrado)</span></h2>
+    {% if d.events %}
+    <div class="events">
+      {% for e in d.events %}
+      <div class="event">
+        <span class="pill red lvl"><span class="d"></span>{{ e.level or 'Erro' }}</span>
+        <div class="hd"><span class="prov">{{ e.provider }}</span><span class="badge-count">ID {{ e.id }}</span>{% if e.count and e.count > 1 %}<span class="badge-count">&times;{{ e.count }}</span>{% endif %}</div>
+        <span class="when">{{ e.last }}</span>
+        <div class="msg">{{ e.message }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+      <div class="alert ok small">Sem ocorrencias relevantes nas ultimas 24h.</div>
+    {% endif %}
+  </div>
+
+  {% if d.jobs and not d.jobs.error and d.jobs.top_requesters %}
+  <div class="panel">
+    <h2>Origem dos jobs <span class="muted small">(solicitantes, ult. {{ d.jobs.window_min }}min)</span></h2>
+    <p class="muted small">Jobs executados por esta maquina foram <b>requisitados por outros usuarios/maquinas</b>
+      (este servidor tem {{ d.users_count if d.users_count is not none else 0 }} sessao(oes) locais) &mdash;
+      prova de que ele recebe e processa pedidos remotos.</p>
+    <div class="pills">
+      {% for rq in d.jobs.top_requesters %}<span class="pill">{{ rq.user }} &middot; {{ rq.c }}</span>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="panel">
+    <h2>Historico <span class="muted small">({{ hist | length }} coletas)</span></h2>
+    <div class="table-wrap scroll-y">
+      <table class="tbl">
+        <thead><tr><th>Hora</th><th>Estado</th><th>CPU</th><th>RAM</th><th>App</th><th>Ocorrencias</th></tr></thead>
+        <tbody>
+          {% for h in hist %}
+          <tr>
+            <td>{{ h.ts | dt }}</td>
+            <td>{{ 'ONLINE' if h.reachable else 'SEM CONTATO' }}</td>
+            <td>{{ h.cpu if h.cpu is not none else '-' }}</td>
+            <td>{{ h.mem_pct if h.mem_pct is not none else '-' }}</td>
+            <td>{% if h.app_ok is none %}-{% else %}{{ 'OK' if h.app_ok else 'FALHA' }}{% endif %}</td>
+            <td>{{ h.events | length }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

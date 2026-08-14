@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Sessoes RDP - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Sessoes RDP</h1>
+    <div class="sub">{{ total }} sessao(oes) ao vivo</div>
+  </div>
+  <a class="btn" href="/sessions">&#8635; Atualizar</a>
+</div>
+
+{% if flash %}<div class="alert info">{{ flash }}</div>{% endif %}
+
+{% set erros = rows | selectattr('res.error') | list %}
+{% if erros %}
+<div class="alert small">Falha ao listar em: {% for r in erros %}<b>{{ r.cfg.name }}</b> ({{ r.res.error }}){% if not loop.last %}; {% endif %}{% endfor %}</div>
+{% endif %}
+
+<div class="alert small">Encerrar uma sessao <b>desconecta o usuario imediatamente</b> e pode causar perda de trabalho nao salvo. Requer conta WinRM administradora no servidor.</div>
+
+<div class="toolbar">
+  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar usuario, servidor, sessao..." autocomplete="off">
+  <select id="f-server" class="input">
+    <option value="">Todos os servidores</option>
+    {% for r in rows %}{% if r.res.sessions %}<option value="{{ r.cfg.name }}">{{ r.cfg.name }}</option>{% endif %}{% endfor %}
+  </select>
+  <select id="f-state" class="input">
+    <option value="">Todos os estados</option>
+    <option value="ativo">Ativo</option>
+    <option value="disc">Desconectado</option>
+  </select>
+  <span class="muted small" id="vis-count"></span>
+</div>
+
+<form method="post" action="/sessions/logoff" id="logoff-form">
+  <div class="table-wrap">
+    <table class="tbl" id="sess-table">
+      <thead>
+        <tr>
+          <th style="width:2.4rem"><input type="checkbox" id="sel-all-visible" title="Selecionar visiveis"></th>
+          <th class="sortable" data-key="server">Servidor <span class="arrow"></span></th>
+          <th class="sortable" data-key="user">Usuario <span class="arrow"></span></th>
+          <th class="sortable" data-key="id">Sessao <span class="arrow"></span></th>
+          <th class="sortable" data-key="state">Estado <span class="arrow"></span></th>
+          <th class="sortable" data-key="mem">Memoria <span class="arrow"></span></th>
+          <th class="sortable" data-key="idle">Ocioso / Logon <span class="arrow"></span></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        {% for s in r.res.sessions %}
+          {% set ativo = s.state in ('Active','Ativo') %}
+          <tr class="srow"
+              data-server="{{ r.cfg.name }}" data-user="{{ s.user }}" data-id="{{ s.id }}"
+              data-state="{{ s.state }}" data-statekind="{{ 'ativo' if ativo else 'disc' }}"
+              data-mem="{{ s.mem_mb or 0 }}" data-idle="{{ s.info }}"
+              data-text="{{ (r.cfg.name ~ ' ' ~ s.user ~ ' ' ~ (s.session or '') ~ ' ' ~ s.state) | lower }}">
+            <td><input type="checkbox" name="target" value="{{ r.cfg.name }}|{{ s.id }}" class="sel"></td>
+            <td class="muted">{{ r.cfg.name }}</td>
+            <td><b>{{ s.user }}</b></td>
+            <td>{{ s.session or '-' }} <span class="faint small">id {{ s.id }}</span></td>
+            <td><span class="pill {{ 'green' if ativo else '' }}"><span class="d"></span>{{ s.state }}</span></td>
+            <td class="mono">{{ s.mem_mb or 0 }} MB</td>
+            <td class="muted small">{{ s.info }}</td>
+          </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if total == 0 %}<p class="muted" style="margin-top:1rem">Nenhuma sessao ativa nos servidores.</p>{% endif %}
+
+  <div class="action-bar">
+    <button type="submit" class="btn danger">Encerrar sessoes selecionadas</button>
+    <span class="muted small" id="sel-count">0 selecionada(s)</span>
+  </div>
+</form>
+
+<script>
+(function () {
+  var q = document.getElementById('q');
+  var fServer = document.getElementById('f-server');
+  var fState = document.getElementById('f-state');
+  var tbody = document.querySelector('#sess-table tbody');
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tr.srow'));
+  var selAll = document.getElementById('sel-all-visible');
+  var selCount = document.getElementById('sel-count');
+  var visCount = document.getElementById('vis-count');
+  var sortKey = null, sortDir = 1;
+
+  function visibleRows() { return rows.filter(function (r) { return r.style.display !== 'none'; }); }
+  function applyFilters() {
+    var term = q.value.trim().toLowerCase(), srv = fServer.value, st = fState.value;
+    rows.forEach(function (r) {
+      var ok = true;
+      if (term && r.getAttribute('data-text').indexOf(term) === -1) ok = false;
+      if (ok && srv && r.getAttribute('data-server') !== srv) ok = false;
+      if (ok && st && r.getAttribute('data-statekind') !== st) ok = false;
+      r.style.display = ok ? '' : 'none';
+      if (!ok) { var c = r.querySelector('input.sel'); if (c) c.checked = false; }
+    });
+    selAll.checked = false; updateCounts();
+  }
+  function updateCounts() {
+    visCount.textContent = visibleRows().length + ' visivel(is)';
+    selCount.textContent = document.querySelectorAll('input.sel:checked').length + ' selecionada(s)';
+  }
+  function cmp(a, b, key) {
+    var va = a.getAttribute('data-' + key) || '', vb = b.getAttribute('data-' + key) || '';
+    if (key === 'id' || key === 'mem') return (parseInt(va, 10) || 0) - (parseInt(vb, 10) || 0);
+    return va.toLowerCase().localeCompare(vb.toLowerCase());
+  }
+  function sortBy(key) {
+    if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+    rows.slice().sort(function (a, b) { return cmp(a, b, key) * sortDir; })
+        .forEach(function (r) { tbody.appendChild(r); });
+    document.querySelectorAll('th.sortable .arrow').forEach(function (s) { s.textContent = ''; });
+    var th = document.querySelector('th.sortable[data-key="' + key + '"] .arrow');
+    if (th) th.textContent = sortDir > 0 ? ' ▲' : ' ▼';
+  }
+  q.addEventListener('input', applyFilters);
+  fServer.addEventListener('change', applyFilters);
+  fState.addEventListener('change', applyFilters);
+  document.querySelectorAll('th.sortable').forEach(function (th) {
+    th.addEventListener('click', function () { sortBy(th.getAttribute('data-key')); });
+  });
+  selAll.addEventListener('change', function () {
+    visibleRows().forEach(function (r) { var c = r.querySelector('input.sel'); if (c) c.checked = selAll.checked; });
+    updateCounts();
+  });
+  document.querySelectorAll('input.sel').forEach(function (c) { c.addEventListener('change', updateCounts); });
+  document.getElementById('logoff-form').addEventListener('submit', function (e) {
+    var sel = Array.prototype.slice.call(document.querySelectorAll('input.sel:checked'));
+    if (sel.length === 0) { e.preventDefault(); alert('Selecione ao menos uma sessao.'); return; }
+    var lista = sel.map(function (c) { var tr = c.closest('tr'); return '• ' + tr.getAttribute('data-server') + ': ' + tr.getAttribute('data-user'); }).join('\n');
+    if (!confirm('Encerrar ' + sel.length + ' sessao(oes)?\n\n' + lista + '\n\nOs usuarios serao desconectados imediatamente.')) e.preventDefault();
+  });
+  updateCounts();
+})();
+</script>
+{% endblock %}
