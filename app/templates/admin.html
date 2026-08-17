@@ -27,7 +27,10 @@
 
   <div class="panel">
     <h2>Usuarios <span class="muted small">({{ users|length }})</span></h2>
-    <p class="muted small">Gerenciar: <code>sudo /opt/rmon/.venv/bin/python /opt/rmon/deploy/usuarios.py --help</code></p>
+    <p class="muted small" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <a class="btn primary small" href="/admin/usuarios">Gerenciar usuarios</a>
+      criar contas, editar dados, papel e senha
+    </p>
     <div class="table-wrap"><table class="tbl">
       <thead><tr><th>Login</th><th>Nome</th><th>Papel</th><th>Ativo</th><th>Ult. login</th></tr></thead>
       <tbody>

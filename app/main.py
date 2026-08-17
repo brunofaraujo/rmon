@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -17,7 +19,7 @@ from . import __version__, db, jobstats
 from .collector import list_sessions, logoff_session, service_action
 from .config import load_inventory, load_settings
 from .scheduler import build_scheduler, poll_all
-from .security import verify_password
+from .security import hash_password, verify_password
 
 log = logging.getLogger("rmon")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -259,7 +261,9 @@ def profile_get(request: Request):
         return RedirectResponse("/login", status_code=302)
     u = db.get_user(request.session["user"])
     return templates.TemplateResponse(
-        "profile.html", {"request": request, "u": u, "ok": request.query_params.get("ok"), "version": __version__})
+        "profile.html",
+        {"request": request, "u": u, "ok": request.query_params.get("ok"),
+         "erro": request.query_params.get("erro"), "min_senha": MIN_SENHA, "version": __version__})
 
 
 @app.post("/profile")
@@ -315,6 +319,138 @@ async def admin_config(request: Request):
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)
+
+
+# ---------- gerenciamento de usuarios (admin) ----------
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{2,31}$")
+MIN_SENHA = 8
+
+
+def _flash(request: Request, msg: str, kind: str = "ok") -> None:
+    request.session["uflash"] = {"kind": kind, "msg": msg}
+
+
+def _users_redirect(request: Request, msg: str, kind: str = "ok") -> RedirectResponse:
+    _flash(request, msg, kind)
+    return RedirectResponse("/admin/usuarios", status_code=303)
+
+
+def _check_password(pw: str, pw2: str) -> str | None:
+    """Retorna mensagem de erro ou None."""
+    if len(pw) < MIN_SENHA:
+        return f"A senha deve ter ao menos {MIN_SENHA} caracteres."
+    if pw != pw2:
+        return "As senhas nao conferem."
+    return None
+
+
+@app.get("/admin/usuarios", response_class=HTMLResponse)
+def users_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    return templates.TemplateResponse(
+        "users.html",
+        {"request": request, "users": db.list_users(), "me": request.session["user"],
+         "flash": request.session.pop("uflash", None), "min_senha": MIN_SENHA,
+         "version": __version__},
+    )
+
+
+@app.post("/admin/usuarios/criar")
+async def users_create(request: Request):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    role = form.get("role") if form.get("role") in ("admin", "viewer") else "viewer"
+    pw, pw2 = form.get("password") or "", form.get("password2") or ""
+
+    if not USERNAME_RE.match(username):
+        return _users_redirect(request, "Login invalido: use 3 a 32 caracteres (letras, numeros, . _ -).", "err")
+    erro = _check_password(pw, pw2)
+    if erro:
+        return _users_redirect(request, erro, "err")
+    criado = db.insert_user(username, hash_password(pw), role,
+                            (form.get("full_name") or "").strip(), (form.get("email") or "").strip())
+    if not criado:
+        return _users_redirect(request, f"Ja existe um usuario com o login '{username}'.", "err")
+    db.audit(request.session["user"], "user_create", f"{username} ({role})", _ip(request))
+    return _users_redirect(request, f"Usuario '{username}' criado.")
+
+
+@app.post("/admin/usuarios/{username}/editar")
+async def users_update(request: Request, username: str):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    alvo = db.get_user(username)
+    if not alvo:
+        return _users_redirect(request, "Usuario nao encontrado.", "err")
+    form = await request.form()
+    role = form.get("role") if form.get("role") in ("admin", "viewer") else alvo["role"]
+    active = form.get("active") == "on"
+
+    # nunca deixar o painel sem nenhum admin ativo
+    if (alvo["role"] == "admin" and alvo["active"]) and (role != "admin" or not active) \
+            and db.count_active_admins(exclude=username) == 0:
+        return _users_redirect(request, "Este e o unico administrador ativo: mantenha o papel admin e a conta ativa.", "err")
+
+    db.update_user(username, (form.get("full_name") or "").strip(),
+                   (form.get("email") or "").strip(), role, active)
+    db.audit(request.session["user"], "user_update",
+             f"{username} -> {role}, {'ativo' if active else 'inativo'}", _ip(request))
+    if username == request.session["user"]:
+        request.session["role"] = role
+    return _users_redirect(request, f"Usuario '{username}' atualizado.")
+
+
+@app.post("/admin/usuarios/{username}/senha")
+async def users_password(request: Request, username: str):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not db.get_user(username):
+        return _users_redirect(request, "Usuario nao encontrado.", "err")
+    form = await request.form()
+    erro = _check_password(form.get("password") or "", form.get("password2") or "")
+    if erro:
+        return _users_redirect(request, erro, "err")
+    db.set_password(username, hash_password(form.get("password")))
+    db.audit(request.session["user"], "user_password_reset", username, _ip(request))
+    return _users_redirect(request, f"Senha de '{username}' redefinida.")
+
+
+@app.post("/admin/usuarios/{username}/excluir")
+async def users_delete(request: Request, username: str):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not db.get_user(username):
+        return _users_redirect(request, "Usuario nao encontrado.", "err")
+    if username == request.session["user"]:
+        return _users_redirect(request, "Voce nao pode excluir a propria conta.", "err")
+    if db.count_active_admins(exclude=username) == 0:
+        return _users_redirect(request, "Nao e possivel excluir o unico administrador ativo.", "err")
+    db.delete_user(username)
+    db.audit(request.session["user"], "user_delete", username, _ip(request))
+    return _users_redirect(request, f"Usuario '{username}' excluido.")
+
+
+@app.post("/profile/senha")
+async def profile_password(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    username = request.session["user"]
+    form = await request.form()
+    u = db.get_user(username)
+    if not u or not verify_password(form.get("atual") or "", u["password_hash"]):
+        db.audit(username, "password_change_fail", "senha atual incorreta", _ip(request))
+        return RedirectResponse(f"/profile?erro={quote('A senha atual esta incorreta.')}", status_code=303)
+    erro = _check_password(form.get("password") or "", form.get("password2") or "")
+    if erro:
+        return RedirectResponse(f"/profile?erro={quote(erro)}", status_code=303)
+    db.set_password(username, hash_password(form.get("password")))
+    db.audit(username, "password_change", None, _ip(request))
+    return RedirectResponse("/profile?ok=senha", status_code=303)
 
 
 @app.get("/sessions", response_class=HTMLResponse)

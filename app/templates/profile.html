@@ -2,7 +2,9 @@
 {% block title %}Meu perfil - RMonitor{% endblock %}
 {% block content %}
 <div class="page-head"><div><h1>Meu perfil</h1><div class="sub">dados da sua conta</div></div></div>
-{% if ok %}<div class="alert ok">Perfil atualizado.</div>{% endif %}
+{% if ok == 'senha' %}<div class="alert ok">Senha alterada.</div>
+{% elif ok %}<div class="alert ok">Perfil atualizado.</div>{% endif %}
+{% if erro %}<div class="alert">{{ erro }}</div>{% endif %}
 
 <div class="panel" style="max-width:560px">
   <form method="post" action="/profile">
@@ -16,6 +18,19 @@
     <div style="margin:.4rem 0 1rem"><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span>
       <span class="faint small">(alterado por um administrador)</span></div>
     <button type="submit" class="btn primary">Salvar</button>
+  </form>
+</div>
+
+<div class="panel" style="max-width:560px">
+  <h2>Alterar senha</h2>
+  <form method="post" action="/profile/senha">
+    <label class="muted small">Senha atual</label>
+    <input class="input" type="password" name="atual" required autocomplete="current-password" style="width:100%;margin:.3rem 0 .8rem">
+    <label class="muted small">Nova senha (min. {{ min_senha }} caracteres)</label>
+    <input class="input" type="password" name="password" required minlength="{{ min_senha }}" autocomplete="new-password" style="width:100%;margin:.3rem 0 .8rem">
+    <label class="muted small">Confirmar nova senha</label>
+    <input class="input" type="password" name="password2" required minlength="{{ min_senha }}" autocomplete="new-password" style="width:100%;margin:.3rem 0 1rem">
+    <button type="submit" class="btn primary">Alterar senha</button>
   </form>
 </div>
 {% endblock %}
