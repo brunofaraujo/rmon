@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Usuarios - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Usuarios</h1><div class="sub">contas de acesso ao painel ({{ users|length }})</div></div>
+  <a class="btn ghost" href="/admin">Configuracoes</a>
+</div>
+
+{% if flash %}<div class="alert {{ 'ok' if flash.kind == 'ok' else '' }}">{{ flash.msg }}</div>{% endif %}
+
+<div class="panel">
+  <h2>Novo usuario</h2>
+  <form method="post" action="/admin/usuarios/criar" class="form-grid">
+    <div>
+      <label class="muted small">Login *</label>
+      <input class="input" type="text" name="username" required minlength="3" maxlength="32"
+             pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{2,31}"
+             title="3 a 32 caracteres: letras, numeros, ponto, hifen ou sublinhado"
+             autocomplete="off">
+    </div>
+    <div>
+      <label class="muted small">Nome completo</label>
+      <input class="input" type="text" name="full_name" autocomplete="off">
+    </div>
+    <div>
+      <label class="muted small">E-mail</label>
+      <input class="input" type="email" name="email" autocomplete="off">
+    </div>
+    <div>
+      <label class="muted small">Papel</label>
+      <select class="input" name="role">
+        <option value="viewer">viewer (somente leitura)</option>
+        <option value="admin">admin (acoes e configuracao)</option>
+      </select>
+    </div>
+    <div>
+      <label class="muted small">Senha * (min. {{ min_senha }})</label>
+      <input class="input" type="password" name="password" required minlength="{{ min_senha }}" autocomplete="new-password">
+    </div>
+    <div>
+      <label class="muted small">Confirmar senha *</label>
+      <input class="input" type="password" name="password2" required minlength="{{ min_senha }}" autocomplete="new-password">
+    </div>
+    <div class="form-actions"><button type="submit" class="btn primary">Criar usuario</button></div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Contas existentes</h2>
+  <p class="muted small">Clique em um usuario para editar os dados, redefinir a senha ou remover a conta.</p>
+  <div class="user-list">
+    {% for u in users %}
+    <details class="user-item">
+      <summary>
+        <span class="avatar">{{ u.username[:1] | upper }}</span>
+        <span class="ui-main">
+          <b>{{ u.username }}</b>{% if u.username == me %} <span class="faint small">(voce)</span>{% endif %}
+          <span class="faint small">{{ u.full_name or '' }}{% if u.full_name and u.email %} &middot; {% endif %}{{ u.email or '' }}</span>
+        </span>
+        <span class="pill {{ 'green' if u.role == 'admin' else '' }}">{{ u.role }}</span>
+        <span class="pill {{ '' if u.active else 'red' }}">{{ 'ativo' if u.active else 'inativo' }}</span>
+        <span class="faint small ui-login">ult. login: {{ u.last_login or 'nunca' }}</span>
+      </summary>
+
+      <div class="user-body">
+        <form method="post" action="/admin/usuarios/{{ u.username }}/editar" class="form-grid">
+          <div>
+            <label class="muted small">Nome completo</label>
+            <input class="input" type="text" name="full_name" value="{{ u.full_name or '' }}">
+          </div>
+          <div>
+            <label class="muted small">E-mail</label>
+            <input class="input" type="email" name="email" value="{{ u.email or '' }}">
+          </div>
+          <div>
+            <label class="muted small">Papel</label>
+            <select class="input" name="role">
+              <option value="viewer" {{ 'selected' if u.role == 'viewer' else '' }}>viewer</option>
+              <option value="admin" {{ 'selected' if u.role == 'admin' else '' }}>admin</option>
+            </select>
+          </div>
+          <div>
+            <label class="muted small">Situacao</label>
+            <label class="check"><input type="checkbox" name="active" {{ 'checked' if u.active else '' }}> conta ativa</label>
+          </div>
+          <div class="form-actions"><button type="submit" class="btn primary">Salvar alteracoes</button></div>
+        </form>
+
+        <hr class="sep">
+
+        <form method="post" action="/admin/usuarios/{{ u.username }}/senha" class="form-grid">
+          <div>
+            <label class="muted small">Nova senha (min. {{ min_senha }})</label>
+            <input class="input" type="password" name="password" required minlength="{{ min_senha }}" autocomplete="new-password">
+          </div>
+          <div>
+            <label class="muted small">Confirmar senha</label>
+            <input class="input" type="password" name="password2" required minlength="{{ min_senha }}" autocomplete="new-password">
+          </div>
+          <div class="form-actions"><button type="submit" class="btn">Redefinir senha</button></div>
+        </form>
+
+        {% if u.username != me %}
+        <hr class="sep">
+        <form method="post" action="/admin/usuarios/{{ u.username }}/excluir" class="danger-row"
+              onsubmit="return confirm('Excluir definitivamente o usuario {{ u.username }}? Esta acao nao pode ser desfeita.')">
+          <span class="muted small">Remover esta conta do painel. Para bloquear o acesso sem apagar o historico, desmarque "conta ativa".</span>
+          <button type="submit" class="btn danger">Excluir usuario</button>
+        </form>
+        {% endif %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

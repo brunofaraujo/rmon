@@ -30,15 +30,33 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/ocorrencias` | Erros/críticos recentes do Event Log, consolidados | login |
 | `/sessions` | Sessões RDP ao vivo; encerrar sessões selecionadas | admin p/ logoff |
 | `/logs` | Auditoria de ações | admin |
-| `/admin` | Usuários, limiares de alerta, tema/refresh da UI | admin |
-| `/profile` | Nome e e-mail do usuário logado | login |
+| `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |
+| `/admin/usuarios` | Cadastro de usuários: criar, editar, papel, ativar/desativar, senha, excluir | admin |
+| `/profile` | Nome, e-mail e troca da própria senha | login |
 
 Ações sensíveis (restart de serviço, logoff de sessão, mudanças de config) exigem
 perfil **admin** e são registradas na auditoria.
 
 ## Usuários do painel
 
-CLI (roda dentro do venv, lê o `.env` para o DSN):
+### Pela interface (recomendado)
+
+Logado como **admin**, acesse **Usuários** no menu (ou `/admin/usuarios`). Ali é possível:
+
+- criar contas (login, nome, e-mail, papel e senha inicial);
+- editar nome, e-mail, papel e ativar/desativar a conta;
+- redefinir a senha de qualquer usuário;
+- excluir contas.
+
+Regras aplicadas pelo painel: senha de no mínimo 8 caracteres, login com 3 a 32
+caracteres (letras, números, `.`, `-`, `_`), e é proibido rebaixar, desativar ou
+excluir o **último administrador ativo**. Toda alteração vai para a auditoria (`/logs`).
+
+Cada usuário troca a própria senha em **Meu perfil** (`/profile`), informando a senha atual.
+
+### Pela CLI (roda dentro do venv, lê o `.env` para o DSN)
+
+Útil para recuperação de acesso, quando não há admin disponível para entrar no painel:
 
 ```bash
 sudo /opt/rmon/.venv/bin/python /opt/rmon/deploy/usuarios.py list

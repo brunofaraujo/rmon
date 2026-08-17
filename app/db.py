@@ -153,6 +153,39 @@ def create_user(username: str, password_hash: str, role: str = "viewer") -> None
         )
 
 
+def insert_user(username: str, password_hash: str, role: str = "viewer",
+                full_name: str = "", email: str = "") -> bool:
+    """Cria usuario novo. Retorna False se o login ja existe."""
+    with _conn() as c:
+        cur = c.execute(
+            """INSERT INTO users (username, password_hash, role, full_name, email)
+               VALUES (%s,%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING""",
+            (username, password_hash, role, full_name or None, email or None),
+        )
+        return cur.rowcount > 0
+
+
+def update_user(username: str, full_name: str, email: str, role: str, active: bool) -> None:
+    with _conn() as c:
+        c.execute(
+            "UPDATE users SET full_name=%s, email=%s, role=%s, active=%s WHERE username=%s",
+            (full_name or None, email or None, role, active, username),
+        )
+
+
+def delete_user(username: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM users WHERE username=%s", (username,))
+
+
+def count_active_admins(exclude: str | None = None) -> int:
+    with _conn() as c:
+        return c.execute(
+            "SELECT count(*) AS n FROM users WHERE role='admin' AND active AND username <> %s",
+            (exclude or "",),
+        ).fetchone()["n"]
+
+
 def set_password(username: str, password_hash: str) -> None:
     with _conn() as c:
         c.execute("UPDATE users SET password_hash=%s WHERE username=%s", (password_hash, username))
