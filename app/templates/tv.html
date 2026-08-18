@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="robots" content="noindex">
   <title>RMonitor &middot; Mural</title>
-  <link rel="stylesheet" href="/static/tv.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/tv.css?v={{ assets }}">
   {# sem JS o mural ainda gira, so que recarregando a pagina inteira #}
   <noscript><meta http-equiv="refresh" content="{{ tv_refresh }}"></noscript>
 </head>
@@ -38,6 +38,6 @@
   </div>
 
   <script id="tvdata" type="application/json">{{ payload | tojson }}</script>
-  <script src="/static/tv.js?v={{ version }}"></script>
+  <script src="/static/tv.js?v={{ assets }}"></script>
 </body>
 </html>
