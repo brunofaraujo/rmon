@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,9 +14,10 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, jobstats
+from . import __version__, db, jobstats, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import load_inventory, load_settings
 from .scheduler import build_scheduler, poll_all
@@ -49,12 +51,14 @@ templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["dur"] = _fmt_dur
 templates.env.globals["ui_refresh"] = 60
 templates.env.globals["default_theme"] = "dark"
+templates.env.globals["tv_refresh"] = 15
 
 
 def _apply_ui_globals() -> None:
     ui = db.get_config("ui", {}) or {}
     templates.env.globals["ui_refresh"] = int(ui.get("refresh", 60))
     templates.env.globals["default_theme"] = ui.get("theme", "dark")
+    templates.env.globals["tv_refresh"] = int(ui.get("tv_refresh", 15))
 
 # Estado do processo (preenchido no lifespan)
 STATE: dict = {}
@@ -87,6 +91,27 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RMonitor (RMon)", version=__version__, lifespan=lifespan)
+
+# Perfil sem admin (viewer) e um quiosque: enxerga apenas o painel de TV.
+VIEWER_PATHS = frozenset({"/", "/tv", "/api/tv", "/logout", "/login", "/healthz", "/favicon.ico"})
+
+
+async def _kiosk_guard(request: Request, call_next):
+    """Mantem o viewer restrito ao painel de TV.
+
+    Registrado ANTES do SessionMiddleware para ficar por dentro dele na pilha
+    (o ultimo middleware adicionado e o mais externo) e ter request.session pronto.
+    """
+    path = request.url.path
+    if (request.session.get("user") and request.session.get("role") != "admin"
+            and path not in VIEWER_PATHS and not path.startswith("/static/")):
+        if path.startswith("/api/") or request.method != "GET":
+            return JSONResponse({"error": "forbidden"}, status_code=403)
+        return RedirectResponse("/", status_code=302)
+    return await call_next(request)
+
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=_kiosk_guard)
 
 # SessionMiddleware precisa da secret key no momento de montar o app.
 _boot_settings = load_settings()
@@ -153,10 +178,128 @@ def logout(request: Request):
     return RedirectResponse("/login", status_code=302)
 
 
+
+# ---------- painel de TV (mural / perfil viewer) ----------
+# Problemas que pintam o cartao de vermelho; o resto e apenas aviso (ambar).
+_TV_CRIT_KEYS = ("DOWN", "APP", "JOBS")
+_TV_CACHE_TTL = 3.0
+_TV_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _pct(v) -> int | None:
+    return None if v is None else int(round(float(v)))
+
+
+def _tv_thresholds() -> dict:
+    inv = STATE["inv"]
+    return {**scheduler.DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}),
+            **(db.get_config("alerts", {}) or {})}
+
+
+def _tv_payload() -> dict:
+    """Estado completo do mural em JSON. Cache curto: varias TVs nao multiplicam consultas."""
+    now = time.time()
+    cached = _TV_CACHE["data"]
+    if cached and (now - _TV_CACHE["ts"]) < _TV_CACHE_TTL:
+        return cached
+
+    inv = STATE["inv"]
+    th = _tv_thresholds()
+    latest = {r["server"]: r for r in db.latest_per_server()}
+    stale_after = max(180, inv.poll_interval_seconds * 3)
+
+    servers: list[dict] = []
+    issues: list[dict] = []
+    summary = {"total": 0, "online": 0, "offline": 0, "services_down": 0,
+               "events": 0, "crit": 0, "warn": 0}
+
+    for cfg in inv.servers:
+        d = latest.get(cfg.name)
+        probs = scheduler.problems(
+            d or {"reachable": False, "error": "aguardando a primeira coleta"}, th)
+        crit = any(k.startswith("svc:") or k in _TV_CRIT_KEYS for k in probs)
+        sev = 2 if crit else (1 if probs else 0)
+        up = bool(d and d["reachable"])
+        ts = d["ts"] if d else None
+        svcs = (d["services"] or []) if d else []
+        disks = (d["disks"] or []) if d else []
+        events = (d["events"] or []) if d else []
+        jobs = d["jobs"] if (d and d.get("jobs")) else None
+
+        summary["total"] += 1
+        summary["online" if up else "offline"] += 1
+        summary["services_down"] += sum(1 for x in svcs if x.get("status") != "Running")
+        summary["events"] += sum(int(e.get("count", 1)) for e in events)
+        if sev == 2:
+            summary["crit"] += 1
+        elif sev == 1:
+            summary["warn"] += 1
+
+        for key, text in probs.items():
+            issues.append({"server": cfg.name, "text": text,
+                           "sev": 2 if (key.startswith("svc:") or key in _TV_CRIT_KEYS) else 1})
+
+        servers.append({
+            "name": cfg.name, "host": cfg.host, "up": up, "sev": sev,
+            "cpu": _pct(d["cpu"]) if d else None,
+            "mem": _pct(d["mem_pct"]) if d else None,
+            "uptime": (d["uptime_sec"] if d else None),
+            "ts": ts,
+            "age": int(now - ts) if ts else None,
+            "stale": bool(ts and (now - ts) > stale_after),
+            "disks": [{"d": x.get("drive"), "p": _pct(x.get("used_pct")) or 0,
+                       "free": x.get("free_gb")} for x in disks],
+            "svcs": [{"n": x.get("name"), "ok": x.get("status") == "Running",
+                      "st": x.get("status")} for x in svcs],
+            "users": (d.get("users_count") if d else None),
+            "app": (d.get("app_ok") if d else None),
+            "app_ms": (d.get("app_ms") if d else None),
+            "jobs": ({"ok": jobs.get("ok"), "failed": jobs.get("failed"),
+                      "win": jobs.get("window_min"), "err": bool(jobs.get("error"))}
+                     if jobs else None),
+            "events": len(events),
+            "err": (d["error"] if d else "aguardando a primeira coleta") if not up else None,
+        })
+
+    issues.sort(key=lambda i: (-i["sev"], i["server"]))
+    data = {
+        "ts": now,
+        "refresh": int(templates.env.globals.get("tv_refresh", 15)),
+        "poll": inv.poll_interval_seconds,
+        "thresholds": {"mem": th["mem_pct"], "disk": th["disk_pct"], "app_ms": th["app_ms"]},
+        "version": __version__,
+        "summary": summary, "servers": servers, "issues": issues,
+    }
+    _TV_CACHE.update(ts=now, data=data)
+    return data
+
+
+def _tv_response(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "tv.html", {"request": request, "payload": _tv_payload(), "version": __version__})
+
+
+@app.get("/tv", response_class=HTMLResponse)
+def tv_page(request: Request):
+    """Mural em tela cheia: sem rolagem, feito para TV widescreen."""
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    return _tv_response(request)
+
+
+@app.get("/api/tv")
+def api_tv(request: Request):
+    if not _is_authed(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return JSONResponse(_tv_payload(), headers={"Cache-Control": "no-store"})
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return _tv_response(request)  # viewer so ve o mural
     inv = STATE["inv"]
     latest = {r["server"]: r for r in db.latest_per_server()}
     rows = [{"cfg": srv, "data": latest.get(srv.name)} for srv in inv.servers]
@@ -296,7 +439,8 @@ def admin_page(request: Request):
     return templates.TemplateResponse(
         "admin.html",
         {"request": request, "users": db.list_users(), "ok": request.query_params.get("ok"),
-         "ui": {"refresh": ui.get("refresh", 60), "theme": ui.get("theme", "dark")},
+         "ui": {"refresh": ui.get("refresh", 60), "theme": ui.get("theme", "dark"),
+                "tv_refresh": ui.get("tv_refresh", 15)},
          "alerts": {"disk_pct": alerts.get("disk_pct", 90), "mem_pct": alerts.get("mem_pct", 90), "app_ms": alerts.get("app_ms", 3000)},
          "version": __version__},
     )
@@ -314,7 +458,9 @@ async def admin_config(request: Request):
         except ValueError:
             return dflt
     theme = form.get("theme", "dark")
-    db.set_config("ui", {"refresh": _int("refresh", 60, 10, 3600), "theme": theme if theme in ("dark", "light") else "dark"})
+    db.set_config("ui", {"refresh": _int("refresh", 60, 10, 3600),
+                         "theme": theme if theme in ("dark", "light") else "dark",
+                         "tv_refresh": _int("tv_refresh", 15, 5, 600)})
     db.set_config("alerts", {"disk_pct": _int("disk_pct", 90, 1, 100), "mem_pct": _int("mem_pct", 90, 1, 100), "app_ms": _int("app_ms", 3000, 100, 60000)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))

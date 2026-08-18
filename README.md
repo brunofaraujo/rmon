@@ -39,6 +39,7 @@ servidores monitorados.
 - 🔔 **Alertas** por Telegram e/ou Slack — disparados só nas **transições** (levantou/resolveu), sem spam.
 - 🛠️ **Ações remotas** (perfil admin): `start`/`stop`/`restart` de serviços monitorados e logoff de sessões RDP.
 - 👥 **Multiusuário** com papéis `admin` / `viewer`, auditoria de ações e login por sessão assinada.
+- 📺 **Mural de TV** (`/tv`): painel em tela cheia, sem rolagem, que se ajusta sozinho ao número de servidores e à resolução da tela. É a **única** tela do perfil `viewer` — ideal para deixar numa TV do NOC.
 - 🌐 **Multidomínio**: credenciais WinRM por *perfil* (ex.: `fin`, `rh`), cada servidor referencia o seu.
 
 > 📸 *Dica: adicione aqui uma captura de tela do dashboard (`docs/img/dashboard.png`).*
@@ -68,7 +69,7 @@ flowchart LR
 
 ```
 app/                 Backend FastAPI + templates (Jinja2) + estáticos
-  main.py            Rotas: login, dashboard, servidor, jobs, sessões, admin…
+  main.py            Rotas: login, dashboard, mural de TV, servidor, jobs, sessões, admin…
   collector.py       Coleta WinRM (PowerShell) + health HTTP + ações remotas
   scheduler.py       Polling periódico, detecção de problemas e alertas
   db.py              Camada PostgreSQL (psycopg3) + schema

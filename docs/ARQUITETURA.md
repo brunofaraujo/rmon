@@ -109,8 +109,22 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/healthz` | GET | Liveness — `{"status":"ok","version":...}` (sem auth) |
 | `/api/status` | GET | Último check de cada servidor (JSON, requer login) |
 | `/api/series?server=&hours=` | GET | Série temporal para gráficos (JSON, requer login) |
+| `/api/tv` | GET | Estado completo do mural: KPIs, cartões e ocorrências já classificados por severidade (JSON, requer login; cache de 3 s no processo) |
 | `/service/action` | POST | start/stop/restart de serviço (admin) |
 | `/sessions/logoff` | POST | Logoff de sessões selecionadas (admin) |
+
+## Perfil `viewer` (quiosque)
+
+Um middleware registrado **antes** do `SessionMiddleware` (portanto por dentro dele na
+pilha, com `request.session` já disponível) restringe quem não é `admin` a um punhado de
+rotas: `/`, `/tv`, `/api/tv`, `/login`, `/logout`, `/healthz` e `/static/*`. GET em
+qualquer outra rota volta para `/`; POST e `/api/*` recebem `403`. Como a regra vive no
+middleware, uma rota nova nasce fechada para o `viewer` — não há como esquecer o guard.
+
+A severidade exibida no mural reutiliza `scheduler.problems()`, a **mesma** função que
+decide os alertas do Telegram/Slack: o que acende vermelho na TV é exatamente o que
+dispara notificação. Sem contato, serviço parado, app fora do ar e jobs falhando contam
+como críticos; memória, disco e app lento como avisos.
 
 ## Endurecimento do serviço (systemd)
 
