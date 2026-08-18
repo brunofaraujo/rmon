@@ -41,7 +41,8 @@ def problems(r: dict, th: dict) -> dict[str, str]:
         p["APPSLOW"] = f"app_health lento: {r['app_ms']}ms"
     jb = r.get("jobs")
     if isinstance(jb, dict) and jb.get("failed") is not None and jb["failed"] >= th.get("jobs_failed", 3):
-        p["JOBS"] = f"jobs com falha: {jb['failed']} em {jb.get('window_min')}min"
+        p["JOBS"] = (f"{jb['failed']} execucoes de job com erro em {jb.get('window_min')}min "
+                     "(validacao/regra de negocio, nao falha do servidor)")
     return p
 
 

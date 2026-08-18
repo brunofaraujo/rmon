@@ -180,7 +180,9 @@ def logout(request: Request):
 
 # ---------- painel de TV (mural / perfil viewer) ----------
 # Problemas que pintam o cartao de vermelho; o resto e apenas aviso (ambar).
-_TV_CRIT_KEYS = ("DOWN", "APP", "JOBS")
+# JOBS fica de fora de proposito: job que termina com erro costuma ser validacao
+# ou regra de negocio da aplicacao, nao falha do servidor.
+_TV_CRIT_KEYS = ("DOWN", "APP")
 _TV_CACHE_TTL = 3.0
 _TV_CACHE: dict = {"ts": 0.0, "data": None}
 
