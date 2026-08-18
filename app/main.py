@@ -54,6 +54,20 @@ templates.env.globals["default_theme"] = "dark"
 templates.env.globals["tv_refresh"] = 15
 
 
+def _assets_tag() -> str:
+    """Selo de cache dos estaticos: muda a cada deploy, senao a TV fica com o
+    CSS/JS antigo em cache ate alguem limpar o navegador na marra."""
+    d = BASE_DIR / "static"
+    try:
+        recente = max((f.stat().st_mtime for f in d.glob("*") if f.is_file()), default=0)
+    except OSError:
+        recente = 0
+    return f"{__version__}-{int(recente)}"
+
+
+templates.env.globals["assets"] = _assets_tag()
+
+
 def _apply_ui_globals() -> None:
     ui = db.get_config("ui", {}) or {}
     templates.env.globals["ui_refresh"] = int(ui.get("refresh", 60))
