@@ -184,16 +184,21 @@ body.tv-body {
   display: flex; flex-direction: column; gap: .5em;
   min-height: 0;
 }
-.tvc-hd { display: flex; align-items: center; gap: .5em; min-width: 0; }
-.tvc-hd .d { width: .68em; height: .68em; border-radius: 50%; flex: none; background: var(--green);
-  box-shadow: 0 0 0 .28em rgba(47, 217, 138, .16); }
-.tvc-hd .n { font-size: 1.42em; font-weight: 800; letter-spacing: -.02em;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
-.tvc-hd .s { flex: none; font-size: .8em; font-weight: 800; letter-spacing: .09em;
+.tvc-hd { display: flex; align-items: center; gap: .55em; min-width: 0; }
+.tvc-hd .d { width: .62em; height: .62em; border-radius: 50%; flex: none; background: var(--green);
+  box-shadow: 0 0 0 .26em rgba(47, 217, 138, .16); }
+/* hostname e IP empilhados: nome grande para ler de longe, IP em mono logo abaixo */
+.tvc-id { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.12; }
+.tvc-id .n { font-size: 1.24em; font-weight: 800; letter-spacing: -.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvc-id .n.longo { font-size: 1.08em; letter-spacing: -.03em; }
+.tvc-id .n.extenso { font-size: .96em; letter-spacing: -.03em; }
+.tvc-id .ip { color: var(--muted); font-size: .82em; letter-spacing: .02em;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvc-hd .s { flex: none; align-self: center; font-size: .74em; font-weight: 800; letter-spacing: .09em;
   padding: .18em .7em; border-radius: 999px; text-transform: uppercase;
   background: rgba(47, 217, 138, .14); color: var(--green); border: 1px solid rgba(47, 217, 138, .38); }
-.tvc-host { color: var(--faint); font-size: .84em; font-family: ui-monospace, "Cascadia Mono", monospace;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: -.35em; }
 
 .tvc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: .45em .9em; }
 .tvb .l { display: flex; justify-content: space-between; font-size: .88em; margin-bottom: .22em; }
@@ -205,7 +210,10 @@ body.tv-body {
 .tvb .t i.warn { background: var(--amber); }
 .tvb .t i.crit { background: var(--red); }
 
-.tvc-tags { display: flex; flex-wrap: wrap; gap: .32em; overflow: hidden; align-content: flex-start; }
+/* flex:1 + min-height:0 fazem a faixa de etiquetas ficar exatamente com o
+   espaco que sobra; o corte em linhas inteiras e feito por cortaTags() no JS */
+.tvc-tags { flex: 1 1 auto; min-height: 0; display: flex; flex-wrap: wrap; gap: .3em;
+  overflow: hidden; align-content: flex-start; }
 .tv-tag {
   font-size: .8em; padding: .2em .6em; border-radius: 999px; white-space: nowrap;
   background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
@@ -219,10 +227,20 @@ body.tv-body {
 html[data-theme="light"] .tv-tag.good { color: #0b7a45; }
 html[data-theme="light"] .tv-tag.warn { color: #8a5200; }
 html[data-theme="light"] .tv-tag.bad  { color: #b42318; }
+.tv-tag.mais { border-style: dashed; color: var(--faint); font-weight: 700; }
+/* prefixo comum dos servicos, exibido uma unica vez antes da lista abreviada */
+.tv-tag.pref { background: transparent; border-color: transparent; color: var(--faint);
+  padding-left: 0; padding-right: .2em; letter-spacing: .02em;
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; }
 
-.tvc-ft { margin-top: auto; display: flex; justify-content: space-between; gap: .6em;
+.tvc-ft { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: .6em;
   color: var(--faint); font-size: .78em; border-top: 1px solid var(--line); padding-top: .45em; }
-.tvc-ft span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvc-ft > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvc-ft .jobs { flex: 1; min-width: 0; text-align: center; display: flex; justify-content: center; gap: .8em; }
+.tvc-ft .hr { flex: none; }
+/* job que termina com erro e quase sempre validacao/regra de negocio da
+   aplicacao: sinaliza em ambar, nunca em vermelho de servidor em falha */
+.tvc-ft .jb.warn { color: var(--amber); font-weight: 700; }
 
 /* cartao fora do ar */
 .tvc-down { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: .3em;
@@ -245,14 +263,23 @@ html[data-theme="light"] .tv-tag.bad  { color: #b42318; }
   50%      { box-shadow: 0 0 2.2em 0 rgba(255, 90, 90, .28); }
 }
 
-/* densidade: definida em JS conforme a altura da celula */
-.tv-grid.t-compact .tvc-ft,
-.tv-grid.t-compact .tvc-host { display: none; }
+/* Densidade: definida em JS conforme a altura da celula. O IP nunca some - e
+   ele que identifica o servidor de fato. No cartao apertado a faixa de servicos
+   vale mais que uptime/relogio: o rodape so fica quando tem o que dizer (job
+   com erro, ou "ultima coleta" de um servidor sem contato). */
+.tv-grid.t-compact .tvc-ft { display: none; }
+.tv-grid.t-compact .tvc-ft.alerta { display: flex; border-top: 0; padding-top: .15em; }
+.tv-grid.t-compact .tvc-ft.alerta .up,
+.tv-grid.t-compact .tvc-ft.alerta .hr { display: none; }
 .tv-grid.t-micro .tvc-ft,
-.tv-grid.t-micro .tvc-host,
 .tv-grid.t-micro .tvc-tags { display: none; }
 .tv-grid.t-micro .tvc { gap: .35em; padding: .55em .7em; }
-.tv-grid.t-micro .tvc-hd .n { font-size: 1.2em; }
+/* micro: sem etiquetas e sem rodape sobra altura, entao nome e IP continuam
+   empilhados - IP cortado pela metade nao identifica nada */
+.tv-grid.t-micro .tvc-id .n { font-size: 1.06em; }
+.tv-grid.t-micro .tvc-id .n.longo { font-size: .98em; }
+.tv-grid.t-micro .tvc-id .n.extenso { font-size: .9em; }
+.tv-grid.t-micro .tvc-id .ip { font-size: .86em; }
 
 /* ---------- rodape / ocorrencias ---------- */
 .tv-ticker {
