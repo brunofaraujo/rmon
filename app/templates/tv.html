@@ -10,7 +10,7 @@
   {# sem JS o mural ainda gira, so que recarregando a pagina inteira #}
   <noscript><meta http-equiv="refresh" content="{{ tv_refresh }}"></noscript>
 </head>
-<body class="tv-body">
+<body class="tv-body" data-token="{{ tv_token or '' }}">
   <div class="tv-progress"><i id="tvbar"></i></div>
   <div class="tv-offline" id="tvoffline" hidden>SEM CONEXAO COM O SERVIDOR</div>
 
@@ -34,7 +34,7 @@
 
   <div class="tv-tools">
     <button type="button" id="tvfull" title="Exibir em tela cheia">Tela cheia</button>
-    <a href="/logout">Sair</a>
+    {% if not tv_token %}<a href="/logout">Sair</a>{% endif %}
   </div>
 
   <script id="tvdata" type="application/json">{{ payload | tojson }}</script>
