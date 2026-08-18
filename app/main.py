@@ -178,7 +178,6 @@ def logout(request: Request):
     return RedirectResponse("/login", status_code=302)
 
 
-
 # ---------- painel de TV (mural / perfil viewer) ----------
 # Problemas que pintam o cartao de vermelho; o resto e apenas aviso (ambar).
 _TV_CRIT_KEYS = ("DOWN", "APP", "JOBS")
