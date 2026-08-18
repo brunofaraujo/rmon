@@ -403,11 +403,20 @@
     state.timer = setTimeout(carrega, seg * 1000);
   }
 
+  // Modo quiosque: o mural foi aberto por token (iframe de outro dominio), entao
+  // nao ha sessao/cookie e mandar para /login so quebraria o embed.
+  var TOKEN = (document.body.getAttribute("data-token") || "");
+  var API = "/api/tv" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
+
   function carrega() {
     if (document.hidden) { agenda(state.refresh); return; }   // TV apagada: nao insiste
-    fetch("/api/tv", { credentials: "same-origin", cache: "no-store" })
+    fetch(API, { credentials: "same-origin", cache: "no-store" })
       .then(function (r) {
-        if (r.status === 401 || r.status === 403) { location.href = "/login"; return null; }
+        if (r.status === 401 || r.status === 403) {
+          if (TOKEN) { throw new Error("http " + r.status); }
+          location.href = "/login";
+          return null;
+        }
         if (!r.ok) { throw new Error("http " + r.status); }
         return r.json();
       })

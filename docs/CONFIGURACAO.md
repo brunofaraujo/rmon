@@ -95,6 +95,9 @@ parser Python próprio (o `systemd` **não** usa `EnvironmentFile` — ver
 | `RMON_SLACK_WEBHOOK` | Alerta via Slack (Incoming Webhook) |
 | `RMON_CONFIG` | Caminho do `servers.yaml` (padrão `/opt/rmon/config/servers.yaml`) |
 | `RMON_HOST` / `RMON_PORT` | Bind do servidor (em prod o systemd fixa `0.0.0.0:8080`) |
+| `RMON_TV_TOKEN` | Token do mural em quiosque: libera `/tv?token=...` sem login (ver abaixo) |
+| `RMON_COOKIE_SAMESITE` | `lax` (padrão), `strict` ou `none`. Use `none` só com HTTPS |
+| `RMON_COOKIE_SECURE` | `1` marca o cookie de sessão como `Secure` (exige HTTPS) |
 
 Prefira sempre os **helpers** de `deploy/` para gravar segredos — eles preservam a
 permissão `600` e não deixam a senha no histórico:
@@ -169,3 +172,49 @@ serviço fora de `Running`, `app_health` falhando ou lento, disco/memória acima
 limiar e jobs com falha. Configure os limiares em `defaults.alerts` (inventário) ou na
 tela **Admin**; os canais (Telegram/Slack) via helpers. Se nenhum canal estiver
 configurado, o envio é inerte (sem erro).
+
+---
+
+## Embutir o mural (`/tv`) em outro painel via iframe
+
+Numa central de monitoramento que carrega o RMonitor dentro de um `<iframe>` de
+**outro domínio/porta**, o login pela tela normal *não funciona*: o cookie de
+sessão é `SameSite=Lax` e o navegador simplesmente o descarta em contexto de
+terceiros — a página volta para o login sem mensagem de erro nenhuma.
+
+**Solução recomendada (funciona em HTTP puro): token de quiosque.**
+
+O mural é somente leitura, então ele pode ser liberado por um token fixo, sem
+sessão e sem cookie:
+
+```bash
+# na VM: gera o token e grava no .env
+TOKEN=$(openssl rand -hex 24)
+printf 'RMON_TV_TOKEN=%s
+' "$TOKEN" | sudo tee -a /opt/rmon/.env >/dev/null
+sudo systemctl restart rmon
+echo "$TOKEN"
+```
+
+Na central, aponte o iframe para:
+
+```
+http://<host-do-rmon>:8080/tv?token=<TOKEN>
+```
+
+O token vale **apenas** para `/tv` e `/api/tv` (leitura). Todo o resto continua
+exigindo login. Ele também é aceito no cabeçalho `X-RMon-Token`. Sem
+`RMON_TV_TOKEN` no `.env`, o modo quiosque fica desligado.
+
+> Quem tiver o link tem o mural. Trate a URL como segredo e troque o token
+> (novo valor no `.env` + `systemctl restart rmon`) se ela vazar.
+
+**Alternativa (exige HTTPS): cookie cross-site.** Se o RMonitor estiver atrás de
+um reverse-proxy TLS, dá para manter o login normal dentro do iframe:
+
+```
+RMON_COOKIE_SAMESITE=none
+```
+
+`SameSite=None` implica `Secure`, então o RMonitor liga o `Secure` sozinho — e o
+cookie *não* será aceito em HTTP puro. Não adianta usar essa opção sem TLS.

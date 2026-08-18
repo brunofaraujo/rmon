@@ -74,6 +74,9 @@ class Settings:
     db_dsn: str
     host: str
     port: int
+    tv_token: str
+    cookie_samesite: str
+    cookie_secure: bool
 
 
 def load_settings() -> Settings:
@@ -89,6 +92,10 @@ def load_settings() -> Settings:
         db_dsn=os.environ.get("RMON_DB_DSN", ""),
         host=os.environ.get("RMON_HOST", "127.0.0.1"),
         port=int(os.environ.get("RMON_PORT", "8080")),
+        tv_token=os.environ.get("RMON_TV_TOKEN", "").strip(),
+        cookie_samesite=(os.environ.get("RMON_COOKIE_SAMESITE", "lax").strip().lower() or "lax"),
+        cookie_secure=(os.environ.get("RMON_COOKIE_SECURE", "").strip().lower()
+                       in {"1", "true", "yes", "on"}),
     )
 
 

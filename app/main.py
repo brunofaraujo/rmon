@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -129,12 +130,19 @@ app.add_middleware(BaseHTTPMiddleware, dispatch=_kiosk_guard)
 
 # SessionMiddleware precisa da secret key no momento de montar o app.
 _boot_settings = load_settings()
+# Em iframe de outro dominio (central de monitoramento) o cookie "lax" nao viaja:
+# o navegador o descarta e o login volta para a tela de login sem erro nenhum.
+# Nesse cenario use RMON_COOKIE_SAMESITE=none, que so vale sobre HTTPS (o Secure
+# passa a ser obrigatorio). Sem TLS, prefira o token de quiosque do mural (/tv).
+_COOKIE_SAMESITE = (_boot_settings.cookie_samesite
+                    if _boot_settings.cookie_samesite in {"lax", "strict", "none"} else "lax")
+_COOKIE_SECURE = _boot_settings.cookie_secure or _COOKIE_SAMESITE == "none"
 app.add_middleware(
     SessionMiddleware,
     secret_key=_boot_settings.secret_key or "dev-inseguro-troque",
     session_cookie="rmon_session",
-    https_only=False,
-    same_site="lax",
+    https_only=_COOKIE_SECURE,
+    same_site=_COOKIE_SAMESITE,
 )
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
@@ -145,6 +153,20 @@ def _settings():
 
 def _is_authed(request: Request) -> bool:
     return bool(request.session.get("user"))
+
+
+def _tv_token_ok(request: Request) -> bool:
+    """Mural liberado por token, sem sessao (para embutir em iframe de outro dominio).
+
+    Vale so para /tv e /api/tv, que sao somente leitura. Aceita o token na query
+    (?token=) ou no cabecalho X-RMon-Token.
+    """
+    esperado = (_settings().tv_token or "").strip()
+    if not esperado:
+        return False
+    recebido = (request.query_params.get("token")
+                or request.headers.get("x-rmon-token") or "")
+    return bool(recebido) and secrets.compare_digest(recebido, esperado)
 
 
 def _role(request: Request) -> str:
@@ -289,14 +311,17 @@ def _tv_payload() -> dict:
     return data
 
 
-def _tv_response(request: Request) -> HTMLResponse:
+def _tv_response(request: Request, token: str | None = None) -> HTMLResponse:
     return templates.TemplateResponse(
-        "tv.html", {"request": request, "payload": _tv_payload(), "version": __version__})
+        "tv.html", {"request": request, "payload": _tv_payload(),
+                    "version": __version__, "tv_token": token})
 
 
 @app.get("/tv", response_class=HTMLResponse)
 def tv_page(request: Request):
     """Mural em tela cheia: sem rolagem, feito para TV widescreen."""
+    if _tv_token_ok(request):
+        return _tv_response(request, token=request.query_params.get("token"))
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
     return _tv_response(request)
@@ -304,7 +329,7 @@ def tv_page(request: Request):
 
 @app.get("/api/tv")
 def api_tv(request: Request):
-    if not _is_authed(request):
+    if not (_tv_token_ok(request) or _is_authed(request)):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse(_tv_payload(), headers={"Cache-Control": "no-store"})
 
