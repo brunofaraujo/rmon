@@ -74,8 +74,8 @@ app/
   jobstats.py     query()/pool_summary() sobre GJOBXEXECUCAO (pymssql)
   notify.py       send() -> Telegram/Slack (inerte se não configurado)
   security.py     hash_password()/verify_password() (pbkdf2, stdlib)
-  templates/      Jinja2 (base, dashboard, server, jobs, sessions, admin, logs…)
-  static/         style.css
+  templates/      Jinja2 (base, dashboard, tv, server, jobs, sessions, admin, logs…)
+  static/         style.css; tv.css + tv.js (mural de TV, sem dependencias externas)
 ```
 
 ## Convenções

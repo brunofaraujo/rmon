@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pt-br" data-theme="{{ default_theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <meta name="robots" content="noindex">
+  <title>RMonitor &middot; Mural</title>
+  <link rel="stylesheet" href="/static/tv.css?v={{ version }}">
+  {# sem JS o mural ainda gira, so que recarregando a pagina inteira #}
+  <noscript><meta http-equiv="refresh" content="{{ tv_refresh }}"></noscript>
+</head>
+<body class="tv-body">
+  <div class="tv-progress"><i id="tvbar"></i></div>
+  <div class="tv-offline" id="tvoffline" hidden>SEM CONEXAO COM O SERVIDOR</div>
+
+  <div class="tv" id="tv">
+    <header class="tv-head">
+      <div class="tv-brand">
+        <span class="dot">R</span>
+        <span><b>RMonitor</b><small>TOTVS RM</small></span>
+      </div>
+      <div class="tv-status" id="tvstatus"><span class="ring"></span><b>Carregando</b></div>
+      <div class="tv-clock"><time id="tvclock">--:--</time><small id="tvdate">&nbsp;</small></div>
+    </header>
+
+    <section class="tv-kpis" id="tvkpis"></section>
+    <section class="tv-grid" id="tvgrid"></section>
+
+    <footer class="tv-ticker" id="tvticker">
+      <span class="ico"></span><span class="msg">Carregando o estado dos servidores...</span><span class="cnt"></span>
+    </footer>
+  </div>
+
+  <div class="tv-tools">
+    <button type="button" id="tvfull" title="Exibir em tela cheia">Tela cheia</button>
+    <a href="/logout">Sair</a>
+  </div>
+
+  <script id="tvdata" type="application/json">{{ payload | tojson }}</script>
+  <script src="/static/tv.js?v={{ version }}"></script>
+</body>
+</html>

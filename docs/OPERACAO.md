@@ -33,9 +33,38 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |
 | `/admin/usuarios` | Cadastro de usuários: criar, editar, papel, ativar/desativar, senha, excluir | admin |
 | `/profile` | Nome, e-mail e troca da própria senha | login |
+| `/tv` | Mural em tela cheia para TV (sem rolagem, atualiza sozinho) | login |
 
 Ações sensíveis (restart de serviço, logoff de sessão, mudanças de config) exigem
 perfil **admin** e são registradas na auditoria.
+
+## Mural de TV (perfil `viewer`)
+
+Quem entra com papel **`viewer`** cai direto no mural (`/`) e **não** acessa mais
+nenhuma tela: as demais rotas redirecionam de volta para o mural e os POSTs/APIs
+respondem `403`. É o modo quiosque, pensado para uma TV pendurada na sala.
+
+O que o mural faz:
+
+- **Cabe sempre na tela.** A grade escolhe o arranjo de colunas × linhas que rende a
+  **maior letra possível** para a quantidade de servidores, e a densidade do cartão cai
+  sozinha (detalhes → só CPU/memória) quando há muitos servidores. Nunca há rolagem.
+- **Atualiza sem recarregar a página**: busca `/api/tv` no intervalo configurado e só
+  redesenha quando os dados mudam — sem piscar, sem perder posição.
+- Semáforo no topo (**TUDO OPERACIONAL** / servidores em atenção / em falha), cinco KPIs,
+  cartão por servidor (vermelho pulsante quando crítico) e rodapé que **alterna** entre as
+  ocorrências abertas, as mais graves primeiro.
+- Conveniências de TV: relógio, barra do próximo refresh, botão de tela cheia, cursor some
+  sozinho, `wake lock` para a tela não apagar, leve deslocamento periódico contra *burn-in*
+  e aviso visível se o servidor ficar inacessível (com recuo exponencial na retentativa).
+
+Ajustes em **Admin → Interface**: *Mural de TV — atualização (segundos)* (padrão **15 s**,
+faixa 5–600). Não adianta ficar abaixo do `poll_interval_seconds` do inventário — o dado só
+muda a cada coleta. O tema (escuro/claro) do mural segue o tema padrão do painel.
+
+Para pendurar na TV: crie um usuário `viewer` (ex.: `tv`) em **Usuários**, abra o navegador
+da TV em `http://<host>:8080/`, faça o login uma vez (a sessão é um cookie assinado) e
+clique em **Tela cheia**. Um admin vê o mesmo mural em `/tv` sem perder o painel completo.
 
 ## Usuários do painel
 

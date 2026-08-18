@@ -17,10 +17,10 @@ log = logging.getLogger("rmon.scheduler")
 _last: dict[str, dict] = {}
 
 
-_DEF_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3}
+DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3}
 
 
-def _problems(r: dict, th: dict) -> dict[str, str]:
+def problems(r: dict, th: dict) -> dict[str, str]:
     p: dict[str, str] = {}
     if not r.get("reachable"):
         p["DOWN"] = f"sem contato (WinRM): {(r.get('error') or '')[:100]}"
@@ -48,7 +48,7 @@ def _problems(r: dict, th: dict) -> dict[str, str]:
 def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
-    th = {**_DEF_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
+    th = {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
     with ThreadPoolExecutor(max_workers=min(8, len(inv.servers))) as pool:
         futures = {
             pool.submit(collect_server, s, inv.winrm, inv.defaults): s
@@ -66,7 +66,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
             log.info("coleta %s -> %s", server.name, state)
 
-            probs = _problems(result, th)
+            probs = problems(result, th)
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

@@ -10,6 +10,9 @@
     <form method="post" action="/admin/config">
       <label class="muted small">Atualizacao automatica (segundos)</label>
       <input class="input" type="number" name="refresh" min="10" max="3600" value="{{ ui.refresh }}" style="width:100%;margin:.3rem 0 .8rem">
+      <label class="muted small">Mural de TV &mdash; atualizacao (segundos)</label>
+      <input class="input" type="number" name="tv_refresh" min="5" max="600" value="{{ ui.tv_refresh }}" style="width:100%;margin:.3rem 0 .2rem">
+      <div class="faint small" style="margin-bottom:.8rem">painel do perfil <b>viewer</b> e da rota /tv (atualiza sem recarregar a pagina)</div>
       <label class="muted small">Tema padrao (novos visitantes)</label>
       <select class="input" name="theme" style="width:100%;margin:.3rem 0 1rem">
         <option value="dark" {{ 'selected' if ui.theme=='dark' else '' }}>Escuro</option>
