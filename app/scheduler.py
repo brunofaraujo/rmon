@@ -17,13 +17,24 @@ log = logging.getLogger("rmon.scheduler")
 _last: dict[str, dict] = {}
 
 
-DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3}
+DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
+                  "down_after": 3}
 
 
-def problems(r: dict, th: dict) -> dict[str, str]:
+def problems(r: dict, th: dict, fail_streak: int | None = None) -> dict[str, str]:
+    """Problemas ativos de uma coleta. `fail_streak` = coletas consecutivas sem
+    contato (db.fail_streak); enquanto ficar abaixo de `down_after`, a falha e
+    tratada como instabilidade e nao vira DOWN - e o que evita a enxurrada de
+    alertas quando o WinRM do host demora mais que o timeout de vez em quando.
+    Sem esse argumento, mantem o comportamento antigo (alerta na primeira falha).
+    """
     p: dict[str, str] = {}
     if not r.get("reachable"):
-        p["DOWN"] = f"sem contato (WinRM): {(r.get('error') or '')[:100]}"
+        need = max(1, int(th.get("down_after", 3) or 1))
+        streak = need if fail_streak is None else fail_streak
+        if streak < need:
+            return p
+        p["DOWN"] = f"sem contato (WinRM) ha {streak} coletas: {(r.get('error') or '')[:100]}"
         return p
     for s in r.get("services") or []:
         if s.get("status") != "Running":
@@ -67,7 +78,8 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
             log.info("coleta %s -> %s", server.name, state)
 
-            probs = problems(result, th)
+            streak = 0 if result.get("reachable") else db.fail_streak(server.name)
+            probs = problems(result, th, streak)
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

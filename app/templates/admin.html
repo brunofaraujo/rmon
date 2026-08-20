@@ -23,6 +23,7 @@
         <div><label class="muted small">Disco C: %</label><input class="input" type="number" name="disk_pct" min="1" max="100" value="{{ alerts.disk_pct }}" style="width:100%"></div>
         <div><label class="muted small">Memoria %</label><input class="input" type="number" name="mem_pct" min="1" max="100" value="{{ alerts.mem_pct }}" style="width:100%"></div>
         <div><label class="muted small">App lento (ms)</label><input class="input" type="number" name="app_ms" min="100" max="60000" value="{{ alerts.app_ms }}" style="width:100%"></div>
+        <div><label class="muted small" title="Coletas seguidas sem resposta do WinRM antes de alertar DOWN">Falhas ate DOWN</label><input class="input" type="number" name="down_after" min="1" max="10" value="{{ alerts.down_after }}" style="width:100%"></div>
       </div>
       <button type="submit" class="btn primary">Salvar</button>
     </form>

@@ -246,6 +246,7 @@ html[data-theme="light"] .tv-tag.bad  { color: #b42318; }
 .tvc-down { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: .3em;
   min-height: 0; }
 .tvc-down b { font-size: 1.5em; font-weight: 800; color: var(--red); letter-spacing: .02em; }
+.tvc-down.instavel b { color: var(--amber); font-size: 1.2em; }
 .tvc-down span { color: var(--muted); font-size: .86em; display: -webkit-box; -webkit-line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; }
 
