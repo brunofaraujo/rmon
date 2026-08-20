@@ -280,8 +280,7 @@ def _tv_payload() -> dict:
                            "sev": 2 if (key.startswith("svc:") or key in _TV_CRIT_KEYS) else 1})
         if not up and "DOWN" not in probs:
             issues.append({"server": cfg.name, "sev": 1,
-                           "text": ("aguardando a primeira coleta" if d is None else
-                                    f"coleta instavel ({streak}x sem resposta do WinRM)")})
+                           "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
 
         servers.append({
             "name": cfg.name, "host": cfg.host, "up": up, "sev": sev,
