@@ -186,9 +186,14 @@
     }
 
     if (!s.up) {
-      // o bloco vermelho ja anuncia o estado: etiqueta so repetiria
-      return '<article class="tvc sev2">' + head("") +
-        '<div class="tvc-down"><b>SEM CONTATO</b><span>' + esc(s.err || "servidor inacessivel") + "</span></div>" +
+      // enquanto a falha nao se confirma (ver down_after), o cartao fica ambar:
+      // um engasgo isolado do WinRM nao e servidor fora do ar
+      var inst = !!s.unstable;
+      // o bloco ja anuncia o estado: etiqueta so repetiria
+      return '<article class="tvc sev' + (inst ? 1 : 2) + '">' + head("") +
+        '<div class="tvc-down' + (inst ? " instavel" : "") + '"><b>' +
+        (inst ? "COLETA INSTAVEL" : "SEM CONTATO") + "</b><span>" +
+        esc(s.err || "servidor inacessivel") + "</span></div>" +
         '<div class="tvc-ft alerta"><span>ultima coleta ' + (s.ts ? "ha " + fmtAge(s.age) : "-") + "</span></div></article>";
     }
 

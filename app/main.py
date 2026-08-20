@@ -252,11 +252,14 @@ def _tv_payload() -> dict:
 
     for cfg in inv.servers:
         d = latest.get(cfg.name)
-        probs = scheduler.problems(
-            d or {"reachable": False, "error": "aguardando a primeira coleta"}, th)
-        crit = any(k.startswith("svc:") or k in _TV_CRIT_KEYS for k in probs)
-        sev = 2 if crit else (1 if probs else 0)
         up = bool(d and d["reachable"])
+        # Sem contato: so e DOWN depois de `down_after` coletas seguidas falhando.
+        # Antes disso o card fica ambar (instavel), nao vermelho.
+        streak = db.fail_streak(cfg.name) if (d and not up) else None
+        probs = scheduler.problems(
+            d or {"reachable": False, "error": "aguardando a primeira coleta"}, th, streak)
+        crit = any(k.startswith("svc:") or k in _TV_CRIT_KEYS for k in probs)
+        sev = 2 if crit else (1 if (probs or not up) else 0)
         ts = d["ts"] if d else None
         svcs = (d["services"] or []) if d else []
         disks = (d["disks"] or []) if d else []
@@ -275,9 +278,14 @@ def _tv_payload() -> dict:
         for key, text in probs.items():
             issues.append({"server": cfg.name, "text": text,
                            "sev": 2 if (key.startswith("svc:") or key in _TV_CRIT_KEYS) else 1})
+        if not up and "DOWN" not in probs:
+            issues.append({"server": cfg.name, "sev": 1,
+                           "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
 
         servers.append({
             "name": cfg.name, "host": cfg.host, "up": up, "sev": sev,
+            # sem contato ainda nao confirmado: mural mostra ambar, nao vermelho
+            "unstable": (not up and "DOWN" not in probs),
             "cpu": _pct(d["cpu"]) if d else None,
             "mem": _pct(d["mem_pct"]) if d else None,
             "uptime": (d["uptime_sec"] if d else None),
@@ -481,7 +489,9 @@ def admin_page(request: Request):
         {"request": request, "users": db.list_users(), "ok": request.query_params.get("ok"),
          "ui": {"refresh": ui.get("refresh", 60), "theme": ui.get("theme", "dark"),
                 "tv_refresh": ui.get("tv_refresh", 15)},
-         "alerts": {"disk_pct": alerts.get("disk_pct", 90), "mem_pct": alerts.get("mem_pct", 90), "app_ms": alerts.get("app_ms", 3000)},
+         "alerts": {"disk_pct": alerts.get("disk_pct", 90), "mem_pct": alerts.get("mem_pct", 90),
+                    "app_ms": alerts.get("app_ms", 3000),
+                    "down_after": alerts.get("down_after", scheduler.DEFAULT_ALERTS["down_after"])},
          "version": __version__},
     )
 
@@ -501,7 +511,9 @@ async def admin_config(request: Request):
     db.set_config("ui", {"refresh": _int("refresh", 60, 10, 3600),
                          "theme": theme if theme in ("dark", "light") else "dark",
                          "tv_refresh": _int("tv_refresh", 15, 5, 600)})
-    db.set_config("alerts", {"disk_pct": _int("disk_pct", 90, 1, 100), "mem_pct": _int("mem_pct", 90, 1, 100), "app_ms": _int("app_ms", 3000, 100, 60000)})
+    db.set_config("alerts", {"disk_pct": _int("disk_pct", 90, 1, 100), "mem_pct": _int("mem_pct", 90, 1, 100),
+                             "app_ms": _int("app_ms", 3000, 100, 60000),
+                             "down_after": _int("down_after", 3, 1, 10)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)

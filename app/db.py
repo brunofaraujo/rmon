@@ -96,6 +96,26 @@ def latest_per_server() -> list[dict]:
     return _epoch(rows)
 
 
+def fail_streak(server: str, limit: int = 20) -> int:
+    """Quantas coletas consecutivas (a partir da mais recente) falharam.
+
+    Base do antiflapping: uma coleta isolada que estoura o timeout do WinRM nao
+    significa servidor fora do ar. Le do banco em vez de guardar em memoria para
+    que o valor sobreviva a um restart do RMon e seja igual no alerta e no mural.
+    """
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT reachable FROM checks WHERE server=%s ORDER BY ts DESC LIMIT %s",
+            (server, limit),
+        ).fetchall()
+    n = 0
+    for r in rows:
+        if r["reachable"]:
+            break
+        n += 1
+    return n
+
+
 def history(server: str, limit: int = 120) -> list[dict]:
     with _conn() as c:
         rows = c.execute(

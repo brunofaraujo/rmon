@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
+from base64 import b64encode
 from typing import Any
 
 import httpx
+import requests
 import winrm
+from winrm.exceptions import WinRMOperationTimeoutError
 
 from .config import ServerConfig, WinRMConfig, credential_for
+
+log = logging.getLogger("rmon.collector")
 
 # Script PowerShell executado remotamente. Retorna JSON compacto.
 # Placeholders __SERVICES__, __LOGS__, __LEVEL__, __MAXEV__ sao substituidos em Python.
@@ -106,6 +112,98 @@ def _winrm_session(host: str, wc: WinRMConfig, user: str, pw: str) -> winrm.Sess
     )
 
 
+def _deadline(wc: WinRMConfig) -> float:
+    """Prazo maximo de uma execucao remota, para nenhuma chamada ficar presa."""
+    return time.monotonic() + max(30, wc.read_timeout_sec * 2)
+
+
+def _receive(proto, shell_id: str, command_id: str,
+             deadline: float | None) -> tuple[bytes, bytes, int]:
+    """Le a saida do comando respeitando um prazo.
+
+    O get_command_output do pywinrm engole WinRMOperationTimeoutError e repete
+    "silently retry indefinitely": se o host parar de responder no meio da
+    entrega da saida, a coleta fica presa sem limite e segura o ciclo inteiro do
+    scheduler. Aqui o mesmo timeout e tolerado, porem so ate o prazo.
+    """
+    out: list[bytes] = []
+    err: list[bytes] = []
+    while True:
+        try:
+            o, e, status, done = proto.get_command_output_raw(shell_id, command_id)
+            out.append(o)
+            err.append(e)
+            if done:
+                return b"".join(out), b"".join(err), status
+        except WinRMOperationTimeoutError:
+            pass  # normal enquanto o comando ainda roda
+        if deadline is not None and time.monotonic() >= deadline:
+            raise WinRMOperationTimeoutError()
+
+
+def _run_ps(session: winrm.Session, script: str, deadline: float | None = None) -> winrm.Response:
+    """Executa PowerShell remoto SEMPRE fechando o shell no Windows.
+
+    O Session.run_cmd do pywinrm nao tem try/finally: se o operation timeout
+    estourar em run_command, o close_shell nunca e chamado e o shell fica orfao
+    no host ate o IdleTimeout do WinRM (PT7200S = 2h por padrao). Como cada
+    coleta abre um shell novo e os timeouts aqui sao rotineiros (ver
+    _run_ps_resilient), vale garantir a limpeza para nao deixar shells presos
+    justamente nos hosts que ja estao sobrecarregados.
+    """
+    proto = session.protocol
+    encoded = b64encode(script.encode("utf_16_le")).decode("ascii")
+    shell_id = proto.open_shell()
+    command_id = None
+    try:
+        command_id = proto.run_command(shell_id, f"powershell -encodedcommand {encoded}")
+        std_out, std_err, status = _receive(proto, shell_id, command_id, deadline)
+        if std_err:
+            std_err = session._clean_error_msg(std_err)
+        return winrm.Response((std_out, std_err, status))
+    finally:
+        if command_id is not None:
+            try:
+                proto.cleanup_command(shell_id, command_id)
+            except Exception as exc:  # noqa: BLE001 - limpeza e best-effort
+                log.debug("cleanup_command falhou: %s", exc)
+        try:
+            proto.close_shell(shell_id)
+        except Exception as exc:  # noqa: BLE001 - limpeza e best-effort
+            log.debug("close_shell falhou: %s", exc)
+
+
+# Falhas transitorias que valem uma segunda tentativa: sao timeout, nao "host fora".
+_TRANSIENT = (WinRMOperationTimeoutError, requests.exceptions.Timeout,
+              requests.exceptions.ConnectionError)
+
+
+def _run_ps_resilient(host: str, wc: WinRMConfig, user: str, pw: str, script: str,
+                      attempts: int = 2, budget_sec: float | None = None) -> winrm.Response:
+    """Roda o script tentando de novo quando a falha foi timeout.
+
+    Servidores de aplicacao com muitas sessoes travam esporadicamente por
+    dezenas de segundos em qualquer fase do WinRM (medido: 12-115s), enquanto a
+    tentativa seguinte costuma responder em menos de 1s. Sem essa repeticao, um
+    engasgo isolado do host virava alerta de "servidor fora do ar".
+
+    `budget_sec` limita o tempo TOTAL gasto com o host (todas as tentativas),
+    para que um servidor travado nao atrase a coleta dos demais.
+    """
+    deadline = (time.monotonic() + budget_sec) if budget_sec is not None else _deadline(wc)
+    last: Exception | None = None
+    for i in range(max(1, attempts)):
+        session = _winrm_session(host, wc, user, pw)
+        try:
+            return _run_ps(session, script, deadline)
+        except _TRANSIENT as exc:
+            last = exc
+            log.info("WinRM %s: %s na tentativa %d/%d", host, type(exc).__name__, i + 1, attempts)
+            if time.monotonic() >= deadline:
+                break
+    raise last  # type: ignore[misc]
+
+
 def _check_app_health(app_health: dict[str, Any] | None) -> tuple[bool | None, int | None]:
     if not app_health or not app_health.get("url"):
         return None, None
@@ -153,7 +251,7 @@ def list_sessions(server: ServerConfig, wc: WinRMConfig) -> dict[str, Any]:
         return {"error": f"sem credencial (perfil '{server.cred}')", "sessions": []}
     try:
         session = _winrm_session(server.host, wc, user, pw)
-        r = session.run_ps(_PS_SESSIONS)
+        r = _run_ps(session, _PS_SESSIONS, _deadline(wc))
         if r.status_code != 0:
             return {"error": (r.std_err or b"").decode("utf-8", "replace")[:300] or "erro WinRM", "sessions": []}
         out = (r.std_out or b"").decode("utf-8", "replace").strip()
@@ -174,7 +272,7 @@ def logoff_session(server: ServerConfig, wc: WinRMConfig, session_id: int) -> tu
         return False, "id de sessao invalido"
     try:
         session = _winrm_session(server.host, wc, user, pw)
-        r = session.run_ps(f"logoff {sid}")
+        r = _run_ps(session, f"logoff {sid}", _deadline(wc))
         if r.status_code == 0:
             return True, "ok"
         return False, (r.std_err or b"").decode("utf-8", "replace")[:200] or "logoff falhou"
@@ -203,7 +301,7 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
         return False, f"sem credencial (perfil '{server.cred}')"
     try:
         session = _winrm_session(server.host, wc, user, pw)
-        r = session.run_ps(cmds[action])
+        r = _run_ps(session, cmds[action], _deadline(wc))
         if r.status_code == 0:
             return True, action
         return False, (r.std_err or b"").decode("utf-8", "replace")[:200] or f"{action} falhou"
@@ -230,9 +328,8 @@ def collect_server(
         return result
 
     try:
-        session = _winrm_session(server.host, wc, user, pw)
         script = _build_script(server, defaults)
-        r = session.run_ps(script)
+        r = _run_ps_resilient(server.host, wc, user, pw, script)
         if r.status_code != 0:
             result["error"] = (r.std_err or b"").decode("utf-8", "replace")[:500] or "WinRM status != 0"
             return result

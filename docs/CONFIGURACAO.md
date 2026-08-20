@@ -28,6 +28,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     mem_pct: 90                    # alerta se memória >= 90%
     app_ms: 3000                   # app_health respondendo, porém > 3000ms = "lento"
     jobs_failed: 3                 # alerta se >= N jobs falharam na janela
+    down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
   services: []                     # lista padrão de serviços (se um servidor não definir a sua)
   eventlog:
     logs: [System, Application]
@@ -172,6 +173,20 @@ serviço fora de `Running`, `app_health` falhando ou lento, disco/memória acima
 limiar e jobs com falha. Configure os limiares em `defaults.alerts` (inventário) ou na
 tela **Admin**; os canais (Telegram/Slack) via helpers. Se nenhum canal estiver
 configurado, o envio é inerte (sem erro).
+
+### Antiflapping do alerta DOWN
+
+Uma coleta isolada que estoura o timeout do WinRM **não** é servidor fora do ar:
+servidores de aplicação com muitas sessões travam esporadicamente por dezenas de
+segundos, e a tentativa seguinte responde em menos de um segundo. Por isso:
+
+- o coletor **repete a coleta uma vez** quando a falha é de timeout;
+- o alerta `DOWN` só sai depois de `down_after` coletas seguidas sem contato
+  (padrão 3, ajustável em `defaults.alerts` ou na tela **Admin**);
+- enquanto não confirma, o mural mostra o card em **âmbar** ("coleta instável"),
+  não em vermelho.
+
+Para voltar ao comportamento antigo (alertar na primeira falha), use `down_after: 1`.
 
 ---
 

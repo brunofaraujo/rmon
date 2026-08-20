@@ -145,6 +145,7 @@ gunzip -c rmon-AAAA-MM-DD.sql.gz | sudo runuser -u postgres -- psql rmon
 |---|---|
 | Painel não abre | `systemctl status rmon`, `journalctl -u rmon -n 50` |
 | Servidor "sem contato" | credencial do perfil (`definir-winrm.sh`), rede/porta WinRM, `descobrir.py` |
+| "Sem contato" intermitente (alterna com "resolvido") | host engasgando no WinRM, não queda: ver *Coleta instável* abaixo |
 | Jobs vazios | `RMON_SQL_*` configurado? bloco `jobs:` no servidor? login com acesso à base RM? |
 | Alerta não chega | canal configurado? `journalctl` mostra "falha Telegram/Slack"? |
 | Serviço não sobe | `RMON_DB_DSN` válido? PostgreSQL ativo (`systemctl status postgresql`)? |
@@ -154,3 +155,31 @@ Descoberta de serviços nos alvos (útil ao ajustar o inventário):
 ```bash
 sudo /opt/rmon/.venv/bin/python /opt/rmon/deploy/descobrir.py
 ```
+
+---
+
+## Coleta instável (alertas DOWN intermitentes)
+
+Sintoma: um servidor alterna "sem contato" e "resolvido" várias vezes por hora,
+sempre com `WinRMOperationTimeoutError`, enquanto o serviço segue atendendo os
+usuários normalmente.
+
+Não é queda do host. Medindo as fases da chamada WinRM, um servidor saudável
+abre shell e devolve a saída em ~0,2s de forma constante; um servidor sobrecarregado
+trava esporadicamente de 12s a 115s em qualquer fase (abrir shell, iniciar o comando
+ou receber a saída) — e a tentativa imediatamente seguinte responde em menos de 1s.
+Estourado o `operation_timeout_sec`, a coleta era marcada como falha e virava alerta.
+
+O RMonitor já absorve isso (repetição da coleta + `down_after`, ver
+`docs/CONFIGURACAO.md`). Se ainda assim houver alertas, a causa é do lado do Windows.
+Para confirmar e agir:
+
+```bash
+# taxa de falha de coleta por servidor nas ultimas 24h
+sudo -u postgres psql rmon -c "SELECT server, count(*) total,   count(*) FILTER (WHERE NOT reachable) falhas FROM checks   WHERE ts > now() - interval '24 hours' GROUP BY 1 ORDER BY 2 DESC;"
+```
+
+Nos hosts afetados, verificar na aba **Ocorrências** se há `Application Error`/
+`Application Hang` do `RM.exe` e quantas sessões RDP estão abertas: travamentos de
+WinRM costumam acompanhar sobrecarga do servidor de aplicação. Encerrar sessões
+presas (tela **Sessões**) ou reiniciar o host resolve o sintoma.
