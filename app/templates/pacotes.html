@@ -10,6 +10,7 @@
   </div>
   <div class="pills">
     <a class="pill" href="/pacotes/mudancas">&#128337; Mudancas</a>
+    {% if request.session.get('role') == 'admin' %}<a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>{% endif %}
     <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
     {% if request.session.get('role') == 'admin' %}
     <form method="post" action="/pacotes/coletar" style="display:inline">
@@ -40,6 +41,10 @@
     <div class="lbl">Versoes divergentes</div>
   </div>
   <div class="kpi"><div class="val">{{ resumo.parcial }}</div><div class="lbl">Ausentes em algum host</div></div>
+  <div class="kpi {{ 'warn' if resumo.atualizavel else '' }}">
+    <div class="val {{ 'txt-amber' if resumo.atualizavel else '' }}">{{ resumo.atualizavel }}</div>
+    <div class="lbl">Com pacote mais novo baixado</div>
+  </div>
   <div class="kpi"><div class="val">{{ servidores|length - resumo.sem_coleta|length }}/{{ servidores|length }}</div><div class="lbl">Hosts inventariados</div></div>
 </div>
 
@@ -57,6 +62,7 @@
   </select>
   <select name="filtro" class="input">
     <option value="todos"     {{ 'selected' if filtro=='todos' else '' }}>Todos</option>
+    <option value="atualizavel" {{ 'selected' if filtro=='atualizavel' else '' }}>So com atualizacao baixada</option>
     <option value="problemas" {{ 'selected' if filtro=='problemas' else '' }}>So divergentes ou ausentes</option>
     <option value="drift"     {{ 'selected' if filtro=='drift' else '' }}>So versoes divergentes</option>
     <option value="ausentes"  {{ 'selected' if filtro=='ausentes' else '' }}>So ausentes em algum host</option>
@@ -75,11 +81,17 @@
   <table class="tbl matrix">
     <thead>
       <tr>
-        <th class="sticky-col">Pacote</th>
+        <th class="sticky-col">Item</th>
+        <th class="avail">Disponivel</th>
         {% for s in servidores %}
         <th class="host-col">
           {{ s }}
           {% if runs.get(s) %}<div class="muted small">{{ runs[s].ts | dt }}</div>{% endif %}
+          {% if runs.get(s) and runs[s].last_upgrade %}
+          <div class="muted small" title="ultima atualizacao aplicada pelo RM.Atualizador">
+            &#8635; {{ runs[s].last_upgrade.strftime('%d/%m/%Y') }}
+          </div>
+          {% endif %}
         </th>
         {% endfor %}
       </tr>
@@ -93,6 +105,13 @@
           {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
           {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
           <div class="muted small">{{ l.publisher or '' }}</div>
+        </td>
+        <td class="avail {{ 'novo' if l.atualizavel else '' }}"
+            title="{{ l.disp.arquivo or l.disp.nota or '' if l.disp else '' }}">
+          {% if l.disp %}
+            <span class="mono">{{ l.disp.version }}</span>
+            {% if l.atualizavel %}<div class="small">baixado, nao aplicado</div>{% endif %}
+          {% else %}<span class="muted">&mdash;</span>{% endif %}
         </td>
         {% for s in servidores %}
           {% set c = l.cells.get(s) %}
@@ -116,7 +135,11 @@
 <div class="muted small" style="margin-top:.7rem">
   Celula em ambar = versao abaixo da maior encontrada no parque &middot;
   &mdash; = pacote nao instalado naquele host &middot;
-  <b>*</b> = data estimada pela primeira coleta do RMon (o registro do Windows nao informa a data).
+  <b>*</b> = data estimada pela primeira coleta do RMon (o registro do Windows nao informa a data) &middot;
+  <b>Disponivel</b> = maior versao ja baixada do TDN para aquele item
+  ({{ resumo.catalogo }} pacote(s) no repositorio{% if resumo.sem_vinculo %},
+  {{ resumo.sem_vinculo }} sem item vinculado{% endif %}) &middot;
+  &#8635; no cabecalho = ultima atualizacao aplicada pelo RM.Atualizador naquele host.
 </div>
 {% endif %}
 {% endblock %}

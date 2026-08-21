@@ -39,6 +39,7 @@ servidores monitorados.
 
 - 🔔 **Alertas** por Telegram e/ou Slack — disparados só nas **transições** (levantou/resolveu), sem spam.
 - 📦 **Inventário e versionamento TOTVS**: matriz item × host em `/pacotes` — versão do RM, customizações e bibliotecas de cada servidor, quem está atrás da maior versão do parque, e a linha do tempo de tudo que foi instalado, atualizado, **regrediu** ou removido. Software de terceiros fica fora. Exporta CSV.
+- ⬇️ **Versões disponíveis**: os pacotes baixados do TDN ficam numa pasta que o RMon **só lê**; o nome do arquivo vira "disponível" na matriz, ao lado do que está instalado em cada host. O painel não acessa o portal da TOTVS nem guarda credencial de ninguém.
 - 🛠️ **Ações remotas** (perfil admin): `start`/`stop`/`restart` de serviços monitorados e logoff de sessões RDP.
 - 👥 **Multiusuário** com papéis `admin` / `viewer`, auditoria de ações e login por sessão assinada.
 - 📺 **Mural de TV** (`/tv`): painel em tela cheia, sem rolagem, que se ajusta sozinho ao número de servidores e à resolução da tela. É a **única** tela do perfil `viewer` — ideal para deixar numa TV do NOC.
