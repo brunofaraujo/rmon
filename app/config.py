@@ -37,6 +37,10 @@ class WinRMConfig:
     operation_timeout_sec: int = 25
 
 
+# Id do balde dos hosts sem `env` declarado, quando o YAML ja usa ambientes.
+# Nao pode ser "" - string vazia significa "todos os servidores" em servers_of().
+SEM_AMBIENTE = "-"
+
 # Papeis conhecidos, na ordem em que fazem sentido numa lista. O rotulo aparece
 # no cabecalho da coluna de cada host.
 PAPEIS = {
@@ -133,14 +137,27 @@ class Inventory:
     environments: dict[str, str] = field(default_factory=dict)
 
     def envs(self) -> list[tuple[str, str]]:
-        """Ambientes existentes, na ordem em que aparecem no inventario."""
+        """Ambientes existentes, na ordem em que aparecem no inventario.
+
+        Quando ha ambiente declarado, os hosts que ficaram **sem** `env` ganham
+        um balde proprio no fim da lista: sem ele, um servidor esquecido no YAML
+        nao apareceria em ambiente nenhum e sumiria da tela de inventario.
+        """
         vistos: list[str] = []
+        orfaos = False
         for s in self.servers:
-            if s.env and s.env not in vistos:
+            if not s.env:
+                orfaos = True
+            elif s.env not in vistos:
                 vistos.append(s.env)
-        return [(e, self.environments.get(e, e)) for e in vistos]
+        saida = [(e, self.environments.get(e, e)) for e in vistos]
+        if vistos and orfaos:
+            saida.append((SEM_AMBIENTE, "Sem ambiente"))
+        return saida
 
     def servers_of(self, env: str) -> list[ServerConfig]:
+        if env == SEM_AMBIENTE:
+            return [s for s in self.servers if not s.env]
         return [s for s in self.servers if not env or s.env == env]
 
 

@@ -161,6 +161,15 @@ input, select, textarea { font: inherit; }
 .alert.info { background: rgba(110,168,254,.10); border-color: rgba(110,168,254,.4); color: #dbe8ff; }
 .alert.ok { background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.4); color: #c9f7e5; }
 
+/* No tema claro os tons pastel do tema escuro somem no fundo branco: aqui as
+   mesmas faixas de cor voltam com contraste. */
+html[data-theme="light"] .alert { color: #8a1c1c; }
+html[data-theme="light"] .alert.info { color: #1b4ea8; }
+html[data-theme="light"] .alert.ok { color: #0b6b36; }
+html[data-theme="light"] .pill.green { color: #0b6b36; }
+html[data-theme="light"] .pill.red { color: #8a1c1c; }
+html[data-theme="light"] .pill.amber { color: #8a5200; }
+
 /* ---------- KPI tiles ---------- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.4rem; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.1rem;
@@ -303,6 +312,62 @@ th.sortable .arrow { color: var(--accent); }
   .metrics-2 { grid-template-columns: 1fr 1fr; }
 }
 
+/* ---------- Inventario de software (/pacotes) ---------- */
+/* Seletor de ambiente: instalacoes separadas do RM, uma de cada vez na tela. */
+.envbar { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.2rem;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: .35rem; }
+.envtab { display: inline-flex; align-items: baseline; gap: .5rem; padding: .5rem 1rem;
+  border-radius: 999px; color: var(--muted); font-weight: 600; font-size: .92rem; transition: .15s; }
+.envtab:hover { color: var(--text); background: var(--surface-2); }
+.envtab.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+.envtab .n { color: var(--faint); font-weight: 500; font-size: .78rem; }
+
+/* KPI que tambem e filtro */
+a.kpi { display: block; transition: .15s; }
+a.kpi:hover { border-color: var(--line-2); background: var(--surface-2); }
+a.kpi.sel { box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* Cartoes dos hosts do ambiente: papel, ultima coleta, ultima atualizacao */
+.hostbar { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: .6rem; margin-bottom: .4rem; }
+.hostchip { display: flex; flex-direction: column; gap: .1rem; padding: .55rem .75rem;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  border-left: 3px solid var(--green); }
+.hostchip.idle { border-left-color: var(--faint); }
+.hostchip.bad { border-left-color: var(--red); }
+
+/* Alternador Resumo / Matriz */
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); padding: .2rem; }
+.segmented a { padding: .35rem .9rem; border-radius: 999px; color: var(--muted); font-size: .85rem; font-weight: 600; }
+.segmented a.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* Secoes por fonte: produto, customizacoes, bibliotecas, instaladores */
+details.grupo { margin-bottom: .9rem; }
+details.grupo > summary { display: flex; align-items: center; gap: .6rem; cursor: pointer;
+  padding: .6rem .8rem; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); list-style: none; }
+details.grupo > summary::-webkit-details-marker { display: none; }
+details.grupo > summary::before { content: "\25B8"; color: var(--faint); }
+details.grupo[open] > summary::before { content: "\25BE"; }
+details.grupo > summary:hover { border-color: var(--line-2); }
+details.grupo .table-wrap { border-top: none; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+
+.tbl.inv td { vertical-align: top; }
+.tbl.inv .item { white-space: normal; min-width: 240px; max-width: 460px; }
+.tbl.inv .item .pill { margin-left: .35rem; }
+details.hosts > summary { color: var(--accent); font-variant-numeric: tabular-nums; }
+.hostlist { list-style: none; margin: .45rem 0 0; padding: 0; font-size: .8rem; }
+.hostlist li { display: flex; gap: .5rem; align-items: baseline; padding: .1rem 0; }
+.hostlist li .h { min-width: 130px; color: var(--muted); }
+.hostlist li.behind { color: var(--amber); }
+.hostlist li.absent { color: var(--faint); }
+.txt-accent { color: var(--accent); }
+.pill.blue { background: rgba(110,168,254,.12); border-color: rgba(110,168,254,.4); color: var(--accent); }
+details.legenda { margin-top: 1rem; }
+details.legenda > summary { cursor: pointer; }
+details.legenda > div { margin-top: .5rem; }
+
 /* ---------- Matriz de pacotes (inventario x host) ---------- */
 .tbl.matrix td, .tbl.matrix th { vertical-align: top; }
 .tbl.matrix .sticky-col {
@@ -315,6 +380,8 @@ th.sortable .arrow { color: var(--accent); }
 .tbl.matrix .cell.behind { background: rgba(251,191,36,.10); color: var(--amber); }
 .tbl.matrix .cell.absent { color: var(--faint); }
 .tbl.matrix .sticky-col .pill { margin-left: .35rem; }
+.tbl.matrix tr.grp td { background: var(--surface-2); color: var(--muted);
+  font-weight: 700; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
 
 /* ---------- Catalogo de versoes disponiveis ---------- */
 .inline-form { display: flex; gap: .4rem; align-items: center; }

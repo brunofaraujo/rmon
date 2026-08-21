@@ -120,6 +120,17 @@ coisas que não têm relação:
   que tenham o mesmo item.
 
 Sem `env` e `role` declarados, tudo cai num grupo só — o comportamento anterior.
+Se **parte** dos servidores tem `env` e parte não, os que ficaram sem aparecem num
+ambiente próprio chamado **Sem ambiente**: host esquecido no YAML fica visível na
+tela em vez de sumir do inventário.
+
+A tela abre em **Resumo** — uma linha por item, com a versão instalada (e o
+intervalo `menor → maior` quando os hosts divergem), quantos hosts têm o item e o
+detalhe host a host só quando você expande. Os itens vêm separados em seções por
+fonte (produto, customizações, bibliotecas, instaladores), que é o que impede
+`RM.Cst.X.dll` da pasta `Custom` de parecer duplicata do arquivo de mesmo nome na
+raiz da instalação — são dois itens de verdade. A visão **Matriz** (item × host,
+uma coluna por servidor) continua a um clique, para comparar coluna a coluna.
 
 ## Inventário do software TOTVS (`defaults.inventory`)
 
