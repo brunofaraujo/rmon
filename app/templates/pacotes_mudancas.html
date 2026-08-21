@@ -45,7 +45,7 @@
           {% elif e.kind == 'installed' %}<span class="pill green">{{ labels.get(e.kind, e.kind) }}</span>
           {% else %}<span class="pill">{{ labels.get(e.kind, e.kind) }}</span>{% endif %}
         </td>
-        <td><b>{{ e.name }}</b>{% if e.source == 'binary' %} <span class="pill">binario</span>{% endif %}</td>
+        <td><b>{{ e.name }}</b>{% if e.source and e.source != 'registry' %} <span class="pill">{{ fonte_label.get(e.source, e.source) }}</span>{% endif %}</td>
         <td class="mono small">
           {% if e.old_version and e.new_version %}{{ e.old_version }} &rarr; {{ e.new_version }}
           {% elif e.new_version %}{{ e.new_version }}

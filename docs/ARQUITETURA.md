@@ -78,7 +78,7 @@ idempotente (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EX
 | `audit_log` | Auditoria de ações (login, restart, logoff, config…) |
 | `alerts_log` | Histórico de problemas levantados/resolvidos |
 | `app_config` | Configuração runtime (tema/refresh da UI, limiares de alerta) em `jsonb` |
-| `host_packages` | Inventário atual de software por `(servidor, pacote)`: versão, fabricante, data, fonte, `first_seen`/`last_seen` |
+| `host_packages` | Inventário TOTVS atual por `(servidor, item)`: versão, fabricante, data, fonte (`rm`/`assembly`/`custom`/`registry`), `first_seen`/`last_seen` |
 | `package_events` | Mudanças de software (instalado/atualizado/regrediu/removido), guardadas por 1 ano |
 | `inventory_runs` | Última coleta de inventário por servidor (ok, nº de pacotes, erro, duração) |
 
