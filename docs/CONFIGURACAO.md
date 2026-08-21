@@ -118,10 +118,17 @@ instalação sem serviço associado.
 > ~1 s.
 
 **Versão base e resíduo.** Numa instalação do RM a maioria dos assemblies fica
-na versão do produto e um punhado sobe de patch — isso é normal e esperado. O
-que chama atenção é o contrário: arquivo que ficou **para trás** da versão base,
-resto de uma atualização que não trocou tudo. Esse caso vira uma linha própria
-(`RM - assemblies abaixo da versao base`), comparável entre hosts.
+na versão do produto e um punhado sobe de patch pelo RM.Atualizador — isso é
+normal e esperado. O que chama atenção é o contrário: arquivo **da mesma linha
+de release** que ficou para trás da base, resto de uma atualização que não
+trocou tudo. Esse caso vira uma linha própria (`RM - assemblies abaixo da versao
+base`), comparável entre hosts.
+
+A ressalva da "mesma linha" importa: a pasta do RM mistura assemblies que seguem
+a versão do produto (`12.1.xxxx`) com bibliotecas que a TOTVS assina mas
+versiona por conta própria (`1.0.0.0`, `6.0.290.0`). Sem separar as duas coisas,
+o resíduo apontaria sempre para um `1.0.0.0` que nunca fez parte da linha do
+produto.
 
 **Referência de comparação:** a maior versão encontrada no parque. Não existe
 catálogo público consultável do TOTVS RM, então "estar atualizado" só pode
