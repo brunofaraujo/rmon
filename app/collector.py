@@ -164,8 +164,12 @@ def _winrm_session(host: str, wc: WinRMConfig, user: str, pw: str) -> winrm.Sess
 # script direto em "powershell -Command -", porque nesse modo o PowerShell le
 # linha a linha como se fosse digitado e o primeiro bloco multilinha (foreach,
 # ForEach-Object...) engole silenciosamente todo o resto - saida vazia, rc 0.
+# ProgressPreference desligado: os registros de progresso saem como CLIXML no
+# stderr, fazem o pywinrm reclamar de XML mal formado e, quando ha erro de
+# verdade, ocupam o comeco da mensagem que aparece no painel.
 _BOOTSTRAP = b64encode(
-    "$s = [Console]::In.ReadToEnd(); Invoke-Expression $s".encode("utf_16_le")
+    ("$ProgressPreference = 'SilentlyContinue'; "
+     "$s = [Console]::In.ReadToEnd(); Invoke-Expression $s").encode("utf_16_le")
 ).decode("ascii")
 
 
