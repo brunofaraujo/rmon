@@ -21,6 +21,37 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   "down_after": 3}
 
 
+def service_down(s: dict) -> bool:
+    """O servico conta como falha?
+
+    Fixo (nomeado no inventario): qualquer estado != Running, inclusive
+    NOT_FOUND - se foi declarado, e para estar la.
+    Descoberto por padrao (service_patterns): so falha se estiver instalado com
+    inicio automatico. Um RM.Host desinstalado nem aparece na coleta, e um
+    deixado em Manual/Disabled foi parado de proposito - nenhum dos dois e
+    motivo de alerta vermelho.
+    """
+    if (s.get("status") or "") == "Running":
+        return False
+    if s.get("src") == "auto":
+        return str(s.get("start") or "").strip().lower().startswith("auto")
+    return True
+
+
+def service_groups(services: list[dict] | None) -> list[dict]:
+    """Resumo dos servicos descobertos por padrao: quantos instalados x rodando."""
+    grupos: dict[str, dict] = {}
+    for s in services or []:
+        if s.get("src") != "auto":
+            continue
+        g = grupos.setdefault(s.get("pattern") or "*", {"pattern": s.get("pattern") or "*",
+                                                        "installed": 0, "running": 0})
+        g["installed"] += 1
+        if (s.get("status") or "") == "Running":
+            g["running"] += 1
+    return list(grupos.values())
+
+
 def problems(r: dict, th: dict, fail_streak: int | None = None) -> dict[str, str]:
     """Problemas ativos de uma coleta. `fail_streak` = coletas consecutivas sem
     contato (db.fail_streak); enquanto ficar abaixo de `down_after`, a falha e
@@ -37,7 +68,7 @@ def problems(r: dict, th: dict, fail_streak: int | None = None) -> dict[str, str
         p["DOWN"] = f"sem contato (WinRM) ha {streak} coletas: {(r.get('error') or '')[:100]}"
         return p
     for s in r.get("services") or []:
-        if s.get("status") != "Running":
+        if service_down(s):
             p[f"svc:{s['name']}"] = f"servico {s['name']} = {s.get('status')}"
     if r.get("app_ok") is False:
         p["APP"] = "app_health (HTTP) falhou"

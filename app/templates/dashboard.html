@@ -52,8 +52,9 @@
       <div class="pills">
         {% for s in d.services %}
           {% set running = s.status == 'Running' %}
+          {% set down = svc_down(s) %}
           <span class="svc">
-            <span class="pill {{ 'green' if running else 'red' }}" title="{{ s.status }}"><span class="d"></span>{{ s.name }}</span>
+            <span class="pill {{ 'green' if running else ('red' if down else 'amber') }}" title="{{ s.status }}{% if s.start %} &middot; inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}</span>
             {% if running %}
               <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button>
               <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>
@@ -62,6 +63,13 @@
             {% endif %}
           </span>
         {% endfor %}
+      </div>
+      {% endif %}
+
+      {% set grupos = svc_groups(d.services) %}
+      {% if grupos %}
+      <div class="pills">
+        {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}" title="Servicos descobertos automaticamente pelo padrao {{ g.pattern }}">{{ g.pattern }} &middot; {{ g.running }}/{{ g.installed }} em execucao</span>{% endfor %}
       </div>
       {% endif %}
 

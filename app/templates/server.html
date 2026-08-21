@@ -54,12 +54,18 @@
   <div class="panel">
     <h2>Servicos monitorados</h2>
     <div class="pills">
-      {% for s in d.services %}{% set running = s.status == 'Running' %}<span class="svc">
-        <span class="pill {{ 'green' if running else 'red' }}"><span class="d"></span>{{ s.name }}: {{ s.status }}</span>
+      {% for s in d.services %}{% set running = s.status == 'Running' %}{% set down = svc_down(s) %}<span class="svc">
+        <span class="pill {{ 'green' if running else ('red' if down else 'amber') }}" title="{% if s.start %}inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}: {{ s.status }}</span>
         {% if running %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button><button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>{% else %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>{% endif %}
       </span>{% endfor %}
       {% if not d.services %}<span class="muted small">Nenhum servico configurado.</span>{% endif %}
     </div>
+    {% set grupos = svc_groups(d.services) %}
+    {% if grupos %}
+    <div class="pills">
+      {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}">Descobertos por {{ g.pattern }}: {{ g.installed }} instalado(s) &middot; {{ g.running }} em execucao</span>{% endfor %}
+    </div>
+    {% endif %}
   </div>
 
   <div class="panel">

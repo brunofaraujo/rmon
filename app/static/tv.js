@@ -106,10 +106,12 @@
     var i;
     for (i = 0; i < s.svcs.length; i++) {
       var sv = s.svcs[i];
-      if (!sv.ok) {
-        t.push('<span class="tv-tag bad"><span class="d"></span>' + esc(sv.n) + " " +
-          esc((sv.st || "").toLowerCase() === "not_found" ? "ausente" : "parado") + "</span>");
-      }
+      if (sv.ok) { continue; }
+      /* parado sem ser falha (descoberto e em Manual/Disabled: pararam de
+         proposito) fica ambar, nao vermelho */
+      var grave = sv.bad === undefined ? true : sv.bad;
+      t.push('<span class="tv-tag ' + (grave ? "bad" : "warn") + '"><span class="d"></span>' + esc(sv.n) + " " +
+        esc((sv.st || "").toLowerCase() === "not_found" ? "ausente" : "parado") + "</span>");
     }
     if (s.app === false) { t.push('<span class="tv-tag bad">App fora do ar</span>'); }
     for (i = 0; i < s.disks.length; i++) {

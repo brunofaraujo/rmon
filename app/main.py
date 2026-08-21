@@ -53,6 +53,10 @@ templates.env.filters["dur"] = _fmt_dur
 templates.env.globals["ui_refresh"] = 60
 templates.env.globals["default_theme"] = "dark"
 templates.env.globals["tv_refresh"] = 15
+# Regra unica de "servico parado" (ver scheduler.service_down): o HTML nao
+# pode pintar de vermelho um RM.Host que a coleta nem considera falha.
+templates.env.globals["svc_down"] = scheduler.service_down
+templates.env.globals["svc_groups"] = scheduler.service_groups
 
 
 def _assets_tag() -> str:
@@ -268,7 +272,7 @@ def _tv_payload() -> dict:
 
         summary["total"] += 1
         summary["online" if up else "offline"] += 1
-        summary["services_down"] += sum(1 for x in svcs if x.get("status") != "Running")
+        summary["services_down"] += sum(1 for x in svcs if scheduler.service_down(x))
         summary["events"] += sum(int(e.get("count", 1)) for e in events)
         if sev == 2:
             summary["crit"] += 1
@@ -295,7 +299,8 @@ def _tv_payload() -> dict:
             "disks": [{"d": x.get("drive"), "p": _pct(x.get("used_pct")) or 0,
                        "free": x.get("free_gb")} for x in disks],
             "svcs": [{"n": x.get("name"), "ok": x.get("status") == "Running",
-                      "st": x.get("status")} for x in svcs],
+                      "bad": scheduler.service_down(x), "st": x.get("status")} for x in svcs],
+            "sgroups": scheduler.service_groups(svcs),
             "users": (d.get("users_count") if d else None),
             "app": (d.get("app_ok") if d else None),
             "app_ms": (d.get("app_ms") if d else None),
@@ -357,7 +362,7 @@ def dashboard(request: Request):
         d = r["data"]
         if d and d["reachable"]:
             summary["online"] += 1
-            summary["services_down"] += sum(1 for s in (d["services"] or []) if s.get("status") != "Running")
+            summary["services_down"] += sum(1 for s in (d["services"] or []) if scheduler.service_down(s))
             summary["alerts"] += sum(int(e.get("count", 1)) for e in (d["events"] or []))
         else:
             summary["offline"] += 1
@@ -411,7 +416,11 @@ async def service_act(request: Request):
     srv = {s.name: s for s in inv.servers}.get(server_name)
     if not srv:
         return JSONResponse({"ok": False, "msg": "servidor desconhecido"}, status_code=404)
-    ok, msg = service_action(srv, inv.winrm, svc, action)
+    # servicos descobertos por padrao nao estao no inventario: a ultima coleta
+    # daquele servidor e quem diz o que existe hoje no host.
+    ultimo = {r["server"]: r for r in db.latest_per_server()}.get(server_name) or {}
+    vistos = [x.get("name") for x in (ultimo.get("services") or []) if x.get("name")]
+    ok, msg = service_action(srv, inv.winrm, svc, action, allowed=vistos)
     db.audit(request.session.get("user"), f"service_{action}", f"{server_name}/{svc} -> {ok}: {msg}", _ip(request))
     log.info("%s %s/%s por %s -> %s (%s)", action, server_name, svc, request.session.get("user"), ok, msg)
     return JSONResponse({"ok": ok, "msg": msg})
