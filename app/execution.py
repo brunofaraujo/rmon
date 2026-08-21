@@ -14,6 +14,12 @@ isso como premissa, nao como ressalva:
 * **Pre-voo obrigatorio.** Toda tarefa - inclusive a real - roda antes as
   checagens somente-leitura. Uma checagem dura reprovada bloqueia a tarefa; ela
   nao "tenta assim mesmo".
+* **So instalador, e so o que se desinstala.** O RMon nao copia arquivo solto
+  para dentro da instalacao do RM: o que ele roda e um `.exe`/`.msi` que se
+  registra no Windows. Depois de executar, ele confere nas chaves de
+  desinstalacao que o pacote apareceu la e guarda o `UninstallString`. Instalou
+  e nao se registrou? A tarefa e dada como **falha**, porque o resultado nao
+  seria reversivel pelo Painel de Controle.
 * **Uma tarefa por host de cada vez**, e o resultado inteiro (comando, codigo de
   saida, saida) fica gravado e auditado.
 """
@@ -27,7 +33,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .collector import _decode, _ps_str, _run_ps_resilient
+from .collector import _as_list, _decode, _ps_str, _run_ps_resilient
 from .config import ServerConfig, Settings, WinRMConfig, credential_for
 from .inventory import compare_versions
 
@@ -53,12 +59,16 @@ DEFAULTS: dict[str, Any] = {
     "actions": [],
 }
 
+# So instalador: e o que deixa rastro nas chaves de desinstalacao do Windows e,
+# portanto, o que da para desfazer pelo Painel de Controle depois.
+EXTENSOES_INSTALADOR = (".exe", ".msi")
+
 # Um id de acao entra em nome de arquivo e em log: mantenha-o sem surpresas.
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
 
 # Checagens que, reprovadas, impedem a tarefa. As demais sao avisos.
 DURAS = {"habilitado", "host_liberado", "acao", "pacote", "janela", "sessoes",
-         "disco", "destino", "servicos"}
+         "disco", "destino", "servicos", "instalador", "extensao"}
 
 
 def settings_for(defaults: dict[str, Any] | None) -> dict[str, Any]:
@@ -79,9 +89,13 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
         if not _ID_RE.match(ident):
             log.warning("acao de execucao ignorada: id invalido (%r)", raw.get("id"))
             continue
-        destino = str(raw.get("dest") or "").strip()
-        if destino and not re.fullmatch(r"[A-Za-z0-9 ._-]{1,60}", destino):
-            log.warning("acao %s ignorada: 'dest' deve ser uma subpasta simples", ident)
+        if raw.get("dest"):
+            # Copiar DLL para dentro da instalacao nao passa pelo registro do
+            # Windows: some do "Programas e Recursos" e nao ha como desinstalar
+            # nem saber que versao esta la. Se o fornecedor so entrega o
+            # arquivo, empacote antes - nao e o RMon que vai contornar isso.
+            log.warning("acao %s ignorada: copia de arquivo nao e reversivel pelo "
+                        "Painel de Controle; use um instalador (.exe/.msi)", ident)
             continue
         args = str(raw.get("args") or "")
         # O executavel e sempre o pacote que nos mesmos colocamos la; os
@@ -89,13 +103,18 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
         if any(c in args for c in ";&|<>`$\n\r"):
             log.warning("acao %s ignorada: caracteres proibidos em 'args'", ident)
             continue
+        extensoes = [str(e).lower() for e in (raw.get("extensions") or [])]
+        invalidas = [e for e in extensoes if e not in EXTENSOES_INSTALADOR]
+        if invalidas:
+            log.warning("acao %s ignorada: so instalador (%s), e nao %s", ident,
+                        ", ".join(EXTENSOES_INSTALADOR), ", ".join(invalidas))
+            continue
         saida[ident] = {
             "id": ident,
             "label": str(raw.get("label") or ident)[:120],
-            "kind": "copy" if destino else "run",
-            "dest": destino,
+            "kind": "run",
             "args": args[:200],
-            "extensions": [str(e).lower() for e in (raw.get("extensions") or [])],
+            "extensions": extensoes or list(EXTENSOES_INSTALADOR),
             "timeout_sec": max(30, min(int(raw.get("timeout_sec", 900) or 900), 7200)),
         }
     return saida
@@ -273,11 +292,18 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
                                 f"pacote nao encontrado no repositorio: {task.get('arquivo')}"))
         tamanho = 0
 
-    if acao and caminho and acao["extensions"] \
-            and caminho.suffix.lower() not in acao["extensions"]:
-        checagens.append(_check("extensao", False,
-                                f"{caminho.suffix} nao e aceito pela acao "
-                                f"(esperado: {', '.join(acao['extensions'])})"))
+    if caminho:
+        instalador = caminho.suffix.lower() in EXTENSOES_INSTALADOR
+        checagens.append(_check(
+            "instalador", instalador,
+            f"{caminho.suffix} se registra no Windows e da para desinstalar depois"
+            if instalador else
+            f"{caminho.suffix} nao e instalador: so {', '.join(EXTENSOES_INSTALADOR)}, "
+            "porque a instalacao precisa ser reversivel pelo Painel de Controle"))
+        if acao and acao["extensions"] and caminho.suffix.lower() not in acao["extensions"]:
+            checagens.append(_check("extensao", False,
+                                    f"{caminho.suffix} nao e aceito por esta acao "
+                                    f"(esperado: {', '.join(acao['extensions'])})"))
 
     if instalado and task.get("version"):
         cmp = compare_versions(task["version"], instalado)
@@ -292,10 +318,6 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
         checagens.append(_check("host", False, "servidor nao esta no inventario"))
     else:
         destino = ""
-        if acao and acao["kind"] == "copy":
-            # a pasta de destino fica dentro da instalacao descoberta na coleta
-            base = (task.get("install_dir") or "").rstrip("\\")
-            destino = f"{base}\\{acao['dest']}" if base else ""
         temp = str(cfg.get("temp_dir") or DEFAULTS["temp_dir"])
         dados = _remoto(server, wc, destino, temp,
                         list(cfg.get("require_services_stopped") or []), url_check)
@@ -313,12 +335,8 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
             checagens.append(_check(
                 "disco", livre is not None and float(livre) >= precisa,
                 f"{livre} GB livres em {dados.get('drive')} (precisa de {precisa:.1f} GB)"))
-            if acao and acao["kind"] == "copy":
-                checagens.append(_check("destino", bool(dados.get("destino_existe")),
-                                        f"pasta de destino: {destino or '(nao resolvida)'}"))
-            else:
-                checagens.append(_check("destino", bool(dados.get("temp_pai_existe")),
-                                        f"pasta de preparo: {temp}"))
+            checagens.append(_check("destino", bool(dados.get("temp_pai_existe")),
+                                    f"pasta de preparo: {temp}"))
             parados = [s for s in (dados.get("servicos") or [])
                        if str(s.get("estado")) != "Stopped"]
             exigidos = list(cfg.get("require_services_stopped") or [])
@@ -347,36 +365,20 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
                     "baixar o pacote", dura=True))
 
         if acao and caminho:
-            comando = comando_previsto(acao, temp, caminho.name, destino)
+            comando = comando_previsto(acao, temp, caminho.name)
 
     bloqueios = [c for c in checagens if c["dura"] and not c["ok"]]
     return {"checks": checagens, "comando": comando, "ok": not bloqueios,
             "bloqueios": [c["nome"] for c in bloqueios]}
 
 
-def comando_previsto(acao: dict, temp: str, nome_arquivo: str, destino: str) -> str:
+def comando_previsto(acao: dict, temp: str, nome_arquivo: str) -> str:
     """O que rodaria no host, exatamente como rodaria."""
-    origem = f"{temp.rstrip(chr(92))}\\{nome_arquivo}"
-    if acao["kind"] == "copy":
-        return f"Copy-Item -LiteralPath '{origem}' -Destination '{destino}' -Force"
+    origem = temp.rstrip(chr(92)) + chr(92) + nome_arquivo
     args = f" {acao['args']}" if acao["args"] else ""
-    return f"Start-Process -FilePath '{origem}'{args} -Wait -PassThru"
-
-
-def install_dir_from(rows: list[dict]) -> str:
-    """Pasta de instalacao do RM num host, deduzida do inventario.
-
-    Os itens da fonte `assembly` guardam o caminho completo do arquivo; a pasta
-    e o diretorio deles. Melhor do que reconfigurar o caminho num segundo lugar
-    e deixar os dois divergirem.
-    """
-    for r in rows:
-        if r.get("source") != "assembly":
-            continue
-        detalhe = (r.get("detail") or "").strip()
-        if "\\" in detalhe:
-            return detalhe.rsplit("\\", 1)[0]
-    return ""
+    if nome_arquivo.lower().endswith(".msi"):
+        return f"msiexec.exe /i '{origem}'{args}"
+    return f"'{origem}'{args}"
 
 
 # ---------- execucao ----------
@@ -390,10 +392,31 @@ $nome = __NOME__
 $url = __URL__
 $sha = __SHA__
 $passos = New-Object System.Collections.ArrayList
+$registro = New-Object System.Collections.ArrayList
 $saida = ''
 $codigo = $null
 $destino = $null
+$antes = $null
+
+# Foto das chaves de desinstalacao. Tirada antes e depois, ela responde a
+# pergunta que importa: o que foi instalado aparece em "Programas e Recursos"
+# e tem como ser desinstalado?
+function Get-Instalados {
+    $mapa = @{}
+    foreach ($p in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
+        foreach ($k in (Get-ItemProperty $p -ErrorAction SilentlyContinue)) {
+            $n = "$($k.DisplayName)".Trim()
+            if (-not $n) { continue }
+            $mapa[$n] = [pscustomobject]@{
+                v = "$($k.DisplayVersion)".Trim(); u = "$($k.UninstallString)".Trim() }
+        }
+    }
+    return $mapa
+}
+
 try {
+    $antes = Get-Instalados
     if (-not (Test-Path -LiteralPath $temp)) { [void](New-Item -ItemType Directory -Path $temp -Force) }
     $destino = Join-Path $temp $nome
     [void]$passos.Add("preparo: $temp")
@@ -407,51 +430,73 @@ try {
     if ($hash -ne $sha) { throw "sha256 nao confere: esperado $sha, veio $hash" }
     [void]$passos.Add('sha256 conferido')
 
-    __COMANDO__
+__COMANDO__
 
-    [void]$passos.Add('comando executado')
+    [void]$passos.Add('instalador encerrado')
 } catch {
     $saida = "$saida`n$($_.Exception.Message)"
     if ($null -eq $codigo) { $codigo = -1 }
 } finally {
+    # Mesmo se deu erro: o que ficou registrado no Windows tem de ser dito.
+    if ($antes) {
+        $depois = Get-Instalados
+        foreach ($n in $depois.Keys) {
+            if (-not $antes.ContainsKey($n)) {
+                [void]$registro.Add("instalado: $n $($depois[$n].v) | desinstalar com: $($depois[$n].u)")
+            } elseif ($antes[$n].v -ne $depois[$n].v) {
+                [void]$registro.Add("atualizado: $n $($antes[$n].v) -> $($depois[$n].v) | desinstalar com: $($depois[$n].u)")
+            }
+        }
+    }
     if ($destino -and (Test-Path -LiteralPath $destino)) {
         Remove-Item -LiteralPath $destino -Force -ErrorAction SilentlyContinue
         [void]$passos.Add('pacote temporario removido')
     }
 }
-[pscustomobject]@{ passos = @($passos); saida = "$saida"; codigo = $codigo } |
-    ConvertTo-Json -Depth 3 -Compress
+[pscustomobject]@{
+    passos = @($passos); saida = "$saida"; codigo = $codigo; registro = @($registro)
+} | ConvertTo-Json -Depth 3 -Compress
 """
 
-# O trecho que de fato age. Copia e execucao sao as duas unicas formas: nao ha
-# caminho em que texto vindo da tela vire comando.
-_PS_COPIA = r"""    Copy-Item -LiteralPath $destino -Destination __DEST__ -Force
-    $codigo = 0
-    $saida = "copiado para " + __DEST__"""
-
-_PS_RODA = r"""    $proc = Start-Process -FilePath $destino __ARGS__-Wait -PassThru
+# O unico trecho que age. O executavel e sempre o pacote que nos mesmos
+# baixamos; os argumentos vem do YAML. Nao ha caminho em que texto digitado na
+# tela vire comando.
+_PS_RODA = r"""    $argumentos = __ARGS__
+    if ([System.IO.Path]::GetExtension($destino).ToLower() -eq '.msi') {
+        # .msi sempre pelo msiexec: e o que instala de fato e deixa o pacote
+        # registrado para desinstalacao.
+        $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList (@('/i', $destino) + $argumentos) -Wait -PassThru
+    } elseif ($argumentos.Count -gt 0) {
+        $proc = Start-Process -FilePath $destino -ArgumentList $argumentos -Wait -PassThru
+    } else {
+        # -ArgumentList vazio e erro de parametro no PowerShell; sem argumentos,
+        # a chamada simplesmente nao leva o parametro.
+        $proc = Start-Process -FilePath $destino -Wait -PassThru
+    }
     $codigo = $proc.ExitCode
-    $saida = 'processo encerrado com codigo ' + $codigo"""
+    $saida = 'instalador encerrado com codigo ' + $codigo"""
 
 
-def _script_execucao(acao: dict, temp: str, nome: str, url: str, sha: str,
-                     destino: str) -> str:
-    if acao["kind"] == "copy":
-        trecho = _PS_COPIA.replace("__DEST__", _ps_str(destino))
-    else:
-        args = f"-ArgumentList {_ps_str(acao['args'])} " if acao["args"] else ""
-        trecho = _PS_RODA.replace("__ARGS__", args)
+def _args_ps(args: str) -> str:
+    """Argumentos do YAML como arranjo do PowerShell."""
+    partes = [p for p in (args or "").split() if p]
+    if not partes:
+        return "@()"
+    return "@(" + ",".join(_ps_str(p) for p in partes) + ")"
+
+
+def _script_execucao(acao: dict, temp: str, nome: str, url: str, sha: str) -> str:
     return (_PS_EXECUTA
             .replace("__TEMP__", _ps_str(temp))
             .replace("__NOME__", _ps_str(nome))
             .replace("__URL__", _ps_str(url))
             .replace("__SHA__", _ps_str(sha))
-            .replace("__COMANDO__", trecho))
+            .replace("__COMANDO__", _PS_RODA.replace("__ARGS__", _args_ps(acao["args"]))))
 
 
 def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
-            defaults: dict[str, Any], settings: Settings, url_stage: str,
-            destino: str = "") -> dict[str, Any]:
+            defaults: dict[str, Any], settings: Settings,
+            url_stage: str) -> dict[str, Any]:
     """Executa a tarefa no host. So chega aqui quem passou pelo pre-voo.
 
     A trava mestra e conferida DE NOVO aqui: entre criar a tarefa e executa-la
@@ -469,13 +514,16 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
     caminho = pacote_local(settings, task.get("arquivo") or "")
     if not caminho:
         return {"ok": False, "error": "pacote nao encontrado no repositorio"}
+    if caminho.suffix.lower() not in EXTENSOES_INSTALADOR:
+        return {"ok": False,
+                "error": f"{caminho.suffix} nao e instalador: a instalacao precisa ser "
+                         "reversivel pelo Painel de Controle"}
     user, pw = credential_for(server.cred)
     if not (user and pw):
         return {"ok": False, "error": f"sem credencial para o perfil '{server.cred}'"}
 
     temp = str(cfg.get("temp_dir") or DEFAULTS["temp_dir"])
-    script = _script_execucao(acao, temp, caminho.name, url_stage,
-                              sha256(caminho), destino)
+    script = _script_execucao(acao, temp, caminho.name, url_stage, sha256(caminho))
     try:
         r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=1,
                               budget_sec=acao["timeout_sec"])
@@ -483,12 +531,26 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
         import json
         dados = json.loads(bruto) if bruto else {}
         codigo = dados.get("codigo")
-        passos = dados.get("passos") or []
-        texto = "\n".join(str(p) for p in (passos if isinstance(passos, list) else [passos]))
+        passos = [str(x) for x in _as_list(dados.get("passos"))]
+        registro = [str(x) for x in _as_list(dados.get("registro"))]
+        texto = "\n".join(passos)
+        if registro:
+            texto += "\n" + "\n".join(registro)
         if dados.get("saida"):
             texto = f"{texto}\n{dados['saida']}".strip()
         erro = _decode(r.std_err)[:500] or None
-        return {"ok": codigo == 0, "exit_code": codigo, "output": texto[:4000],
-                "error": None if codigo == 0 else (erro or "comando retornou codigo != 0")}
+
+        if codigo != 0:
+            return {"ok": False, "exit_code": codigo, "output": texto[:4000],
+                    "error": erro or "o instalador retornou codigo != 0"}
+        if not registro:
+            # Rodou sem erro mas nao deixou rastro em "Programas e Recursos":
+            # nao da para desinstalar nem para saber que versao ficou. Pela
+            # regra da casa, isso nao e uma instalacao bem-sucedida.
+            return {"ok": False, "exit_code": codigo, "output": texto[:4000],
+                    "error": "o instalador terminou com sucesso mas nada apareceu em "
+                             "Programas e Recursos: o resultado nao seria reversivel "
+                             "pelo Painel de Controle"}
+        return {"ok": True, "exit_code": codigo, "output": texto[:4000], "error": None}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]}

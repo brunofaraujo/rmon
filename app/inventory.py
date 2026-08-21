@@ -509,22 +509,34 @@ FONTES = {
 
 def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
                  busca: str = "", filtro: str = "todos", servidor: str = "",
-                 disponivel: dict[str, dict] | None = None) -> list[dict]:
-    """Matriz pacote x host.
+                 disponivel: dict[str, dict] | None = None,
+                 papeis: dict[str, str] | None = None) -> list[dict]:
+    """Matriz pacote x host, **dentro de um ambiente**.
 
-    Sem `disponivel`, a referencia de cada pacote e a **maior versao encontrada
-    no parque**: nao ha catalogo publico consultavel do TOTVS RM, entao "esta
-    atualizado" so pode significar "esta no mesmo nivel do host mais novo".
+    `servers` ja vem restrito ao ambiente escolhido. Isso e o que separa as
+    coisas: SGE/Financeiro e RH sao instalacoes distintas do RM, com pacotes,
+    customizacoes e bases proprias - misturar as duas so produz divergencia
+    falsa, e a referencia de "atualizado" fica errada nas duas.
 
-    `disponivel` (pkg_key -> entrada do catalogo) muda isso onde ha pacote
-    baixado do TDN: ali a referencia deixa de ser o parque e passa a ser a
-    versao que ja esta na mao para instalar.
+    `papeis` (host -> app/jobs/web/homolog) decide o que conta como **falta**:
+    um pacote que existe nos servidores de aplicacao e nao no da camada web nao
+    esta faltando, e outro conjunto de software. Ja divergencia de **versao**
+    vale entre quaisquer hosts do ambiente que tenham o mesmo item.
+
+    Sem `disponivel`, a referencia de cada item e a maior versao encontrada no
+    ambiente. `disponivel` (pkg_key -> entrada do catalogo) muda isso onde ha
+    pacote baixado do TDN: ali a referencia passa a ser a versao que ja esta na
+    mao para instalar.
     """
     fontes = FONTES.get(fonte, FONTES["totvs"])
     busca_l = (busca or "").strip().lower()
+    do_ambiente = set(servers)
+    papel_de = papeis or {}
     por_pacote: dict[str, dict] = {}
 
     for r in rows:
+        if r["server"] not in do_ambiente:
+            continue
         if r["source"] not in fontes:
             continue
         if busca_l and busca_l not in (r["name"] or "").lower() \
@@ -546,17 +558,20 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
             p["latest"] = r["version"]
 
     saida: list[dict] = []
-    total_hosts = len(servers)
     catalogo = disponivel or {}
     for p in por_pacote.values():
         if servidor and servidor not in p["cells"]:
             continue
         versoes = {c["version"] for c in p["cells"].values()}
         p["hosts"] = len(p["cells"])
-        p["ausentes"] = [s for s in servers if s not in p["cells"]]
-        # divergencia de versao so faz sentido entre quem tem o pacote
+        # "Faltando" so entre hosts do mesmo papel: o item que existe nos
+        # servidores de aplicacao e nao no da camada web nao esta faltando la.
+        papeis_com_item = {papel_de.get(s, "") for s in p["cells"]}
+        p["ausentes"] = [s for s in servers
+                         if s not in p["cells"] and papel_de.get(s, "") in papeis_com_item]
+        # divergencia de versao vale entre quaisquer hosts que tenham o item
         p["drift"] = len(versoes) > 1
-        p["parcial"] = bool(p["ausentes"]) and p["hosts"] < total_hosts
+        p["parcial"] = bool(p["ausentes"])
         for cell in p["cells"].values():
             cell["status"] = ("ok" if not p["latest"] or
                               compare_versions(cell["version"], p["latest"]) == 0 else "behind")

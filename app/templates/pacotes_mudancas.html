@@ -9,10 +9,17 @@
       o que foi instalado, atualizado ou removido em cada host
     </div>
   </div>
-  <a class="btn" href="/pacotes">&#8592; Inventario</a>
+  <a class="btn" href="/pacotes?ambiente={{ ambiente }}">&#8592; Inventario</a>
 </div>
 
 <form class="toolbar" method="get" action="/pacotes/mudancas">
+  {% if ambientes|length > 1 %}
+  <select name="ambiente" class="input">
+    {% for id, rotulo in ambientes %}
+    <option value="{{ id }}" {{ 'selected' if id == ambiente else '' }}>{{ rotulo }}</option>
+    {% endfor %}
+  </select>
+  {% else %}<input type="hidden" name="ambiente" value="{{ ambiente }}">{% endif %}
   <select name="servidor" class="input">
     <option value="">Todos os servidores</option>
     {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}

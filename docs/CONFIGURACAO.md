@@ -90,6 +90,37 @@ descobertos (limitadas ao que apareceu na última coleta daquele servidor).
 
 ---
 
+## Ambientes e papéis
+
+Cada servidor declara a que **ambiente** pertence e qual **papel** cumpre:
+
+```yaml
+environments:
+  fin: "SGE/Financeiro"
+  rh: "RH"
+
+servers:
+  - name: fin-sge-app-34
+    env: fin
+    role: app        # app | jobs | web | db | homolog
+```
+
+Isso decide o que é comparado com o quê, e é o que impede a tela de misturar
+coisas que não têm relação:
+
+- **Ambiente** é o escopo da comparação. SGE/Financeiro e RH são instalações
+  separadas do RM, com pacotes, customizações e bases próprias — a tela mostra
+  um ambiente de cada vez, e a referência de "atualizado" é a maior versão
+  **daquele** ambiente. Um estar em `12.1.2602` e o outro em `12.1.2606` não é
+  divergência: é a realidade de duas instalações distintas.
+- **Papel** decide o que conta como **falta**. Um servidor da camada web tem um
+  conjunto de pacotes um pouco diferente do de aplicação; um item presente nos
+  três servidores de aplicação e ausente no web não está "faltando" — é outro
+  software. Já divergência de **versão** vale entre quaisquer hosts do ambiente
+  que tenham o mesmo item.
+
+Sem `env` e `role` declarados, tudo cai num grupo só — o comportamento anterior.
+
 ## Inventário do software TOTVS (`defaults.inventory`)
 
 A tela `/pacotes` compara o software **TOTVS** instalado entre os hosts. O que
@@ -254,11 +285,27 @@ digitado na tela entra numa linha de comando. Uma ação é descartada (com avis
 no log) se o `id` tiver formato estranho, se `dest` não for uma subpasta
 simples, ou se `args` contiver `;`, `&`, `|`, `<`, `>`, `` ` `` ou `$`.
 
-Dois tipos:
+### Só instalador, e só o que se desinstala
 
-- **`dest`** → copia o arquivo para aquela subpasta da instalação do RM
-  (a pasta da instalação vem do inventário, não de configuração nova);
-- **`args`** → executa o pacote com aqueles argumentos e espera terminar.
+O RMon **não copia arquivo solto** para dentro da instalação do RM. Uma DLL
+copiada à mão não aparece em "Programas e Recursos", não tem versão registrada e
+não há como desfazer — e a regra da casa é que toda instalação feita pelo painel
+seja reversível pelo Painel de Controle do Windows.
+
+Por isso só `.exe` e `.msi` são aceitos, e uma ação com `dest` é descartada na
+carga com aviso no log. Pacote `.msi` é executado por `msiexec /i`, que é o que
+o registra para desinstalação.
+
+Depois de executar, o RMon compara as chaves de desinstalação **antes e depois**
+e guarda o que apareceu, com o `UninstallString`:
+
+```
+instalado: TOTVS_CES_RM_Office365_CNI 12.1.2602.010 | desinstalar com: MsiExec.exe /X{...}
+```
+
+Se o instalador terminar com sucesso mas **nada** aparecer ali, a tarefa é dada
+como **falha** — não porque a instalação não rodou, mas porque o resultado não
+seria reversível, e isso não conta como sucesso.
 
 ### Como o pacote chega ao host
 

@@ -317,7 +317,6 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     server = servidores.get(task["server"])
     linhas = list(db.packages_of(task["server"]).values())
     task = dict(task)
-    task["install_dir"] = execution.install_dir_from(linhas)
     instalado = next((r["version"] for r in linhas if r["pkg_key"] == task.get("pkg_key")), None)
 
     acao = execution.actions_for(inv.defaults).get(task.get("action") or "")
@@ -345,13 +344,10 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
                     ", ".join(plano["bloqueios"]))
         return
 
-    destino = ""
-    if acao and acao["kind"] == "copy" and task["install_dir"]:
-        destino = task["install_dir"].rstrip(chr(92)) + chr(92) + acao["dest"]
     log.warning("tarefa %d: EXECUTANDO em %s -> %s", task["id"], task["server"],
                 plano["comando"])
     url = _url_stage(settings, inv, task["id"], prazo + 600)
-    res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url, destino)
+    res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url)
     db.finish_task(task["id"], "ok" if res.get("ok") else "failed",
                    checks=plano["checks"], comando=plano["comando"],
                    exit_code=res.get("exit_code"), output=res.get("output"),

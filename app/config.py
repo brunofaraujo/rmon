@@ -37,10 +37,29 @@ class WinRMConfig:
     operation_timeout_sec: int = 25
 
 
+# Papeis conhecidos, na ordem em que fazem sentido numa lista. O rotulo aparece
+# no cabecalho da coluna de cada host.
+PAPEIS = {
+    "app": "aplicacao (RDP)",
+    "jobs": "job server",
+    "web": "camada web",
+    "db": "banco de dados",
+    "homolog": "homologacao",
+}
+
+
 @dataclass
 class ServerConfig:
     name: str
     host: str
+    # Ambiente: o escopo em que faz sentido comparar versoes. SGE/Financeiro e
+    # RH sao instalacoes separadas do RM, com pacotes, customizacoes e bases
+    # proprias - comparar uma com a outra so produz divergencia falsa.
+    env: str = ""
+    # Papel do host dentro do ambiente (app, jobs, web, homolog...). Um servidor
+    # da camada web tem um conjunto de pacotes um pouco diferente do de
+    # aplicacao, entao "faltando neste host" so vale entre hosts do mesmo papel.
+    role: str = ""
     services: list[str] = field(default_factory=list)
     # Padroes (curinga) expandidos no proprio host a cada coleta: o que casar
     # esta instalado, o que sumiu foi desinstalado e simplesmente nao aparece.
@@ -110,6 +129,19 @@ class Inventory:
     winrm: WinRMConfig
     defaults: dict[str, Any]
     servers: list[ServerConfig]
+    # id do ambiente -> rotulo para a tela (ex.: {"fin": "SGE/Financeiro"})
+    environments: dict[str, str] = field(default_factory=dict)
+
+    def envs(self) -> list[tuple[str, str]]:
+        """Ambientes existentes, na ordem em que aparecem no inventario."""
+        vistos: list[str] = []
+        for s in self.servers:
+            if s.env and s.env not in vistos:
+                vistos.append(s.env)
+        return [(e, self.environments.get(e, e)) for e in vistos]
+
+    def servers_of(self, env: str) -> list[ServerConfig]:
+        return [s for s in self.servers if not env or s.env == env]
 
 
 def load_inventory(path: str) -> Inventory:
@@ -124,6 +156,8 @@ def load_inventory(path: str) -> Inventory:
             ServerConfig(
                 name=raw["name"],
                 host=raw["host"],
+                env=str(raw.get("env") or "").strip(),
+                role=str(raw.get("role") or "").strip(),
                 services=list(raw.get("services") or default_services),
                 service_patterns=list(raw.get("service_patterns") or default_patterns),
                 app_health=raw.get("app_health"),
@@ -131,9 +165,11 @@ def load_inventory(path: str) -> Inventory:
                 jobs=raw.get("jobs"),
             )
         )
+    ambientes = {str(k): str(v) for k, v in (data.get("environments") or {}).items()}
     return Inventory(
         poll_interval_seconds=int(data.get("poll_interval_seconds", 60)),
         winrm=winrm,
         defaults=defaults,
         servers=servers,
+        environments=ambientes,
     )
