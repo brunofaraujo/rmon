@@ -300,7 +300,6 @@ def _tv_payload() -> dict:
                        "free": x.get("free_gb")} for x in disks],
             "svcs": [{"n": x.get("name"), "ok": x.get("status") == "Running",
                       "bad": scheduler.service_down(x), "st": x.get("status")} for x in svcs],
-            "sgroups": scheduler.service_groups(svcs),
             "users": (d.get("users_count") if d else None),
             "app": (d.get("app_ok") if d else None),
             "app_ms": (d.get("app_ms") if d else None),
