@@ -33,12 +33,12 @@ servidores monitorados.
 | **Ocorrências** | Erros/críticos recentes do Event Log (System/Application), agrupados e filtrados por provedor |
 | **Jobs do RM** | Sucesso × falha na tabela `GJOBXEXECUCAO` (SQL Server), por job server e por solicitante |
 | **Sessões RDP** | Lista de usuários logados (`quser`) com opção de **encerrar sessão** (`logoff`) |
-| **Inventário de software** | Pacotes instalados (registro do Windows), versão dos binários do RM e hotfixes — com data, comparação entre hosts e histórico de mudanças |
+| **Inventário TOTVS** | Versão do RM, customizações (`RM.Cst.*`), bibliotecas (`RM.Lib.*`) e pacotes TOTVS do registro — com data, comparação entre hosts e histórico de mudanças |
 
 ### O que ele faz
 
 - 🔔 **Alertas** por Telegram e/ou Slack — disparados só nas **transições** (levantou/resolveu), sem spam.
-- 📦 **Inventário e versionamento**: matriz pacote × host em `/pacotes` — quem está atrás da maior versão do parque, quem não tem o pacote, e a linha do tempo de tudo que foi instalado, atualizado, **regrediu** ou removido em cada servidor. Exporta CSV.
+- 📦 **Inventário e versionamento TOTVS**: matriz item × host em `/pacotes` — versão do RM, customizações e bibliotecas de cada servidor, quem está atrás da maior versão do parque, e a linha do tempo de tudo que foi instalado, atualizado, **regrediu** ou removido. Software de terceiros fica fora. Exporta CSV.
 - 🛠️ **Ações remotas** (perfil admin): `start`/`stop`/`restart` de serviços monitorados e logoff de sessões RDP.
 - 👥 **Multiusuário** com papéis `admin` / `viewer`, auditoria de ações e login por sessão assinada.
 - 📺 **Mural de TV** (`/tv`): painel em tela cheia, sem rolagem, que se ajusta sozinho ao número de servidores e à resolução da tela. É a **única** tela do perfil `viewer` — ideal para deixar numa TV do NOC.

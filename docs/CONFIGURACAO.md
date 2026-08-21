@@ -36,36 +36,15 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     lookback_hours: 24             # janela de ocorrências do Event Log
     noise_ids: [10016, 1058, 1030, 1502, 1500, 7000, 7009]   # IDs ignorados (ruído)
     providers_regex: '\b(RM|TOTVS|SGE|MSSQL|SQL|IIS|W3SVC|WAS|DBAccess|WER)|\.NET Runtime|ASP\.NET|Application Error|Application Hang'
-  inventory:                       # inventário de software (tela /pacotes)
+  inventory:                       # inventário do software TOTVS (tela /pacotes)
     enabled: true
-    interval_hours: 6              # cadência da coleta de inventário (horas)
-    hotfixes: true                 # incluir os KBs do Windows (Get-HotFix)
-    binaries: ["RM.exe", "RM.Host.exe", "RM.Host.Service.exe"]   # versão real do RM
-    ignore: ["Update for Microsoft*", "Security Update for*"]     # ruído do registro
-
-servers:
-  - name: rm-app-01                # rótulo único no painel
-    host: 10.0.0.50                # IP/hostname do alvo
-    cred: fin                      # perfil de credencial WinRM (ver .env). Default: 'default'
-    services:                      # serviços Windows fixos monitorados neste host
-      - W3SVC
-    service_patterns:              # descobertos no host a cada coleta
-      - "RM.Host*"
-    app_health:                    # (opcional) checagem HTTP da aplicação
-      url: "http://10.0.0.50:8051/"
-      expect_status: 200           # status HTTP esperado
-      timeout_sec: 8
-    jobs:                          # (opcional) estatísticas de jobs do RM (requer RMON_SQL_*)
-      window_min: 15               # janela em minutos
-      servidor: SRV06N             # executor deste host (coluna SERVIDOR = "SRV06N:porta")
-      success_status: [2]          # STATUS de sucesso na GJOBXEXECUCAO
-      failed_status: [5, 7]        # STATUS de falha
-
-  - name: rm-db-01
-    host: 10.0.0.51
-    cred: rh
-    services: [MSSQLSERVER, SQLSERVERAGENT]
-    # sem app_health / jobs (servidor de banco)
+    interval_hours: 6              # cadência da coleta (horas)
+    only_totvs: true               # ignora software que não é da TOTVS
+    totvs_regex: "TOTVS|RM Sistemas|Microsiga|Corpore"
+    watch: ["RM.Cst.*", "RM.Lib.*", "*Customizacao*", "*Customizada*", "RM*.exe"]
+    custom_folders: ["Custom", "Scripts Especificos"]   # customizações do cliente
+    custom_prefix: "RM.*"          # nessas pastas, só os arquivos da TOTVS/RM
+    hotfixes: false                # KBs do Windows: é SO, não TOTVS
 ```
 
 ### Campos por servidor
@@ -111,37 +90,59 @@ descobertos (limitadas ao que apareceu na última coleta daquele servidor).
 
 ---
 
-## Inventário de software (`defaults.inventory`)
+## Inventário do software TOTVS (`defaults.inventory`)
 
-A tela `/pacotes` compara o software instalado entre os hosts. A coleta é
-separada do ciclo de métricas (padrão: a cada 6 h) e lê **três** fontes numa só
-ida ao servidor:
+A tela `/pacotes` compara o software **TOTVS** instalado entre os hosts. O que
+não é da TOTVS fica de fora de propósito: navegador, antivírus e runtime não
+dizem nada sobre o estado do parque RM. Para inventariar tudo, use
+`only_totvs: false`.
 
-| Fonte | O que traz | Por quê |
+A coleta é separada do ciclo de métricas (padrão: a cada 6 h, ~10 s por host) e
+produz cinco fontes:
+
+| Fonte | O que é | Exemplo real |
 |---|---|---|
-| `registry` | Chaves de desinstalação (HKLM 64 e 32 bits): nome, versão, fabricante, data | Fonte canônica de "programas instalados" |
-| `binary` | `FileVersion` dos executáveis dos serviços casados por `service_patterns` | No RM a versão que vale é a do binário — o registro fica defasado após um update |
-| `hotfix` | `Get-HotFix` (KBs do Windows) | Comparar nível de patch entre servidores |
+| `rm` | **Versão base do produto**: a versão mais frequente entre os assemblies da TOTVS na pasta de instalação | `12.1.2602.1` (2.950 dos 4.200 assemblies) |
+| `assembly` | Arquivos rastreados um a um (`watch`): bibliotecas `RM.Lib.*`, interfaces de customização e executáveis, cada um com seu nível de patch | `RM.exe` em `12.1.2602.198` |
+| `custom` | A pasta `Custom` da instalação — onde ficam as customizações do cliente | `RM.Cst.CNI_DN.PortalSESI.Form.dll` |
+| `registry` | Chaves de desinstalação, filtradas pela TOTVS | `BibliotecaRM`, `TOTVS_CES_RM_Office365_CNI` |
+| `hotfix` | `Get-HotFix` (KBs do Windows) — **desligado** por padrão | `KB5034441` |
+
+A pasta de instalação não é configurada: sai do caminho dos serviços já
+descobertos por `service_patterns` (`RM.Host*`). Use `paths` só se houver uma
+instalação sem serviço associado.
 
 > **`Win32_Product` não é usado.** Consultar aquela classe WMI dispara a
 > auto-reparação do MSI em cada pacote, leva minutos e é conhecida por quebrar
 > instalação em produção. As chaves de desinstalação dão a mesma informação em
 > ~1 s.
 
+**Versão base e resíduo.** Numa instalação do RM a maioria dos assemblies fica
+na versão do produto e um punhado sobe de patch — isso é normal e esperado. O
+que chama atenção é o contrário: arquivo que ficou **para trás** da versão base,
+resto de uma atualização que não trocou tudo. Esse caso vira uma linha própria
+(`RM - assemblies abaixo da versao base`), comparável entre hosts.
+
 **Referência de comparação:** a maior versão encontrada no parque. Não existe
 catálogo público consultável do TOTVS RM, então "estar atualizado" só pode
 significar "estar no mesmo nível do host mais novo".
 
-**Data de instalação:** o `InstallDate` do registro vem vazio na maior parte dos
-pacotes. Quando falta, o painel mostra a data da primeira coleta que viu aquele
-pacote, marcada com `*`. A linha do tempo confiável é a de `/pacotes/mudancas`,
-montada pelo diff entre coletas — ela registra instalação, atualização,
-**regressão** de versão e remoção, com data e hora.
+**Data de instalação:** para arquivos é a data do próprio arquivo; para o
+registro, o `InstallDate` — que vem vazio na maior parte dos pacotes. Quando
+falta, o painel mostra a data da primeira coleta que viu aquele item, marcada
+com `*`. A linha do tempo confiável é a de `/pacotes/mudancas`, montada pelo
+diff entre coletas: instalação, atualização, **regressão** de versão e remoção,
+com data e hora.
 
-Mudança de pacote gera registro em `alerts_log` e notificação (Telegram/Slack),
+Mudança de item gera registro em `alerts_log` e notificação (Telegram/Slack),
 quando configurada. Não é alerta de falha: é rastreabilidade — software que muda
 sem ninguém ter mexido é a primeira coisa que se procura quando o servidor passa
 a se comportar diferente.
+
+> Mudar o formato do inventário (fontes, chaves) faz o RMon **recolher tudo do
+> zero** na próxima coleta, via `db.INVENTORY_SCHEMA`. Isso evita que as linhas
+> antigas sejam lidas como desinstalação e encham a linha do tempo de remoções
+> que nunca aconteceram.
 
 ## Variáveis de ambiente (`.env`)
 

@@ -153,7 +153,8 @@ def poll_inventory(inv: Inventory, settings: Settings) -> None:
             atuais = db.packages_of(server.name)
             # Primeira coleta do host e semeadura: gerar 200 eventos "instalado"
             # so encheria a linha do tempo de ruido no dia em que o servidor entrou.
-            eventos = inventory.diff_packages(atuais, itens) if atuais else []
+            eventos = (inventory.diff_packages(atuais, itens, inventory.fontes_ativas(inv.defaults))
+                       if atuais else [])
             db.replace_packages(server.name, itens)
             db.insert_package_events(server.name, eventos)
             db.record_inventory_run(server.name, True, len(itens), None, gasto,

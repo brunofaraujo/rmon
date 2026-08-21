@@ -57,6 +57,8 @@ templates.env.globals["tv_refresh"] = 15
 # pode pintar de vermelho um RM.Host que a coleta nem considera falha.
 templates.env.globals["svc_down"] = scheduler.service_down
 templates.env.globals["svc_groups"] = scheduler.service_groups
+# Rotulo curto de cada fonte do inventario (produto, customizacao, biblioteca...)
+templates.env.globals["fonte_label"] = inventory.FONTE_LABEL
 
 
 def _assets_tag() -> str:
@@ -724,7 +726,7 @@ def _pacotes_ctx(request: Request) -> dict:
     """Contexto comum das telas de inventario: matriz, filtros e ultima coleta."""
     inv = STATE["inv"]
     q = request.query_params
-    fonte = q.get("fonte") if q.get("fonte") in inventory.FONTES else "prog"
+    fonte = q.get("fonte") if q.get("fonte") in inventory.FONTES else "totvs"
     filtro = q.get("filtro") if q.get("filtro") in ("todos", "drift", "ausentes", "problemas") else "todos"
     busca = (q.get("q") or "").strip()[:80]
     servidores = [s.name for s in inv.servers]

@@ -5,7 +5,7 @@
   <div>
     <h1>Inventario de software</h1>
     <div class="sub">
-      {{ resumo.pacotes }} pacote(s) &middot; referencia = maior versao instalada no parque
+      {{ resumo.pacotes }} item(ns) TOTVS &middot; referencia = maior versao instalada no parque
     </div>
   </div>
   <div class="pills">
@@ -34,7 +34,7 @@
 {% endif %}
 
 <div class="kpis">
-  <div class="kpi"><div class="val">{{ resumo.pacotes }}</div><div class="lbl">Pacotes distintos</div></div>
+  <div class="kpi"><div class="val">{{ resumo.pacotes }}</div><div class="lbl">Itens distintos</div></div>
   <div class="kpi {{ 'warn' if resumo.drift else 'ok' }}">
     <div class="val {{ 'txt-amber' if resumo.drift else 'txt-green' }}">{{ resumo.drift }}</div>
     <div class="lbl">Versoes divergentes</div>
@@ -47,21 +47,23 @@
   <input type="search" name="q" class="input" value="{{ busca }}"
          placeholder="&#128269;  Pesquisar pacote ou versao...">
   <select name="fonte" class="input">
-    <option value="prog"     {{ 'selected' if fonte=='prog' }}>Programas e binarios</option>
-    <option value="registry" {{ 'selected' if fonte=='registry' }}>Programas (registro)</option>
-    <option value="binary"   {{ 'selected' if fonte=='binary' }}>Binarios do RM</option>
-    <option value="hotfix"   {{ 'selected' if fonte=='hotfix' }}>Hotfixes do Windows</option>
-    <option value="todos"    {{ 'selected' if fonte=='todos' }}>Tudo</option>
+    <option value="totvs"    {{ 'selected' if fonte=='totvs' else '' }}>TOTVS (produto, customizacoes e bibliotecas)</option>
+    <option value="rm"       {{ 'selected' if fonte=='rm' else '' }}>So a versao do produto</option>
+    <option value="custom"   {{ 'selected' if fonte=='custom' else '' }}>So customizacoes (RM.Cst)</option>
+    <option value="assembly" {{ 'selected' if fonte=='assembly' else '' }}>So bibliotecas e executaveis</option>
+    <option value="registry" {{ 'selected' if fonte=='registry' else '' }}>Instaladores TOTVS (registro)</option>
+    <option value="hotfix"   {{ 'selected' if fonte=='hotfix' else '' }}>Hotfixes do Windows</option>
+    <option value="todos"    {{ 'selected' if fonte=='todos' else '' }}>Tudo</option>
   </select>
   <select name="filtro" class="input">
-    <option value="todos"     {{ 'selected' if filtro=='todos' }}>Todos</option>
-    <option value="problemas" {{ 'selected' if filtro=='problemas' }}>So divergentes ou ausentes</option>
-    <option value="drift"     {{ 'selected' if filtro=='drift' }}>So versoes divergentes</option>
-    <option value="ausentes"  {{ 'selected' if filtro=='ausentes' }}>So ausentes em algum host</option>
+    <option value="todos"     {{ 'selected' if filtro=='todos' else '' }}>Todos</option>
+    <option value="problemas" {{ 'selected' if filtro=='problemas' else '' }}>So divergentes ou ausentes</option>
+    <option value="drift"     {{ 'selected' if filtro=='drift' else '' }}>So versoes divergentes</option>
+    <option value="ausentes"  {{ 'selected' if filtro=='ausentes' else '' }}>So ausentes em algum host</option>
   </select>
   <select name="servidor" class="input">
     <option value="">Todos os servidores</option>
-    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s }}>{{ s }}</option>{% endfor %}
+    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}
   </select>
   <button class="btn" type="submit">Filtrar</button>
 </form>
@@ -87,8 +89,7 @@
       <tr>
         <td class="sticky-col">
           <b>{{ l.name }}</b>
-          {% if l.source == 'binary' %}<span class="pill">binario</span>
-          {% elif l.source == 'hotfix' %}<span class="pill">KB</span>{% endif %}
+          {% if l.source != 'registry' %}<span class="pill">{{ fonte_label.get(l.source, l.source) }}</span>{% endif %}
           {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
           {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
           <div class="muted small">{{ l.publisher or '' }}</div>
@@ -100,7 +101,7 @@
               title="{{ c.detail or '' }}">
             <span class="mono">{{ c.version or 'instalado' }}</span>
             {% if c.date %}
-            <div class="muted small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada }}</div>
+            <div class="muted small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada else '' }}</div>
             {% endif %}
           </td>
           {% else %}

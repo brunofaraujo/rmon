@@ -28,22 +28,25 @@ defaults:
     logs: [System, Application]
     level: 2               # 1=Critical, 2=Error, 3=Warning
     max_events: 10
-  # Inventario de software (pagina /pacotes). Cadencia propria, em horas: o que
-  # esta instalado muda em dias, nao a cada ciclo de metricas.
+  # Inventario do software TOTVS (pagina /pacotes). Cadencia propria, em horas:
+  # o que esta instalado muda em dias, nao a cada ciclo de metricas.
   inventory:
     enabled: true
     interval_hours: 6
-    hotfixes: true         # incluir os KBs do Windows (Get-HotFix)
-    # Arquivos procurados na pasta de cada servico casado por service_patterns.
-    # No RM a versao que importa e a do binario: o update troca os arquivos e o
-    # registro do Windows continua mostrando a versao antiga.
-    binaries: ["RM.exe", "RM.Host.exe", "RM.Host.Service.exe"]
-    # Ruido do registro (curinga sobre o nome exibido)
-    ignore:
+    # So TOTVS: o parque RM nao precisa dar noticia de navegador nem de antivirus.
+    only_totvs: true
+    totvs_regex: "TOTVS|RM Sistemas|Microsiga|Corpore"
+    # Arquivos da pasta de instalacao rastreados um a um. A pasta e descoberta
+    # pelo caminho dos servicos casados por service_patterns (RM.Host*).
+    watch: ["RM.Cst.*", "RM.Lib.*", "*Customizacao*", "*Customizada*", "RM*.exe"]
+    # Subpastas varridas por inteiro: e onde ficam as customizacoes do cliente
+    custom_folders: ["Custom", "Scripts Especificos"]
+    custom_prefix: "RM.*"     # nelas, so os arquivos da TOTVS/RM
+    # paths: ["D:\\totvs\\CorporeRM\\RM.Net"]   # pastas extras, se houver
+    hotfixes: false           # KBs do Windows: e SO, nao TOTVS
+    ignore:                   # ruido do registro, aplicado antes do filtro TOTVS
       - "Update for Microsoft*"
       - "Security Update for*"
-      - "Hotfix for*"
-      - "Definition Update for*"
 
 servers:
   - name: rm-app-01

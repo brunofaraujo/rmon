@@ -89,10 +89,36 @@ def _conn() -> psycopg.Connection:
     return psycopg.connect(_DSN, row_factory=dict_row, autocommit=True)
 
 
+# Versao do formato do inventario. Subir este numero faz o inventario ser
+# recolhido do zero na proxima coleta.
+INVENTORY_SCHEMA = 2
+
+
 def init_db() -> None:
     with _conn() as c:
         for stmt in _SCHEMA:
             c.execute(stmt)
+    _migrar_inventario()
+
+
+def _migrar_inventario() -> None:
+    """Zera o inventario quando o formato dos itens muda.
+
+    As fontes e as chaves de pacote mudaram (de "todo software instalado" para
+    "software TOTVS"). Sem limpar, a coleta seguinte veria as linhas antigas
+    como pacotes desinstalados e encheria a linha do tempo de remocoes que nunca
+    aconteceram. Zerado, o proximo ciclo semeia de novo - sem gerar eventos.
+    """
+    try:
+        atual = int(get_config("inventory_schema", 0) or 0)
+    except (TypeError, ValueError):
+        atual = 0
+    if atual >= INVENTORY_SCHEMA:
+        return
+    with _conn() as c:
+        c.execute("DELETE FROM host_packages")
+        c.execute("DELETE FROM inventory_runs")
+    set_config("inventory_schema", INVENTORY_SCHEMA)
 
 
 def _epoch(rows: list[dict]) -> list[dict]:

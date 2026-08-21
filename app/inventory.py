@@ -1,15 +1,26 @@
-"""Inventario de software instalado nos hosts Windows (via WinRM).
+"""Inventario do software TOTVS instalado nos hosts Windows (via WinRM).
 
-Le tres fontes em uma unica ida ao host:
+O alvo e o parque **TOTVS RM**: versao do produto, bibliotecas (`RM.Lib.*`),
+customizacoes (`RM.Cst.*` e a pasta `Custom`) e executaveis. Programas de
+terceiros - navegador, antivirus, runtime - ficam de fora de proposito: nao e
+disso que o parque RM precisa dar noticia.
 
-* **registro** - chaves de desinstalacao (HKLM 64 e 32 bits). E a fonte
-  canonica de "programas instalados". NAO usamos `Win32_Product`: aquela classe
-  dispara a auto-reparacao do MSI em cada pacote, leva minutos e e conhecida
-  por quebrar instalacao em producao.
-* **binarios** - FileVersion dos executaveis dos servicos descobertos pelos
-  `service_patterns` (RM.Host*). No TOTVS RM a versao que importa e a dos
-  binarios: o update troca os arquivos e o registro continua na versao antiga.
-* **hotfixes** - `Get-HotFix`, para comparar nivel de patch entre servidores.
+Fontes lidas numa unica ida ao host:
+
+* **`rm`** - versao base do produto: a versao mais frequente entre os assemblies
+  da TOTVS na pasta de instalacao. E o numero que responde "em que versao esse
+  servidor esta". Quando sobram arquivos **abaixo** dela (residuo de uma
+  atualizacao que nao trocou tudo), isso vira um item proprio.
+* **`assembly`** - arquivos rastreados um a um (`watch`): bibliotecas
+  `RM.Lib.*`, interfaces de customizacao e os executaveis do RM. Cada um tem seu
+  proprio nivel de patch, aplicado pelo RM.Atualizador.
+* **`custom`** - a pasta `Custom` da instalacao, onde ficam as customizacoes do
+  cliente (`RM.Cst.*`). Existe em uns hosts e nao em outros, e isso importa.
+* **`registry`** - chaves de desinstalacao (HKLM 64 e 32 bits), filtradas pela
+  TOTVS. NAO usamos `Win32_Product`: aquela classe dispara a auto-reparacao do
+  MSI em cada pacote, leva minutos e e conhecida por quebrar instalacao em
+  producao.
+* **`hotfix`** - `Get-HotFix`. Desligado por padrao: e Windows, nao TOTVS.
 
 A coleta tem cadencia propria (horas), separada do ciclo de metricas.
 """
@@ -29,10 +40,22 @@ log = logging.getLogger("rmon.inventory")
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "interval_hours": 6,
-    # Arquivos procurados na pasta de cada servico descoberto (alem do proprio exe)
-    "binaries": ["RM.exe", "RM.Host.exe", "RM.Host.Service.exe"],
-    "hotfixes": True,
-    # Ruido do registro: pacote que nao diz nada sobre o estado do servidor
+    # So software da TOTVS. O que identifica: fabricante ou nome do pacote.
+    "only_totvs": True,
+    "totvs_regex": "TOTVS|RM Sistemas|Microsiga|Corpore",
+    # Arquivos da pasta de instalacao rastreados um a um (curinga sobre o nome).
+    # A pasta e descoberta pelo caminho dos servicos casados por service_patterns.
+    "watch": ["RM.Cst.*", "RM.Lib.*", "*Customizacao*", "*Customizada*", "RM*.exe"],
+    # Pastas extras varridas alem das descobertas pelos servicos
+    "paths": [],
+    # Subpastas varridas por inteiro: e onde moram as customizacoes do cliente
+    "custom_folders": ["Custom", "Scripts Especificos"],
+    # Nas subpastas acima so interessam os arquivos da TOTVS/RM - o resto sao
+    # dependencias de terceiros que a customizacao carrega junto
+    "custom_prefix": "RM.*",
+    # Windows, nao TOTVS: fora por padrao
+    "hotfixes": False,
+    # Ruido do registro, aplicado antes do filtro TOTVS
     "ignore": [
         "Update for Microsoft*", "Security Update for*", "Hotfix for*",
         "Definition Update for*",
@@ -53,16 +76,18 @@ $ProgressPreference = 'SilentlyContinue'
 
 $items = New-Object System.Collections.ArrayList
 $ignore = @(__IGNORE__)
+$totvsRe = '__TOTVS_RE__'
+$soTotvs = __SO_TOTVS__
 
-function Add-Pkg($name, $version, $publisher, $date, $arch, $source, $detail) {
+function Add-Pkg($name, $version, $publisher, $date, $arch, $source, $detail, $dist) {
     if (-not $name) { return }
     [void]$items.Add([pscustomobject]@{
         name = "$name".Trim(); version = $version; publisher = $publisher
-        install_date = $date; arch = $arch; source = $source; detail = $detail
+        install_date = $date; arch = $arch; source = $source; detail = $detail; dist = $dist
     })
 }
 
-# --- 1. Registro: chaves de desinstalacao (64 e 32 bits) ---
+# --- 1. Registro: chaves de desinstalacao (64 e 32 bits), so TOTVS ---
 $paths = @(
     @{ p = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*';             a = 'x64' },
     @{ p = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; a = 'x86' }
@@ -77,18 +102,22 @@ foreach ($entry in $paths) {
         $pular = $false
         foreach ($ig in $ignore) { if ($nome -like $ig) { $pular = $true; break } }
         if ($pular) { continue }
+        # Filtro TOTVS: casa pelo fabricante ou pelo nome do pacote
+        if ($soTotvs -and -not ("$($k.Publisher)" -match $totvsRe -or $nome -match $totvsRe)) { continue }
         # InstallDate vem como yyyyMMdd (quando vem); muitos pacotes deixam vazio
         $dt = $null
         if ("$($k.InstallDate)" -match '^(\d{4})(\d{2})(\d{2})$') {
             $dt = "$($matches[1])-$($matches[2])-$($matches[3])"
         }
-        Add-Pkg $nome (Get-Nz $k.DisplayVersion) (Get-Nz $k.Publisher) $dt $entry.a 'registry' (Get-Nz $k.InstallLocation)
+        Add-Pkg $nome (Get-Nz $k.DisplayVersion) (Get-Nz $k.Publisher) $dt $entry.a 'registry' (Get-Nz $k.InstallLocation) $null
     }
 }
 
-# --- 2. Binarios dos servicos monitorados (a versao real do RM) ---
+# --- 2. Pasta de instalacao do RM (descoberta pelo caminho dos servicos) ---
 $svcPatterns = @(__PATTERNS__)
-$extras = @(__BINARIES__)
+$watch = @(__WATCH__)
+$subpastas = @(__CUSTOM_FOLDERS__)
+$prefixoCustom = '__CUSTOM_PREFIX__'
 $dirs = @{}
 if ($svcPatterns.Count -gt 0) {
     foreach ($s in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
@@ -103,25 +132,50 @@ if ($svcPatterns.Count -gt 0) {
         # [IO.Path] em vez de Split-Path: no PowerShell 5.1, -LiteralPath com
         # -Parent/-Leaf cai em conjunto de parametros ambiguo e a chamada falha.
         $dirs[[System.IO.Path]::GetDirectoryName($exe)] = $true
-        $vi = (Get-Item -LiteralPath $exe).VersionInfo
-        Add-Pkg ([System.IO.Path]::GetFileName($exe)) (Get-Nz $vi.FileVersion) (Get-Nz $vi.CompanyName) $null $null 'binary' $exe
     }
 }
+foreach ($extra in @(__PATHS__)) { if (Test-Path -LiteralPath $extra) { $dirs[$extra] = $true } }
+
 foreach ($d in @($dirs.Keys)) {
-    foreach ($nome in $extras) {
-        $f = Join-Path $d $nome
-        if (-not (Test-Path -LiteralPath $f)) { continue }
-        $vi = (Get-Item -LiteralPath $f).VersionInfo
-        Add-Pkg $nome (Get-Nz $vi.FileVersion) (Get-Nz $vi.CompanyName) $null $null 'binary' $f
+    $arq = @(Get-ChildItem -LiteralPath $d -File | Where-Object { $_.Extension -eq '.dll' -or $_.Extension -eq '.exe' })
+    if ($arq.Count -eq 0) { continue }
+
+    # Versao base = a mais frequente entre os assemblies da TOTVS. Numa
+    # instalacao do RM sao milhares de arquivos; a moda e o numero da versao do
+    # produto, e o que diverge dela e patch aplicado (ou residuo antigo).
+    $tv = @($arq | Where-Object { "$($_.VersionInfo.CompanyName)" -match $totvsRe })
+    if ($tv.Count -gt 0) {
+        $grupos = @($tv | Group-Object { "$($_.VersionInfo.FileVersion)" } | Sort-Object Count -Descending)
+        $dist = @($grupos | ForEach-Object { "$($_.Name)=$($_.Count)" })
+        Add-Pkg 'RM - versao base' $grupos[0].Name 'TOTVS' $null $null 'rm' $d $dist
+    }
+
+    foreach ($f in $arq) {
+        foreach ($w in $watch) {
+            if ($f.Name -like $w) {
+                Add-Pkg $f.Name (Get-Nz $f.VersionInfo.FileVersion) (Get-Nz $f.VersionInfo.CompanyName) $f.LastWriteTime.ToString('yyyy-MM-dd') $null 'assembly' $f.FullName $null
+                break
+            }
+        }
+    }
+
+    # Customizacoes do cliente: as subpastas configuradas, so os arquivos RM.*
+    foreach ($sp in $subpastas) {
+        $alvo = Join-Path $d $sp
+        if (-not (Test-Path -LiteralPath $alvo)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $alvo -File -Recurse)) {
+            if ($f.Name -notlike $prefixoCustom) { continue }
+            Add-Pkg $f.Name (Get-Nz $f.VersionInfo.FileVersion) (Get-Nz $f.VersionInfo.CompanyName) $f.LastWriteTime.ToString('yyyy-MM-dd') $null 'custom' $f.FullName $null
+        }
     }
 }
 
-# --- 3. Hotfixes do Windows ---
+# --- 3. Hotfixes do Windows (desligado por padrao) ---
 if (__HOTFIXES__) {
     foreach ($h in (Get-HotFix -ErrorAction SilentlyContinue)) {
         $dt = $null
         if ($h.InstalledOn) { $dt = $h.InstalledOn.ToString('yyyy-MM-dd') }
-        Add-Pkg $h.HotFixID $null 'Microsoft' $dt $null 'hotfix' (Get-Nz $h.Description)
+        Add-Pkg $h.HotFixID $null 'Microsoft' $dt $null 'hotfix' (Get-Nz $h.Description) $null
     }
 }
 
@@ -132,10 +186,25 @@ if (__HOTFIXES__) {
 } | ConvertTo-Json -Depth 4 -Compress
 """
 
+NOME_BASE = "RM - versao base"
+NOME_RESIDUO = "RM - assemblies abaixo da versao base"
+
 
 def settings_for(defaults: dict[str, Any] | None) -> dict[str, Any]:
     """Config efetiva do inventario (defaults.inventory do YAML sobre os nossos)."""
     return {**DEFAULTS, **((defaults or {}).get("inventory") or {})}
+
+
+def fontes_ativas(defaults: dict[str, Any] | None) -> set[str]:
+    """Fontes que a coleta ainda produz com a configuracao atual."""
+    ativas = {"rm", "assembly", "custom", "registry"}
+    if settings_for(defaults).get("hotfixes"):
+        ativas.add("hotfix")
+    return ativas
+
+
+def _lista(cfg: dict[str, Any], chave: str) -> list[str]:
+    return [str(x) for x in (cfg.get(chave) or [])]
 
 
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
@@ -145,16 +214,15 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         _PS_HELPER
         + _PS_TEMPLATE
         .replace("__PATTERNS__", ",".join(_ps_str(p) for p in patterns))
-        .replace("__BINARIES__", ",".join(_ps_str(b) for b in (cfg.get("binaries") or [])))
-        .replace("__IGNORE__", ",".join(_ps_str(i) for i in (cfg.get("ignore") or [])))
-        .replace("__HOTFIXES__", "$true" if cfg.get("hotfixes", True) else "$false")
+        .replace("__WATCH__", ",".join(_ps_str(w) for w in _lista(cfg, "watch")))
+        .replace("__PATHS__", ",".join(_ps_str(p) for p in _lista(cfg, "paths")))
+        .replace("__CUSTOM_FOLDERS__", ",".join(_ps_str(c) for c in _lista(cfg, "custom_folders")))
+        .replace("__CUSTOM_PREFIX__", str(cfg.get("custom_prefix") or "RM.*"))
+        .replace("__IGNORE__", ",".join(_ps_str(i) for i in _lista(cfg, "ignore")))
+        .replace("__TOTVS_RE__", str(cfg.get("totvs_regex") or "TOTVS"))
+        .replace("__SO_TOTVS__", "$true" if cfg.get("only_totvs", True) else "$false")
+        .replace("__HOTFIXES__", "$true" if cfg.get("hotfixes") else "$false")
     )
-
-
-# Muitos pacotes carregam a versao no proprio nome ("... Redistributable - 14.34.31931").
-# Sem tirar isso, cada atualizacao viraria "removido + instalado" em vez de
-# "atualizado", e a comparacao entre hosts nunca casaria as linhas.
-_VERSAO_NO_NOME = re.compile(r"\s+-\s+\d+(?:\.\d+)+\s*$")
 
 
 # FileVersion do Windows costuma vir com um sufixo entre parenteses
@@ -170,9 +238,27 @@ def clean_version(version: str | None) -> str | None:
     return limpa or None
 
 
+# Muitos pacotes carregam a versao no proprio nome ("... Redistributable - 14.34.31931").
+# Sem tirar isso, cada atualizacao viraria "removido + instalado" em vez de
+# "atualizado", e a comparacao entre hosts nunca casaria as linhas.
+_VERSAO_NO_NOME = re.compile(r"\s+-\s+\d+(?:\.\d+)+\s*$")
+
+
+def display_name(name: str) -> str:
+    """Nome sem a versao embutida.
+
+    Os pacotes de customizacao da TOTVS se chamam, por exemplo,
+    "TOTVS_CES_RM_Office365_CNI - 12.1.2602.002": com a versao dentro do nome,
+    a mesma customizacao apareceria com rotulo diferente em cada host e a linha
+    da matriz mudaria de nome a cada atualizacao. A versao ja tem coluna."""
+    return re.sub(r"\s+", " ", _VERSAO_NO_NOME.sub("", (name or "").strip())).strip()
+
+
 def normalize_name(name: str) -> str:
-    limpo = _VERSAO_NO_NOME.sub("", (name or "").strip())
-    return re.sub(r"\s+", " ", limpo).strip().lower()
+    return display_name(name).lower()
+
+
+_PREFIXO_CHAVE = {"hotfix": "kb", "rm": "rm", "assembly": "asm", "custom": "cst"}
 
 
 def package_key(item: dict[str, Any]) -> str:
@@ -180,10 +266,9 @@ def package_key(item: dict[str, Any]) -> str:
     entre coletas."""
     source = item.get("source") or "registry"
     nome = normalize_name(item.get("name") or "")
-    if source == "hotfix":
-        return f"kb:{nome}"
-    if source == "binary":
-        return f"bin:{nome}"
+    prefixo = _PREFIXO_CHAVE.get(source)
+    if prefixo:
+        return f"{prefixo}:{nome}"
     return f"reg:{nome}:{(item.get('arch') or '').lower()}"
 
 
@@ -215,14 +300,61 @@ def _txt(value: Any, limite: int) -> str | None:
     return s[:limite] if s else None
 
 
+def _parse_dist(dist: Any) -> list[tuple[str, int]]:
+    """['12.1.2602.1=2920', ...] -> [('12.1.2602.1', 2920), ...]."""
+    saida: list[tuple[str, int]] = []
+    for entrada in _as_list(dist):
+        versao, _, quantidade = str(entrada).rpartition("=")
+        if not versao or not quantidade.isdigit():
+            continue
+        saida.append((clean_version(versao) or versao, int(quantidade)))
+    return saida
+
+
+def _resumo_instalacao(base: str | None,
+                       dist: list[tuple[str, int]]) -> tuple[str, dict | None]:
+    """Descreve a instalacao e, se houver, destaca o residuo antigo.
+
+    Numa instalacao do RM a maioria dos assemblies fica na versao do produto e
+    um punhado sobe de patch - isso e normal. O que chama atencao e o contrario:
+    arquivo que ficou **para tras** da versao base, resto de uma atualizacao que
+    nao trocou tudo. Esse caso vira um item proprio, comparavel entre hosts.
+    """
+    total = sum(q for _, q in dist)
+    na_base = sum(q for v, q in dist if compare_versions(v, base) == 0)
+    atrasados = [(v, q) for v, q in dist if compare_versions(v, base) < 0]
+    resumo = (f"{total} assemblies TOTVS: {na_base} na versao base, "
+              f"{total - na_base} fora dela ({len(dist)} versoes distintas)")
+    if not atrasados:
+        return resumo, None
+    atrasados.sort(key=lambda x: version_tuple(x[0]))
+    mais_antiga = atrasados[0][0]
+    quantos = sum(q for _, q in atrasados)
+    residuo = {
+        "name": NOME_RESIDUO, "version": mais_antiga, "publisher": "TOTVS",
+        "install_date": None, "arch": None, "source": "rm",
+        "detail": (f"{quantos} arquivo(s) em {len(atrasados)} versao(oes) anteriores "
+                   f"a base (mais antiga: {mais_antiga})"),
+    }
+    return resumo, residuo
+
+
 def _clean(items: list[dict]) -> list[dict]:
     """Normaliza e deduplica os itens de um host.
 
-    Dois servicos RM.Host em pastas diferentes podem apontar para binarios de
+    Dois servicos RM.Host em pastas diferentes podem apontar para instalacoes de
     versoes diferentes; a chave e a mesma, entao fica a maior versao - que e a
     que interessa saber se ja chegou naquele servidor.
     """
     por_chave: dict[str, dict] = {}
+
+    def guardar(item: dict) -> None:
+        chave = package_key(item)
+        item["pkg_key"] = chave
+        anterior = por_chave.get(chave)
+        if anterior is None or compare_versions(item["version"], anterior["version"]) > 0:
+            por_chave[chave] = item
+
     for raw in items:
         if not isinstance(raw, dict):
             continue
@@ -230,7 +362,7 @@ def _clean(items: list[dict]) -> list[dict]:
         if not nome:
             continue
         item = {
-            "name": nome,
+            "name": display_name(nome),
             "version": clean_version(_txt(raw.get("version"), 80)),
             "publisher": _txt(raw.get("publisher"), 120),
             "install_date": _txt(raw.get("install_date"), 10),
@@ -238,11 +370,13 @@ def _clean(items: list[dict]) -> list[dict]:
             "source": _txt(raw.get("source"), 16) or "registry",
             "detail": _txt(raw.get("detail"), 400),
         }
-        chave = package_key(item)
-        item["pkg_key"] = chave
-        anterior = por_chave.get(chave)
-        if anterior is None or compare_versions(item["version"], anterior["version"]) > 0:
-            por_chave[chave] = item
+        if item["source"] == "rm" and raw.get("dist"):
+            resumo, residuo = _resumo_instalacao(item["version"], _parse_dist(raw["dist"]))
+            item["detail"] = f"{item['detail']} - {resumo}" if item["detail"] else resumo
+            if residuo:
+                guardar(residuo)
+        guardar(item)
+
     return sorted(por_chave.values(), key=lambda i: (i["source"], i["name"].lower()))
 
 
@@ -260,9 +394,9 @@ def collect_inventory(server: ServerConfig, wc: WinRMConfig,
     inicio = time.monotonic()
     try:
         script = _build_script(server, defaults)
-        # Orcamento generoso: varrer o registro e os hotfixes de um terminal
-        # server sobrecarregado passa bem dos 30s do ciclo de metricas.
-        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=180)
+        # Orcamento generoso: a pasta do RM tem milhares de assemblies e ler o
+        # FileVersion de cada um passa bem dos 30s do ciclo de metricas.
+        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=300)
         if r.status_code != 0:
             out["error"] = _decode(r.std_err)[:500] or "WinRM status != 0"
             return out
@@ -276,12 +410,18 @@ def collect_inventory(server: ServerConfig, wc: WinRMConfig,
 
 
 # ---------- diferenca entre coletas ----------
-def diff_packages(atuais: dict[str, dict], novos: list[dict]) -> list[dict]:
+def diff_packages(atuais: dict[str, dict], novos: list[dict],
+                  ativas: set[str] | None = None) -> list[dict]:
     """Eventos entre o estado gravado e o que o host acabou de reportar.
 
     O `install_date` do registro vem vazio na maior parte dos pacotes, e quando
     vem nao tem hora. Sao estes eventos - e nao o registro - que dao a linha do
     tempo confiavel de "o que mudou neste servidor".
+
+    `ativas` sao as fontes que a coleta ainda produz. Desligar uma fonte na
+    configuracao faz sumir tudo o que veio dela, e isso nao e desinstalacao:
+    sem essa ressalva, tirar os hotfixes do inventario geraria uma enxurrada de
+    eventos "removido" que nunca aconteceram no servidor.
     """
     eventos: list[dict] = []
     vistos: set[str] = set()
@@ -307,6 +447,8 @@ def diff_packages(atuais: dict[str, dict], novos: list[dict]) -> list[dict]:
     for chave, antigo in atuais.items():
         if chave in vistos:
             continue
+        if ativas is not None and (antigo.get("source") or "") not in ativas:
+            continue
         eventos.append({"pkg_key": chave, "name": antigo["name"], "kind": "removed",
                         "old_version": antigo.get("version"), "new_version": None,
                         "source": antigo.get("source")})
@@ -316,18 +458,23 @@ def diff_packages(atuais: dict[str, dict], novos: list[dict]) -> list[dict]:
 EVENT_LABEL = {"installed": "instalado", "upgraded": "atualizado",
                "downgraded": "REGREDIU", "removed": "removido"}
 
+FONTE_LABEL = {"rm": "produto", "assembly": "biblioteca", "custom": "customizacao",
+               "registry": "instalador", "hotfix": "KB"}
+
 
 # ---------- comparacao entre hosts ----------
 FONTES = {
-    "prog": ("registry", "binary"),
+    "totvs": ("rm", "assembly", "custom"),
+    "custom": ("custom",),
+    "assembly": ("assembly",),
+    "rm": ("rm",),
     "registry": ("registry",),
-    "binary": ("binary",),
     "hotfix": ("hotfix",),
-    "todos": ("registry", "binary", "hotfix"),
+    "todos": ("rm", "assembly", "custom", "registry", "hotfix"),
 }
 
 
-def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "prog",
+def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
                  busca: str = "", filtro: str = "todos",
                  servidor: str = "") -> list[dict]:
     """Matriz pacote x host.
@@ -336,7 +483,7 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "prog",
     catalogo publico do TOTVS RM, "esta atualizado" so pode significar "esta no
     mesmo nivel do host mais novo".
     """
-    fontes = FONTES.get(fonte, FONTES["prog"])
+    fontes = FONTES.get(fonte, FONTES["totvs"])
     busca_l = (busca or "").strip().lower()
     por_pacote: dict[str, dict] = {}
 
@@ -372,7 +519,7 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "prog",
         # divergencia de versao so faz sentido entre quem tem o pacote
         p["drift"] = len(versoes) > 1
         p["parcial"] = bool(p["ausentes"]) and p["hosts"] < total_hosts
-        for nome_srv, cell in p["cells"].items():
+        for cell in p["cells"].values():
             cell["status"] = ("ok" if not p["latest"] or
                               compare_versions(cell["version"], p["latest"]) == 0 else "behind")
         if filtro == "drift" and not p["drift"]:
@@ -383,6 +530,9 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "prog",
             continue
         saida.append(p)
 
-    saida.sort(key=lambda p: (not p["drift"], not p["parcial"], p["source"] != "binary",
-                              (p["name"] or "").lower()))
+    # produto primeiro, depois customizacoes, e dentro de cada grupo o que
+    # diverge sobe: e a leitura que se quer fazer ao abrir a tela.
+    ordem_fonte = {"rm": 0, "custom": 1, "assembly": 2, "registry": 3, "hotfix": 4}
+    saida.sort(key=lambda p: (ordem_fonte.get(p["source"], 9), not p["drift"],
+                              not p["parcial"], (p["name"] or "").lower()))
     return saida
