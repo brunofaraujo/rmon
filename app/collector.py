@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from base64 import b64encode
 from typing import Any, Iterable
 
 import httpx
@@ -105,6 +104,22 @@ def _as_list(v: Any) -> list:
     return v if isinstance(v, list) else [v]
 
 
+def _decode(raw: bytes | None) -> str:
+    """Texto vindo do host. O stdout tem encoding forcado para UTF-8 pelo
+    proprio script; ja o stderr sai no code page do console do Windows
+    (cp850 em pt-BR), entao tentamos UTF-8 e caimos nele antes de desistir -
+    senao a mensagem de erro chega ilegivel no painel.
+    """
+    if not raw:
+        return ""
+    for enc in ("utf-8", "cp850", "cp1252"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
+
+
 def _ps_str(value: str) -> str:
     """Literal PowerShell entre aspas simples (aspa interna dobrada)."""
     return "'" + str(value).replace("'", "''") + "'"
@@ -182,13 +197,20 @@ def _run_ps(session: winrm.Session, script: str, deadline: float | None = None) 
     coleta abre um shell novo e os timeouts aqui sao rotineiros (ver
     _run_ps_resilient), vale garantir a limpeza para nao deixar shells presos
     justamente nos hosts que ja estao sobrecarregados.
+
+    O script vai por STDIN, e nao em -encodedcommand: encodado ele viraria
+    base64 de UTF-16LE (~2,7 caracteres por caractere de script) na linha de
+    comando do cmd.exe, que corta em ~8k - a coleta inteira morria com "Linha
+    de comando muito longa" assim que o script cresceu. Por stdin o tamanho do
+    script deixa de ser um limite.
     """
     proto = session.protocol
-    encoded = b64encode(script.encode("utf_16_le")).decode("ascii")
     shell_id = proto.open_shell()
     command_id = None
     try:
-        command_id = proto.run_command(shell_id, f"powershell -encodedcommand {encoded}")
+        command_id = proto.run_command(
+            shell_id, "powershell -NoProfile -NonInteractive -Command -", console_mode_stdin=False)
+        proto.send_command_input(shell_id, command_id, script.encode("utf-8"), end=True)
         std_out, std_err, status = _receive(proto, shell_id, command_id, deadline)
         if std_err:
             std_err = session._clean_error_msg(std_err)
@@ -285,8 +307,8 @@ def list_sessions(server: ServerConfig, wc: WinRMConfig) -> dict[str, Any]:
         session = _winrm_session(server.host, wc, user, pw)
         r = _run_ps(session, _PS_SESSIONS, _deadline(wc))
         if r.status_code != 0:
-            return {"error": (r.std_err or b"").decode("utf-8", "replace")[:300] or "erro WinRM", "sessions": []}
-        out = (r.std_out or b"").decode("utf-8", "replace").strip()
+            return {"error": _decode(r.std_err)[:300] or "erro WinRM", "sessions": []}
+        out = _decode(r.std_out).strip()
         data = json.loads(out) if out else []
         return {"error": None, "sessions": _as_list(data)}
     except Exception as exc:  # noqa: BLE001
@@ -307,7 +329,7 @@ def logoff_session(server: ServerConfig, wc: WinRMConfig, session_id: int) -> tu
         r = _run_ps(session, f"logoff {sid}", _deadline(wc))
         if r.status_code == 0:
             return True, "ok"
-        return False, (r.std_err or b"").decode("utf-8", "replace")[:200] or "logoff falhou"
+        return False, _decode(r.std_err)[:200] or "logoff falhou"
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"[:200]
 
@@ -343,7 +365,7 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
         r = _run_ps(session, cmds[action], _deadline(wc))
         if r.status_code == 0:
             return True, action
-        return False, (r.std_err or b"").decode("utf-8", "replace")[:200] or f"{action} falhou"
+        return False, _decode(r.std_err)[:200] or f"{action} falhou"
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"[:200]
 
@@ -370,9 +392,9 @@ def collect_server(
         script = _build_script(server, defaults)
         r = _run_ps_resilient(server.host, wc, user, pw, script)
         if r.status_code != 0:
-            result["error"] = (r.std_err or b"").decode("utf-8", "replace")[:500] or "WinRM status != 0"
+            result["error"] = _decode(r.std_err)[:500] or "WinRM status != 0"
             return result
-        data = json.loads((r.std_out or b"").decode("utf-8", "replace"))
+        data = json.loads(_decode(r.std_out))
         result.update({
             "reachable": True,
             "cpu": data.get("cpu"),
