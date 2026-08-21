@@ -13,10 +13,17 @@ winrm:
 
 # Padroes aplicados a todos os servidores (podem ser sobrescritos por servidor)
 defaults:
+  # Lista fixa: se o servico nao existir mais no host, vira alerta (ausente).
   services:
-    - "TOTVS RM.Host"      # RM.Host / servidor de aplicacao
     - "MSSQLSERVER"        # SQL Server (instancia default)
     - "W3SVC"              # IIS
+  # Descoberta automatica (curinga, casa nome OU nome de exibicao do servico):
+  # o monitor pergunta ao proprio host quantos RM.Host existem a cada coleta.
+  # Instancia desinstalada some da lista sozinha (nao vira falha); instalada e
+  # parada com inicio automatico continua sendo alerta; deixada em
+  # Manual/Disabled aparece em ambar (parada de proposito).
+  service_patterns:
+    - "RM.Host*"
   eventlog:
     logs: [System, Application]
     level: 2               # 1=Critical, 2=Error, 3=Warning
@@ -25,7 +32,8 @@ defaults:
 servers:
   - name: rm-app-01
     host: 10.10.10.50
-    # services: [...]      # opcional: sobrescreve defaults.services
+    # services: [...]          # opcional: sobrescreve defaults.services
+    # service_patterns: [...]  # opcional: sobrescreve defaults.service_patterns
     app_health:
       url: "http://10.10.10.50:8051/"   # endpoint HTTP do RM para checar
       expect_status: 200

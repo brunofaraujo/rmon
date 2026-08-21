@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from base64 import b64encode
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 import requests
@@ -36,11 +36,36 @@ $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Objec
         used_pct = if ($_.Size) { [math]::Round((($_.Size - $_.FreeSpace) / $_.Size) * 100, 1) } else { 0 }
     }
 }
+# Servicos: os fixos vem do inventario; os padroes (__PATTERNS__) sao expandidos
+# aqui, no proprio host, para o monitor enxergar o que esta REALMENTE instalado
+# (ex.: quantos RM.Host existem hoje) em vez de uma lista que envelhece.
 $svcNames = @(__SERVICES__)
-$services = foreach ($n in $svcNames) {
-    $s = Get-Service -Name $n -ErrorAction SilentlyContinue
-    [pscustomobject]@{ name = $n; status = if ($s) { $s.Status.ToString() } else { 'NOT_FOUND' } }
+$svcPatterns = @(__PATTERNS__)
+$allSvc = @(Get-CimInstance Win32_Service | Select-Object Name, DisplayName, State, StartMode)
+$services = New-Object System.Collections.ArrayList
+$seen = @{}
+foreach ($n in $svcNames) {
+    $s = @($allSvc | Where-Object { $_.Name -eq $n -or $_.DisplayName -eq $n })[0]
+    if ($s) {
+        $seen[$s.Name] = $true
+        [void]$services.Add([pscustomobject]@{
+            name = $s.Name; status = $s.State; start = $s.StartMode
+            display = $s.DisplayName; src = 'fixed' })
+    } else {
+        [void]$services.Add([pscustomobject]@{
+            name = $n; status = 'NOT_FOUND'; start = $null; display = $null; src = 'fixed' })
+    }
 }
+foreach ($p in $svcPatterns) {
+    foreach ($s in @($allSvc | Where-Object { $_.Name -like $p -or $_.DisplayName -like $p } | Sort-Object Name)) {
+        if ($seen[$s.Name]) { continue }
+        $seen[$s.Name] = $true
+        [void]$services.Add([pscustomobject]@{
+            name = $s.Name; status = $s.State; start = $s.StartMode
+            display = $s.DisplayName; src = 'auto'; pattern = $p })
+    }
+}
+$services = @($services)
 # Ocorrencias: erros/criticos das ultimas N horas, sem ruido, AGRUPADOS por origem+ID
 $since = (Get-Date).AddHours(-__LOOKBACK_H__)
 $noise = @(__NOISE_IDS__)
@@ -80,8 +105,14 @@ def _as_list(v: Any) -> list:
     return v if isinstance(v, list) else [v]
 
 
+def _ps_str(value: str) -> str:
+    """Literal PowerShell entre aspas simples (aspa interna dobrada)."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     services = server.services or list(defaults.get("services") or [])
+    patterns = server.service_patterns or list(defaults.get("service_patterns") or [])
     el = defaults.get("eventlog") or {}
     logs = list(el.get("logs") or ["System", "Application"])
     lookback = int(el.get("lookback_hours", 24))
@@ -92,7 +123,8 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     )
     return (
         _PS_TEMPLATE
-        .replace("__SERVICES__", ",".join(f"'{s}'" for s in services))
+        .replace("__SERVICES__", ",".join(_ps_str(s) for s in services))
+        .replace("__PATTERNS__", ",".join(_ps_str(p) for p in patterns))
         .replace("__LOGS__", ",".join(f"'{l}'" for l in logs))
         .replace("__LOOKBACK_H__", str(lookback))
         .replace("__NOISE_IDS__", ",".join(str(int(n)) for n in noise))
@@ -283,9 +315,16 @@ def logoff_session(server: ServerConfig, wc: WinRMConfig, session_id: int) -> tu
 import re as _re
 
 
-def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, action: str = "restart") -> tuple[bool, str]:
-    """start/stop/restart de um servico. So permite servicos monitorados do proprio servidor."""
-    if service_name not in (server.services or []):
+def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, action: str = "restart",
+                   allowed: Iterable[str] | None = None) -> tuple[bool, str]:
+    """start/stop/restart de um servico. So permite servicos monitorados do proprio servidor.
+
+    `allowed` cobre os servicos descobertos por padrao (service_patterns), que
+    nao estao na lista fixa do inventario: quem chama passa os nomes vindos da
+    ultima coleta daquele servidor.
+    """
+    permitido = set(server.services or []) | set(allowed or ())
+    if service_name not in permitido:
         return False, "servico nao monitorado neste servidor"
     if not _re.fullmatch(r"[A-Za-z0-9 ._#$-]+", service_name or ""):
         return False, "nome de servico invalido"

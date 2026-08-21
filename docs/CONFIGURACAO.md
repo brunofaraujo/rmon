@@ -29,7 +29,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     app_ms: 3000                   # app_health respondendo, porém > 3000ms = "lento"
     jobs_failed: 3                 # alerta se >= N jobs falharam na janela
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
-  services: []                     # lista padrão de serviços (se um servidor não definir a sua)
+  services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
+  service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
   eventlog:
     logs: [System, Application]
     lookback_hours: 24             # janela de ocorrências do Event Log
@@ -40,10 +41,10 @@ servers:
   - name: rm-app-01                # rótulo único no painel
     host: 10.0.0.50                # IP/hostname do alvo
     cred: fin                      # perfil de credencial WinRM (ver .env). Default: 'default'
-    services:                      # serviços Windows monitorados neste host
-      - RM.Host.Service
-      - RM.Host.Service1
+    services:                      # serviços Windows fixos monitorados neste host
       - W3SVC
+    service_patterns:              # descobertos no host a cada coleta
+      - "RM.Host*"
     app_health:                    # (opcional) checagem HTTP da aplicação
       url: "http://10.0.0.50:8051/"
       expect_status: 200           # status HTTP esperado
@@ -68,9 +69,36 @@ servers:
 | `name` | ✅ | Identificador único exibido no painel |
 | `host` | ✅ | IP ou hostname do alvo (destino do WinRM) |
 | `cred` | — | Perfil de credencial (mapeia para `RMON_CRED_<PERFIL>_*` no `.env`). Padrão `default` |
-| `services` | — | Serviços Windows a checar. Se omitido, usa `defaults.services` |
+| `services` | — | Serviços Windows fixos a checar. Se omitido, usa `defaults.services` |
+| `service_patterns` | — | Curingas descobertos no próprio host a cada coleta. Se omitido, usa `defaults.service_patterns` |
 | `app_health` | — | `url`, `expect_status`, `timeout_sec` — checagem HTTP independente do WinRM |
 | `jobs` | — | `window_min`, `servidor`, `success_status`, `failed_status` — requer login SQL configurado |
+
+### Serviços fixos x descobertos (`service_patterns`)
+
+Instâncias de RM.Host nascem e morrem: o time instala uma nova ou desinstala
+duas, e o inventário fica desatualizado — foi o que aconteceu no
+`fin-sge-app-34`, onde dois RM.Host desinstalados continuavam listados e o
+monitor acusava dois serviços em falha.
+
+Com `service_patterns`, o monitor pergunta ao próprio host, a cada coleta,
+quais serviços casam com o curinga (compara **nome** e **nome de exibição**,
+ex.: `RM.Host*`). O que sobra vira a lista real de RM.Hosts instalados, e o
+painel mostra `RM.Host* · 4/4 em execução`.
+
+A diferença de tratamento entre os dois:
+
+| Situação | Fixo (`services`) | Descoberto (`service_patterns`) |
+|---|---|---|
+| Serviço não existe no host | 🔴 falha (`NOT_FOUND`) | não aparece — desinstalar não gera alerta |
+| Instalado, início `Auto`, parado | 🔴 falha | 🔴 falha |
+| Instalado, início `Manual`/`Disabled`, parado | 🔴 falha | 🟡 âmbar (parado de propósito) |
+
+Use `services` para o que **tem** que existir (`W3SVC`, `MSSQLSERVER`) e
+`service_patterns` para o que varia com a instalação (os RM.Host). Os dois
+podem conviver no mesmo servidor; um serviço que casa nos dois é contado uma
+vez só, como fixo. Ações `start`/`stop`/`restart` funcionam também nos
+descobertos (limitadas ao que apareceu na última coleta daquele servidor).
 
 > A regra `providers_regex` usa `\b` (fronteira de palavra) para evitar falsos
 > positivos (ex.: `FilterManager` casando `rm`). Ajuste conforme seu ambiente.

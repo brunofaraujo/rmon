@@ -42,6 +42,9 @@ class ServerConfig:
     name: str
     host: str
     services: list[str] = field(default_factory=list)
+    # Padroes (curinga) expandidos no proprio host a cada coleta: o que casar
+    # esta instalado, o que sumiu foi desinstalado e simplesmente nao aparece.
+    service_patterns: list[str] = field(default_factory=list)
     app_health: dict[str, Any] | None = None
     cred: str = "default"
     jobs: dict[str, Any] | None = None
@@ -112,6 +115,7 @@ def load_inventory(path: str) -> Inventory:
     winrm = WinRMConfig(**(data.get("winrm") or {}))
     defaults = data.get("defaults") or {}
     default_services = list((defaults.get("services") or []))
+    default_patterns = list((defaults.get("service_patterns") or []))
     servers: list[ServerConfig] = []
     for raw in data.get("servers") or []:
         servers.append(
@@ -119,6 +123,7 @@ def load_inventory(path: str) -> Inventory:
                 name=raw["name"],
                 host=raw["host"],
                 services=list(raw.get("services") or default_services),
+                service_patterns=list(raw.get("service_patterns") or default_patterns),
                 app_health=raw.get("app_health"),
                 cred=raw.get("cred", "default"),
                 jobs=raw.get("jobs"),
