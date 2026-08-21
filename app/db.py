@@ -48,6 +48,35 @@ _SCHEMA = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS email text",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS users_count integer",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS jobs jsonb",
+    # --- inventario de software (cadencia propria, nao entra em checks) ---
+    """CREATE TABLE IF NOT EXISTS host_packages (
+        server text NOT NULL,
+        pkg_key text NOT NULL,
+        name text NOT NULL,
+        version text,
+        publisher text,
+        install_date date,
+        arch text,
+        source text NOT NULL DEFAULT 'registry',
+        detail text,
+        first_seen timestamptz NOT NULL DEFAULT now(),
+        last_seen timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (server, pkg_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_host_packages_key ON host_packages(pkg_key)",
+    """CREATE TABLE IF NOT EXISTS package_events (
+        id bigserial PRIMARY KEY,
+        ts timestamptz NOT NULL DEFAULT now(),
+        server text NOT NULL, pkg_key text NOT NULL, name text NOT NULL,
+        kind text NOT NULL, old_version text, new_version text, source text
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_package_events_ts ON package_events(ts DESC)",
+    """CREATE TABLE IF NOT EXISTS inventory_runs (
+        server text PRIMARY KEY,
+        ts timestamptz NOT NULL DEFAULT now(),
+        ok boolean NOT NULL, packages integer, error text, duration_ms integer,
+        computer text, os text
+    )""",
 ]
 
 
@@ -140,6 +169,8 @@ def prune(keep_days: int = 30) -> int:
         cur = c.execute("DELETE FROM checks WHERE ts < now() - (%s || ' days')::interval", (str(keep_days),))
         c.execute("DELETE FROM audit_log WHERE ts < now() - interval '180 days'")
         c.execute("DELETE FROM alerts_log WHERE ts < now() - interval '180 days'")
+        # mudancas de pacote sao raras e valiosas na investigacao: guarda 1 ano
+        c.execute("DELETE FROM package_events WHERE ts < now() - interval '365 days'")
         return cur.rowcount
 
 
@@ -263,3 +294,110 @@ def set_config(key: str, value: Any) -> None:
                ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()""",
             (key, Jsonb(value)),
         )
+
+
+# ---------- inventario de software ----------
+def packages_of(server: str) -> dict[str, dict]:
+    """Estado atual do inventario de um servidor, indexado pela chave do pacote."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM host_packages WHERE server=%s", (server,)).fetchall()
+    return {r["pkg_key"]: r for r in rows}
+
+
+def _as_date(value: Any):
+    """'yyyy-mm-dd' -> date. Data invalida vira NULL em vez de quebrar a coleta."""
+    import datetime
+    if not value:
+        return None
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        return datetime.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def replace_packages(server: str, items: list[dict]) -> None:
+    """Grava o inventario do servidor: insere/atualiza o que veio e apaga o
+    que nao veio (desinstalado). `first_seen` da linha existente e preservado."""
+    chaves = [i["pkg_key"] for i in items]
+    with _conn() as c:
+        with c.transaction():
+            for i in items:
+                c.execute(
+                    """INSERT INTO host_packages
+                         (server, pkg_key, name, version, publisher, install_date,
+                          arch, source, detail, first_seen, last_seen)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),now())
+                       ON CONFLICT (server, pkg_key) DO UPDATE SET
+                         name=EXCLUDED.name, version=EXCLUDED.version,
+                         publisher=EXCLUDED.publisher,
+                         install_date=COALESCE(EXCLUDED.install_date, host_packages.install_date),
+                         arch=EXCLUDED.arch, source=EXCLUDED.source,
+                         detail=EXCLUDED.detail, last_seen=now()""",
+                    (server, i["pkg_key"], i["name"], i.get("version"), i.get("publisher"),
+                     _as_date(i.get("install_date")), i.get("arch"), i.get("source"),
+                     i.get("detail")),
+                )
+            if chaves:
+                c.execute("DELETE FROM host_packages WHERE server=%s AND pkg_key <> ALL(%s)",
+                          (server, chaves))
+            else:
+                c.execute("DELETE FROM host_packages WHERE server=%s", (server,))
+
+
+def insert_package_events(server: str, events: list[dict]) -> None:
+    if not events:
+        return
+    with _conn() as c:
+        with c.transaction():
+            for e in events:
+                c.execute(
+                    """INSERT INTO package_events
+                         (server, pkg_key, name, kind, old_version, new_version, source)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (server, e["pkg_key"], e["name"], e["kind"],
+                     e.get("old_version"), e.get("new_version"), e.get("source")),
+                )
+
+
+def all_packages() -> list[dict]:
+    """Inventario de todos os servidores (base da matriz de comparacao)."""
+    with _conn() as c:
+        return c.execute(
+            "SELECT * FROM host_packages ORDER BY lower(name), server").fetchall()
+
+
+def recent_package_events(limit: int = 300, server: str | None = None,
+                          days: int = 90) -> list[dict]:
+    sql = ["SELECT * FROM package_events WHERE ts > now() - (%s || ' days')::interval"]
+    params: list[Any] = [str(int(days))]
+    if server:
+        sql.append("AND server=%s")
+        params.append(server)
+    sql.append("ORDER BY ts DESC LIMIT %s")
+    params.append(int(limit))
+    with _conn() as c:
+        return _epoch(c.execute(" ".join(sql), params).fetchall())
+
+
+def record_inventory_run(server: str, ok: bool, packages: int, error: str | None,
+                         duration_ms: int, computer: str | None = None,
+                         os_name: str | None = None) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO inventory_runs (server, ts, ok, packages, error, duration_ms, computer, os)
+               VALUES (%s, now(), %s,%s,%s,%s,%s,%s)
+               ON CONFLICT (server) DO UPDATE SET
+                 ts=now(), ok=EXCLUDED.ok, packages=EXCLUDED.packages, error=EXCLUDED.error,
+                 duration_ms=EXCLUDED.duration_ms,
+                 computer=COALESCE(EXCLUDED.computer, inventory_runs.computer),
+                 os=COALESCE(EXCLUDED.os, inventory_runs.os)""",
+            (server, bool(ok), int(packages), error, int(duration_ms), computer, os_name),
+        )
+
+
+def inventory_runs() -> dict[str, dict]:
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM inventory_runs").fetchall()
+    return {r["server"]: r for r in _epoch(rows)}

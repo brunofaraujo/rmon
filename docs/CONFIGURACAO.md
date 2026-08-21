@@ -36,6 +36,12 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     lookback_hours: 24             # janela de ocorrências do Event Log
     noise_ids: [10016, 1058, 1030, 1502, 1500, 7000, 7009]   # IDs ignorados (ruído)
     providers_regex: '\b(RM|TOTVS|SGE|MSSQL|SQL|IIS|W3SVC|WAS|DBAccess|WER)|\.NET Runtime|ASP\.NET|Application Error|Application Hang'
+  inventory:                       # inventário de software (tela /pacotes)
+    enabled: true
+    interval_hours: 6              # cadência da coleta de inventário (horas)
+    hotfixes: true                 # incluir os KBs do Windows (Get-HotFix)
+    binaries: ["RM.exe", "RM.Host.exe", "RM.Host.Service.exe"]   # versão real do RM
+    ignore: ["Update for Microsoft*", "Security Update for*"]     # ruído do registro
 
 servers:
   - name: rm-app-01                # rótulo único no painel
@@ -104,6 +110,38 @@ descobertos (limitadas ao que apareceu na última coleta daquele servidor).
 > positivos (ex.: `FilterManager` casando `rm`). Ajuste conforme seu ambiente.
 
 ---
+
+## Inventário de software (`defaults.inventory`)
+
+A tela `/pacotes` compara o software instalado entre os hosts. A coleta é
+separada do ciclo de métricas (padrão: a cada 6 h) e lê **três** fontes numa só
+ida ao servidor:
+
+| Fonte | O que traz | Por quê |
+|---|---|---|
+| `registry` | Chaves de desinstalação (HKLM 64 e 32 bits): nome, versão, fabricante, data | Fonte canônica de "programas instalados" |
+| `binary` | `FileVersion` dos executáveis dos serviços casados por `service_patterns` | No RM a versão que vale é a do binário — o registro fica defasado após um update |
+| `hotfix` | `Get-HotFix` (KBs do Windows) | Comparar nível de patch entre servidores |
+
+> **`Win32_Product` não é usado.** Consultar aquela classe WMI dispara a
+> auto-reparação do MSI em cada pacote, leva minutos e é conhecida por quebrar
+> instalação em produção. As chaves de desinstalação dão a mesma informação em
+> ~1 s.
+
+**Referência de comparação:** a maior versão encontrada no parque. Não existe
+catálogo público consultável do TOTVS RM, então "estar atualizado" só pode
+significar "estar no mesmo nível do host mais novo".
+
+**Data de instalação:** o `InstallDate` do registro vem vazio na maior parte dos
+pacotes. Quando falta, o painel mostra a data da primeira coleta que viu aquele
+pacote, marcada com `*`. A linha do tempo confiável é a de `/pacotes/mudancas`,
+montada pelo diff entre coletas — ela registra instalação, atualização,
+**regressão** de versão e remoção, com data e hora.
+
+Mudança de pacote gera registro em `alerts_log` e notificação (Telegram/Slack),
+quando configurada. Não é alerta de falha: é rastreabilidade — software que muda
+sem ninguém ter mexido é a primeira coisa que se procura quando o servidor passa
+a se comportar diferente.
 
 ## Variáveis de ambiente (`.env`)
 

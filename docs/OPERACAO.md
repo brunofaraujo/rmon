@@ -28,6 +28,8 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/server/{name}` | Detalhe e histórico de um servidor | login |
 | `/jobs` | Estatísticas de jobs do RM (pool, por servidor, por solicitante, falhas) | login |
 | `/ocorrencias` | Erros/críticos recentes do Event Log, consolidados | login |
+| `/pacotes` | Inventário de software: matriz pacote × host, versões divergentes, ausências | login (coletar: admin) |
+| `/pacotes/mudancas` | Linha do tempo de instalações, atualizações, regressões e remoções | login |
 | `/sessions` | Sessões RDP ao vivo; encerrar sessões selecionadas | admin p/ logoff |
 | `/logs` | Auditoria de ações | admin |
 | `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |

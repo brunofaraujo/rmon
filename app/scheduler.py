@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, jobstats, notify
+from . import db, inventory, jobstats, notify
 from .collector import collect_server
 from .config import Inventory, Settings
+from .inventory import collect_inventory
 
 log = logging.getLogger("rmon.scheduler")
 
@@ -125,6 +126,69 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             _last[server.name] = probs
 
 
+def poll_inventory(inv: Inventory, settings: Settings) -> None:
+    """Coleta o inventario de software de todos os hosts e grava as mudancas.
+
+    Roda em cadencia de horas (nao no ciclo de metricas): varrer o registro e os
+    hotfixes custa segundos por host e o resultado muda em dias, nao em minutos.
+    """
+    cfg = inventory.settings_for(inv.defaults)
+    if not cfg.get("enabled", True) or not inv.servers:
+        return
+    with ThreadPoolExecutor(max_workers=min(4, len(inv.servers))) as pool:
+        futures = {pool.submit(collect_inventory, s, inv.winrm, inv.defaults): s
+                   for s in inv.servers}
+        for fut, server in list(futures.items()):
+            try:
+                res = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                res = {"ok": False, "items": [], "error": f"inventario: {exc}"}
+            gasto = int(res.get("ms") or 0)
+            if not res.get("ok"):
+                db.record_inventory_run(server.name, False, 0, res.get("error"), gasto)
+                log.warning("inventario %s -> FALHA (%s)", server.name, res.get("error"))
+                continue
+
+            itens = res["items"]
+            atuais = db.packages_of(server.name)
+            # Primeira coleta do host e semeadura: gerar 200 eventos "instalado"
+            # so encheria a linha do tempo de ruido no dia em que o servidor entrou.
+            eventos = inventory.diff_packages(atuais, itens) if atuais else []
+            db.replace_packages(server.name, itens)
+            db.insert_package_events(server.name, eventos)
+            db.record_inventory_run(server.name, True, len(itens), None, gasto,
+                                    res.get("computer"), res.get("os"))
+            log.info("inventario %s -> %d pacotes, %d mudanca(s) em %dms",
+                     server.name, len(itens), len(eventos), gasto)
+            _notify_package_changes(server.name, server.host, eventos)
+
+
+def _notify_package_changes(name: str, host: str, eventos: list[dict]) -> None:
+    """Avisa que o software de um servidor mudou.
+
+    Nao e um alerta de falha: e rastreabilidade. Mudanca de pacote e a primeira
+    coisa que se procura quando o servidor comeca a se comportar diferente sem
+    ninguem ter mexido nele.
+    """
+    if not eventos:
+        return
+    for e in eventos:
+        db.record_alert(name, "package", e["pkg_key"],
+                        f"{inventory.EVENT_LABEL.get(e['kind'], e['kind'])}: {e['name']} "
+                        f"{e.get('old_version') or ''} -> {e.get('new_version') or ''}".strip())
+    if not notify.enabled():
+        return
+    linhas = [f"\u2022 {inventory.EVENT_LABEL.get(e['kind'], e['kind'])}: {e['name']}"
+              + (f" {e.get('old_version')} -> {e.get('new_version')}"
+                 if e["kind"] in ("upgraded", "downgraded") else
+                 (f" {e.get('new_version')}" if e.get("new_version") else ""))
+              for e in eventos[:12]]
+    if len(eventos) > 12:
+        linhas.append(f"... e mais {len(eventos) - 12} mudanca(s)")
+    notify.send(f"\U0001F4E6 RMonitor \u2014 software alterado em "
+                f"{name} ({host})\n" + "\n".join(linhas))
+
+
 def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="America/Recife")
     sched.add_job(
@@ -132,4 +196,13 @@ def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
         id="poll_all", max_instances=1, coalesce=True,
     )
     sched.add_job(db.prune, "interval", hours=6, id="prune", max_instances=1, coalesce=True)
+    cfg = inventory.settings_for(inv.defaults)
+    if cfg.get("enabled", True):
+        # Primeira execucao logo apos o start (o APScheduler so dispararia depois
+        # do intervalo inteiro, e um restart nao pode significar horas sem dados).
+        sched.add_job(
+            poll_inventory, "interval", hours=max(1, int(cfg.get("interval_hours", 6))),
+            args=[inv, settings], id="poll_inventory", max_instances=1, coalesce=True,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=90),
+        )
     return sched

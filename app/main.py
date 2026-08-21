@@ -18,10 +18,10 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, jobstats, scheduler
+from . import __version__, db, inventory, jobstats, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import load_inventory, load_settings
-from .scheduler import build_scheduler, poll_all
+from .scheduler import build_scheduler, poll_all, poll_inventory
 from .security import hash_password, verify_password
 
 log = logging.getLogger("rmon")
@@ -717,3 +717,100 @@ async def sessions_logoff(request: Request):
     db.audit(request.session.get("user"), "logoff", " ".join(parts), _ip(request))
     request.session["flash"] = " ".join(parts)
     return RedirectResponse("/sessions", status_code=303)
+
+
+# ---------- inventario de software (pacotes/versoes por host) ----------
+def _pacotes_ctx(request: Request) -> dict:
+    """Contexto comum das telas de inventario: matriz, filtros e ultima coleta."""
+    inv = STATE["inv"]
+    q = request.query_params
+    fonte = q.get("fonte") if q.get("fonte") in inventory.FONTES else "prog"
+    filtro = q.get("filtro") if q.get("filtro") in ("todos", "drift", "ausentes", "problemas") else "todos"
+    busca = (q.get("q") or "").strip()[:80]
+    servidores = [s.name for s in inv.servers]
+    servidor = q.get("servidor") if q.get("servidor") in servidores else ""
+    linhas = inventory.build_matrix(db.all_packages(), servidores, fonte=fonte,
+                                    busca=busca, filtro=filtro, servidor=servidor)
+    runs = db.inventory_runs()
+    return {
+        "request": request, "servidores": servidores, "linhas": linhas, "runs": runs,
+        "fonte": fonte, "filtro": filtro, "busca": busca, "servidor": servidor,
+        "resumo": {
+            "pacotes": len(linhas),
+            "drift": sum(1 for l in linhas if l["drift"]),
+            "parcial": sum(1 for l in linhas if l["parcial"]),
+            "sem_coleta": [s for s in servidores if s not in runs],
+            "falhas": [s for s, r in runs.items() if not r["ok"]],
+        },
+        "version": __version__,
+    }
+
+
+@app.get("/pacotes", response_class=HTMLResponse)
+def pacotes_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    ctx = _pacotes_ctx(request)
+    ctx["flash"] = request.session.pop("pflash", None)
+    return templates.TemplateResponse("pacotes.html", ctx)
+
+
+@app.get("/pacotes.csv")
+def pacotes_csv(request: Request):
+    """Inventario achatado (um pacote por linha, por servidor) para planilha."""
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    import csv
+    import io as _io
+    buf = _io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["servidor", "pacote", "versao", "fabricante", "arquitetura",
+                "fonte", "instalado_em", "data_estimada", "detalhe"])
+    for r in db.all_packages():
+        data = r["install_date"] or (r["first_seen"].date() if r.get("first_seen") else None)
+        w.writerow([r["server"], r["name"], r["version"] or "", r["publisher"] or "",
+                    r["arch"] or "", r["source"], data or "",
+                    "sim" if not r["install_date"] else "nao", r["detail"] or ""])
+    from fastapi.responses import Response
+    return Response(
+        buf.getvalue().encode("utf-8-sig"), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="rmon-pacotes.csv"'})
+
+
+@app.get("/pacotes/mudancas", response_class=HTMLResponse)
+def pacotes_mudancas(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    inv = STATE["inv"]
+    servidores = [s.name for s in inv.servers]
+    q = request.query_params
+    servidor = q.get("servidor") if q.get("servidor") in servidores else ""
+    try:
+        dias = min(max(int(q.get("dias", 90)), 1), 365)
+    except ValueError:
+        dias = 90
+    eventos = db.recent_package_events(limit=500, server=servidor or None, days=dias)
+    return templates.TemplateResponse(
+        "pacotes_mudancas.html",
+        {"request": request, "eventos": eventos, "servidores": servidores,
+         "servidor": servidor, "dias": dias, "labels": inventory.EVENT_LABEL,
+         "version": __version__})
+
+
+@app.post("/pacotes/coletar")
+def pacotes_coletar(request: Request):
+    """Forca uma coleta de inventario fora da cadencia (admin).
+
+    Roda em thread: varrer o registro de todos os hosts leva mais tempo do que
+    o navegador espera por uma resposta.
+    """
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    inv, settings = STATE["inv"], _settings()
+    threading.Thread(target=poll_inventory, args=(inv, settings), daemon=True).start()
+    db.audit(request.session.get("user"), "inventory_collect", None, _ip(request))
+    request.session["pflash"] = ("Coleta de inventario disparada. "
+                                "Atualize a pagina em alguns instantes.")
+    return RedirectResponse("/pacotes", status_code=303)

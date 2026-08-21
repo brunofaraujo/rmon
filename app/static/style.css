@@ -302,3 +302,16 @@ th.sortable .arrow { color: var(--accent); }
   .userchip .uname { display: none; }
   .metrics-2 { grid-template-columns: 1fr 1fr; }
 }
+
+/* ---------- Matriz de pacotes (inventario x host) ---------- */
+.tbl.matrix td, .tbl.matrix th { vertical-align: top; }
+.tbl.matrix .sticky-col {
+  position: sticky; left: 0; z-index: 2; background: var(--surface);
+  min-width: 260px; max-width: 380px; border-right: 1px solid var(--line-2);
+}
+.tbl.matrix thead .sticky-col { z-index: 3; }
+.tbl.matrix .host-col { min-width: 118px; white-space: nowrap; }
+.tbl.matrix .cell { white-space: nowrap; }
+.tbl.matrix .cell.behind { background: rgba(251,191,36,.10); color: var(--amber); }
+.tbl.matrix .cell.absent { color: var(--faint); }
+.tbl.matrix .sticky-col .pill { margin-left: .35rem; }

@@ -25,6 +25,7 @@
       <a href="/" class="{{ 'active' if path == '/' else '' }}">Painel</a>
       <a href="/jobs" class="{{ 'active' if path.startswith('/jobs') else '' }}">Jobs</a>
       <a href="/ocorrencias" class="{{ 'active' if path.startswith('/ocorrencias') else '' }}">Ocorrencias</a>
+      <a href="/pacotes" class="{{ 'active' if path.startswith('/pacotes') else '' }}">Pacotes</a>
       <a href="/sessions" class="{{ 'active' if path.startswith('/sessions') else '' }}">Sessoes</a>
       {% if request.session.get('role') == 'admin' %}
       <a href="/logs" class="{{ 'active' if path.startswith('/logs') else '' }}">Logs</a>

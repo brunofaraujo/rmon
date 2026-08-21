@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Pacotes - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Inventario de software</h1>
+    <div class="sub">
+      {{ resumo.pacotes }} pacote(s) &middot; referencia = maior versao instalada no parque
+    </div>
+  </div>
+  <div class="pills">
+    <a class="pill" href="/pacotes/mudancas">&#128337; Mudancas</a>
+    <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
+    {% if request.session.get('role') == 'admin' %}
+    <form method="post" action="/pacotes/coletar" style="display:inline">
+      <button class="btn primary" type="submit">&#8635; Coletar agora</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
+{% if resumo.sem_coleta %}
+  <div class="alert info small">
+    Sem inventario ainda: <b>{{ resumo.sem_coleta|join(', ') }}</b>.
+    A primeira coleta roda 90s apos o servico subir, depois na cadencia configurada.
+  </div>
+{% endif %}
+{% if resumo.falhas %}
+  <div class="alert small">
+    Falha na ultima coleta de inventario:
+    {% for s in resumo.falhas %}<b>{{ s }}</b> ({{ runs[s].error }}){% if not loop.last %} &middot; {% endif %}{% endfor %}
+  </div>
+{% endif %}
+
+<div class="kpis">
+  <div class="kpi"><div class="val">{{ resumo.pacotes }}</div><div class="lbl">Pacotes distintos</div></div>
+  <div class="kpi {{ 'warn' if resumo.drift else 'ok' }}">
+    <div class="val {{ 'txt-amber' if resumo.drift else 'txt-green' }}">{{ resumo.drift }}</div>
+    <div class="lbl">Versoes divergentes</div>
+  </div>
+  <div class="kpi"><div class="val">{{ resumo.parcial }}</div><div class="lbl">Ausentes em algum host</div></div>
+  <div class="kpi"><div class="val">{{ servidores|length - resumo.sem_coleta|length }}/{{ servidores|length }}</div><div class="lbl">Hosts inventariados</div></div>
+</div>
+
+<form class="toolbar" method="get" action="/pacotes">
+  <input type="search" name="q" class="input" value="{{ busca }}"
+         placeholder="&#128269;  Pesquisar pacote ou versao...">
+  <select name="fonte" class="input">
+    <option value="prog"     {{ 'selected' if fonte=='prog' }}>Programas e binarios</option>
+    <option value="registry" {{ 'selected' if fonte=='registry' }}>Programas (registro)</option>
+    <option value="binary"   {{ 'selected' if fonte=='binary' }}>Binarios do RM</option>
+    <option value="hotfix"   {{ 'selected' if fonte=='hotfix' }}>Hotfixes do Windows</option>
+    <option value="todos"    {{ 'selected' if fonte=='todos' }}>Tudo</option>
+  </select>
+  <select name="filtro" class="input">
+    <option value="todos"     {{ 'selected' if filtro=='todos' }}>Todos</option>
+    <option value="problemas" {{ 'selected' if filtro=='problemas' }}>So divergentes ou ausentes</option>
+    <option value="drift"     {{ 'selected' if filtro=='drift' }}>So versoes divergentes</option>
+    <option value="ausentes"  {{ 'selected' if filtro=='ausentes' }}>So ausentes em algum host</option>
+  </select>
+  <select name="servidor" class="input">
+    <option value="">Todos os servidores</option>
+    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s }}>{{ s }}</option>{% endfor %}
+  </select>
+  <button class="btn" type="submit">Filtrar</button>
+</form>
+
+{% if not linhas %}
+  <div class="alert ok small">Nenhum pacote para os filtros escolhidos.</div>
+{% else %}
+<div class="table-wrap">
+  <table class="tbl matrix">
+    <thead>
+      <tr>
+        <th class="sticky-col">Pacote</th>
+        {% for s in servidores %}
+        <th class="host-col">
+          {{ s }}
+          {% if runs.get(s) %}<div class="muted small">{{ runs[s].ts | dt }}</div>{% endif %}
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in linhas %}
+      <tr>
+        <td class="sticky-col">
+          <b>{{ l.name }}</b>
+          {% if l.source == 'binary' %}<span class="pill">binario</span>
+          {% elif l.source == 'hotfix' %}<span class="pill">KB</span>{% endif %}
+          {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
+          {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
+          <div class="muted small">{{ l.publisher or '' }}</div>
+        </td>
+        {% for s in servidores %}
+          {% set c = l.cells.get(s) %}
+          {% if c %}
+          <td class="cell {{ 'behind' if c.status == 'behind' else 'okcell' }}"
+              title="{{ c.detail or '' }}">
+            <span class="mono">{{ c.version or 'instalado' }}</span>
+            {% if c.date %}
+            <div class="muted small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada }}</div>
+            {% endif %}
+          </td>
+          {% else %}
+          <td class="cell absent">&mdash;</td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="muted small" style="margin-top:.7rem">
+  Celula em ambar = versao abaixo da maior encontrada no parque &middot;
+  &mdash; = pacote nao instalado naquele host &middot;
+  <b>*</b> = data estimada pela primeira coleta do RMon (o registro do Windows nao informa a data).
+</div>
+{% endif %}
+{% endblock %}
