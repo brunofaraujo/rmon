@@ -41,7 +41,7 @@ $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Objec
 # (ex.: quantos RM.Host existem hoje) em vez de uma lista que envelhece.
 $svcNames = @(__SERVICES__)
 $svcPatterns = @(__PATTERNS__)
-$allSvc = @(Get-CimInstance Win32_Service | Select-Object Name, DisplayName, State, StartMode)
+$allSvc = @(Get-CimInstance Win32_Service | Select-Object Name, DisplayName, State, StartMode, PathName)
 $services = New-Object System.Collections.ArrayList
 $seen = @{}
 foreach ($n in $svcNames) {
@@ -66,6 +66,49 @@ foreach ($p in $svcPatterns) {
     }
 }
 $services = @($services)
+# Broker de customizacoes: o RM so gera _BrokerCustom.dat quando ele NAO existe.
+# Se a geracao aborta no meio (falta de commit/pagefile), fica um arquivo curto
+# no lugar - e o RM passa a reusar esse cache truncado para sempre, subindo
+# "com sucesso" e sem as customizacoes. Aqui so medimos: tamanho e idade.
+$brokerFiles = @(__BROKER_FILES__)
+$broker = New-Object System.Collections.ArrayList
+if ($brokerFiles.Count -gt 0) {
+    $brokerDirs = @{}
+    foreach ($s in $allSvc) {
+        $casa = $false
+        foreach ($p in $svcPatterns) {
+            if ($s.Name -like $p -or $s.DisplayName -like $p) { $casa = $true; break }
+        }
+        if (-not $casa) { continue }
+        $cmd = "$($s.PathName)".Trim()
+        if ($cmd -match '^\s*"([^"]+)"') { $exe = $matches[1] } else { $exe = ($cmd -split '\s+')[0] }
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { continue }
+        $brokerDirs[[System.IO.Path]::GetDirectoryName($exe)] = $true
+    }
+    foreach ($d in @($brokerDirs.Keys)) {
+        foreach ($bf in $brokerFiles) {
+            $alvo = Join-Path $d $bf
+            $i = Get-Item -LiteralPath $alvo -ErrorAction SilentlyContinue
+            if ($i) {
+                [void]$broker.Add([pscustomobject]@{
+                    name = $i.Name; path = $i.FullName; size = [int64]$i.Length
+                    mtime = $i.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
+                    age_min = [math]::Round(((Get-Date) - $i.LastWriteTime).TotalMinutes, 0)
+                })
+            } else {
+                [void]$broker.Add([pscustomobject]@{
+                    name = $bf; path = $alvo; size = $null; mtime = $null; age_min = $null })
+            }
+        }
+    }
+}
+$broker = @($broker)
+# Commit charge: TotalVirtualMemorySize e o limite de commit (RAM + pagefile).
+# E esse limite - nao a RAM livre - que estoura com ERROR_COMMITMENT_LIMIT
+# (0x800705AF) e derruba a geracao do broker no meio.
+$commitPct = if ($os.TotalVirtualMemorySize -gt 0) {
+    [math]::Round(((([double]$os.TotalVirtualMemorySize - [double]$os.FreeVirtualMemory) / [double]$os.TotalVirtualMemorySize) * 100), 1)
+} else { $null }
 # Ocorrencias: erros/criticos das ultimas N horas, sem ruido, AGRUPADOS por origem+ID
 $since = (Get-Date).AddHours(-__LOOKBACK_H__)
 $noise = @(__NOISE_IDS__)
@@ -92,7 +135,7 @@ try { $qu = @(quser 2>$null); if ($qu.Count -gt 1) { $ucount = $qu.Count - 1 } }
 [pscustomobject]@{
     cpu = $cpu; mem_pct = $memPct; mem_total_mb = [math]::Round($memTotal / 1024, 0)
     uptime_sec = [math]::Round($uptime, 0); disks = $disks; services = $services; events = $events
-    users_count = $ucount
+    users_count = $ucount; broker = $broker; commit_pct = $commitPct
 } | ConvertTo-Json -Depth 5 -Compress
 """
 
@@ -126,6 +169,20 @@ def _ps_str(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# Arquivos de cache do broker verificados na pasta de instalacao do RM.
+# `_BrokerCustom.dat` e o cache das customizacoes do cliente (pasta Custom);
+# `_Broker.dat` e o do produto. Sao os dois que o RM manda apagar e recriar.
+BROKER_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "files": ["_BrokerCustom.dat", "_Broker.dat"],
+}
+
+
+def broker_settings(defaults: dict[str, Any] | None) -> dict[str, Any]:
+    """Config efetiva da verificacao do broker (defaults.broker sobre os nossos)."""
+    return {**BROKER_DEFAULTS, **((defaults or {}).get("broker") or {})}
+
+
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     services = server.services or list(defaults.get("services") or [])
     patterns = server.service_patterns or list(defaults.get("service_patterns") or [])
@@ -133,6 +190,8 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     logs = list(el.get("logs") or ["System", "Application"])
     lookback = int(el.get("lookback_hours", 24))
     noise = el.get("noise_ids") or [10016, 1058, 1030, 1502, 1500, 7000, 7009]
+    bk = broker_settings(defaults)
+    broker_files = list(bk.get("files") or []) if bk.get("enabled", True) else []
     prov_re = el.get("providers_regex") or (
         r"\b(RM|TOTVS|SGE|MSSQL|SQL|IIS|W3SVC|WAS|DBAccess|WER)"
         r"|\.NET Runtime|ASP\.NET|Application Error|Application Hang|Windows Error Reporting"
@@ -145,6 +204,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__LOOKBACK_H__", str(lookback))
         .replace("__NOISE_IDS__", ",".join(str(int(n)) for n in noise))
         .replace("__PROV_RE__", prov_re)
+        .replace("__BROKER_FILES__", ",".join(_ps_str(f) for f in broker_files))
     )
 
 
@@ -392,7 +452,7 @@ def collect_server(
     result: dict[str, Any] = {
         "reachable": False, "cpu": None, "mem_pct": None, "uptime_sec": None,
         "disks": [], "services": [], "events": [], "app_ok": None, "app_ms": None,
-        "error": None,
+        "broker": [], "commit_pct": None, "error": None,
     }
     # Saude HTTP (independe do WinRM)
     result["app_ok"], result["app_ms"] = _check_app_health(server.app_health)
@@ -419,6 +479,8 @@ def collect_server(
             "services": _as_list(data.get("services")),
             "events": _as_list(data.get("events")),
             "users_count": data.get("users_count"),
+            "broker": _as_list(data.get("broker")),
+            "commit_pct": data.get("commit_pct"),
         })
     except Exception as exc:  # noqa: BLE001 - queremos registrar qualquer falha
         result["error"] = f"{type(exc).__name__}: {exc}"[:500]
