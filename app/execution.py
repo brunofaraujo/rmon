@@ -188,7 +188,10 @@ foreach ($p in $svcPatterns) {
 $baixa = $null
 if ($url) {
     try {
-        $r = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 15
+        # GET, nao HEAD: o FastAPI nao registra HEAD para rota GET e devolve 405,
+        # o que faria esta checagem acusar "host nao alcanca" com a rede boa.
+        # O /healthz e minusculo, entao buscar o corpo nao custa nada.
+        $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
         $baixa = [int]$r.StatusCode
     } catch { $baixa = -1 }
 }
