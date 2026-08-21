@@ -158,7 +158,7 @@
             </td>
             <td class="{{ 'txt-amber' if l.drift else '' }}">
               {% if l.drift %}
-                <span class="mono">{{ l.oldest }}</span> &rarr; <span class="mono">{{ l.latest }}</span>
+                <span class="mono">{{ l.oldest or 'sem versao' }}</span> &rarr; <span class="mono">{{ l.latest }}</span>
                 <div class="faint small">{{ l.atrasados|length }} host(s) atras da maior versao</div>
               {% else %}
                 <span class="mono">{{ l.latest or 'instalado' }}</span>

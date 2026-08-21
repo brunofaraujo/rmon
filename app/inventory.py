@@ -31,6 +31,7 @@ import logging
 import re
 import time
 from collections import Counter
+from functools import cmp_to_key
 from typing import Any
 
 from .collector import _as_list, _decode, _ps_str, _run_ps_resilient
@@ -584,8 +585,6 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         }
         if compare_versions(r["version"], p["latest"]) > 0:
             p["latest"] = r["version"]
-        if p["oldest"] is None or compare_versions(r["version"], p["oldest"]) < 0:
-            p["oldest"] = r["version"]
 
     saida: list[dict] = []
     catalogo = disponivel or {}
@@ -606,6 +605,11 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
             cell["status"] = ("ok" if not p["latest"] or
                               compare_versions(cell["version"], p["latest"]) == 0 else "behind")
         p["atrasados"] = [s for s, c in p["cells"].items() if c["status"] == "behind"]
+        # menor versao entre os hosts, para a tela mostrar o intervalo do drift.
+        # Calculado aqui (e nao no acumulo) porque pacote sem versao - hotfix, item
+        # do registro sem DisplayVersion - deixa `None` no meio da comparacao.
+        p["oldest"] = min((c["version"] for c in p["cells"].values()),
+                          key=cmp_to_key(compare_versions), default=None)
         p["disp"] = catalogo.get(p["key"])
         p["atualizavel"] = bool(
             p["disp"] and compare_versions(p["disp"].get("version"), p["latest"]) > 0)
