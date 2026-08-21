@@ -33,7 +33,7 @@ servidores monitorados.
 | **Ocorrências** | Erros/críticos recentes do Event Log (System/Application), agrupados e filtrados por provedor |
 | **Jobs do RM** | Sucesso × falha na tabela `GJOBXEXECUCAO` (SQL Server), por job server e por solicitante |
 | **Sessões RDP** | Lista de usuários logados (`quser`) com opção de **encerrar sessão** (`logoff`) |
-| **Broker do RM** | Tamanho de `_BrokerCustom.dat`/`_Broker.dat` comparado entre os hosts + *commit charge* (RAM + pagefile) |
+| **Broker do RM** | Tamanho de `_BrokerCustom.dat`/`_Broker.dat` contra o histórico do host + *commit charge* (RAM + pagefile) |
 | **Inventário TOTVS** | Versão do RM, customizações (`RM.Cst.*`), bibliotecas (`RM.Lib.*`) e pacotes TOTVS do registro — com data, comparação entre hosts e histórico de mudanças |
 
 ### O que ele faz
@@ -42,7 +42,7 @@ servidores monitorados.
 - 📦 **Inventário e versionamento TOTVS**: matriz item × host em `/pacotes` — versão do RM, customizações e bibliotecas de cada servidor, quem está atrás da maior versão do parque, e a linha do tempo de tudo que foi instalado, atualizado, **regrediu** ou removido. Software de terceiros fica fora. Exporta CSV.
 - ⬇️ **Versões disponíveis**: os pacotes baixados do TDN ficam numa pasta que o RMon **só lê**; o nome do arquivo vira "disponível" na matriz, ao lado do que está instalado em cada host. O painel não acessa o portal da TOTVS nem guarda credencial de ninguém.
 - 🔒 **Instalação com pré-voo**: antes de qualquer coisa, o painel confere sessões RDP, espaço, serviços, integridade do pacote e alcance de rede — e mostra o comando exato. A execução real nasce **desarmada**: exige trava no YAML, host numa lista explícita e confirmação digitada. Não existe comando livre, só um catálogo de ações declarado.
-- 🧩 **Broker de customizações**: o `RM.Host` só gera `_BrokerCustom.dat` quando o arquivo **não existe** — se a geração aborta por estouro do limite de *commit*, sobra um cache truncado e o serviço sobe "com sucesso" sem as customizações. O painel compara o tamanho entre os hosts e alerta, em vez de esperar o usuário reclamar. Causa e correção em [docs/OPERACAO.md](docs/OPERACAO.md).
+- 🧩 **Broker de customizações**: o `RM.Host` só gera `_BrokerCustom.dat` quando o arquivo **não existe** — se a geração aborta por estouro do limite de *commit*, sobra um cache truncado e o serviço sobe "com sucesso" sem as customizações. O painel compara o tamanho com o histórico do próprio host e alerta, em vez de esperar o usuário reclamar. Causa e correção em [docs/OPERACAO.md](docs/OPERACAO.md).
 - 🛠️ **Ações remotas** (perfil admin): `start`/`stop`/`restart` de serviços monitorados e logoff de sessões RDP.
 - 👥 **Multiusuário** com papéis `admin` / `viewer`, auditoria de ações e login por sessão assinada.
 - 📺 **Mural de TV** (`/tv`): painel em tela cheia, sem rolagem, que se ajusta sozinho ao número de servidores e à resolução da tela. É a **única** tela do perfil `viewer` — ideal para deixar numa TV do NOC.

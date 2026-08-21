@@ -171,6 +171,29 @@ def insert_check(server: str, result: dict[str, Any]) -> None:
         )
 
 
+def broker_max(days: int = 30) -> dict[str, dict[str, int]]:
+    """Maior tamanho ja visto de cada arquivo de broker, POR HOST.
+
+    A referencia e o passado do proprio host, nao o parque: o mesmo painel
+    monitora instalacoes diferentes (o broker do RH tem 33KB e o do SGE 558KB -
+    ambos corretos), entao o unico numero que significa alguma coisa e o tamanho
+    que aquele host ja teve.
+    """
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT server, b->>'name' AS nome, max((b->>'size')::bigint) AS maior
+                 FROM checks, LATERAL jsonb_array_elements(broker) b
+                WHERE ts > now() - (%s || ' days')::interval
+                  AND jsonb_typeof(broker) = 'array' AND (b->>'size') IS NOT NULL
+                GROUP BY 1, 2""",
+            (str(int(days)),),
+        ).fetchall()
+    ref: dict[str, dict[str, int]] = {}
+    for r in rows:
+        ref.setdefault(r["server"], {})[r["nome"]] = int(r["maior"])
+    return ref
+
+
 def latest_per_server() -> list[dict]:
     with _conn() as c:
         rows = c.execute(

@@ -58,7 +58,7 @@
     <div class="pills">
       {% for b in d.broker %}
       {% set ruim = bp.get('broker:' ~ b.name) %}
-      <span class="pill {{ 'red' if ruim else 'green' }}" title="{{ b.path }}{% if b.mtime %} &middot; gerado em {{ b.mtime }}{% endif %}{% if broker_ref.get(b.name) %} &middot; maior no parque: {{ (broker_ref.get(b.name) / 1024) | round | int }}KB{% endif %}">
+      <span class="pill {{ 'red' if ruim else 'green' }}" title="{{ b.path }}{% if b.mtime %} &middot; gerado em {{ b.mtime }}{% endif %}{% if broker_ref.get(b.name) %} &middot; maior ja visto neste host: {{ (broker_ref.get(b.name) / 1024) | round | int }}KB{% endif %}">
         <span class="d"></span>{{ b.name }} &middot; {% if b.size %}{{ (b.size / 1024) | round | int }}KB{% else %}ausente{% endif %}</span>
       {% endfor %}
       {% if d.commit_pct is not none %}<span class="pill {{ 'red' if d.commit_pct >= 90 else ('amber' if d.commit_pct >= 80 else '') }}" title="RAM + arquivo de paginacao ja reservados. E esse limite, e nao a RAM livre, que estoura na geracao do broker.">Commit charge &middot; {{ d.commit_pct }}%</span>{% endif %}

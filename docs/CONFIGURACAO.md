@@ -382,17 +382,20 @@ abaixo), sobra um arquivo curto, e a partir daí todo start reaproveita esse cac
 serviço sobe "com sucesso" e as customizações não carregam.
 
 A coleta lê o tamanho e a data desses arquivos na pasta de instalação (descoberta pelo
-caminho dos serviços de `service_patterns`) e compara **host a host**: o tamanho certo
-depende de quantas customizações o cliente tem, então a referência é o maior arquivo do
-parque — o mesmo que a operação copia à mão quando um host sobe truncado.
+caminho dos serviços de `service_patterns`) e compara com o **histórico do próprio
+host** — o maior tamanho que ele já teve. Não é comparação entre hosts de propósito: o
+mesmo painel enxerga instalações diferentes (o broker do RH tem ~33 KB e o do SGE
+~560 KB, os dois corretos), e o que caracteriza a falha é a **queda** — o arquivo era
+grande e voltou pequeno, e assim fica.
 
 | Chave | Padrão | Para que serve |
 |---|---|---|
 | `broker.enabled` | `true` | Liga a verificação |
 | `broker.files` | `["_BrokerCustom.dat", "_Broker.dat"]` | Arquivos verificados na pasta do RM |
-| `alerts.broker_min_pct` | `60` | Alerta abaixo desse % do maior arquivo do parque |
+| `alerts.broker_min_pct` | `60` | Alerta abaixo desse % do maior tamanho já visto no host |
 | `alerts.broker_min_kb` | `0` | Piso absoluto em KB (0 = só a regra relativa) |
 | `alerts.broker_settle_min` | `10` | Não julga arquivo gerado há menos que isso |
+| `alerts.broker_history_days` | `30` | Janela do histórico que serve de referência |
 | `alerts.commit_pct` | `90` | Alerta de *commit charge* (RAM + pagefile reservados) |
 
 O `commit_pct` é a causa raiz, não um extra: é o limite de *commit* — e não a RAM livre —
@@ -458,3 +461,6 @@ RMON_COOKIE_SAMESITE=none
 
 `SameSite=None` implica `Secure`, então o RMonitor liga o `Secure` sozinho — e o
 cookie *não* será aceito em HTTP puro. Não adianta usar essa opção sem TLS.
+
+> Um host que **nunca** teve o broker íntegro sob monitoramento não tem referência e não
+> alerta pela regra relativa — para esse caso, use `broker_min_kb`.

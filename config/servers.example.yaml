@@ -33,10 +33,12 @@ defaults:
     # Commit charge (RAM + arquivo de paginacao ja reservados). E esse limite,
     # nao a RAM livre, que estoura com 0x800705AF e derruba a geracao do broker.
     commit_pct: 90
-    # Broker truncado: tamanho minimo, em % do maior arquivo do parque.
+    # Broker truncado: tamanho minimo, em % do maior que o PROPRIO host ja teve
+    # (instalacoes diferentes tem brokers de tamanhos diferentes, todos corretos).
     broker_min_pct: 60
     broker_min_kb: 0          # piso absoluto em KB (0 = so a regra relativa)
     broker_settle_min: 10     # ignora arquivo gerado ha menos que isso (pode estar sendo escrito)
+    broker_history_days: 30   # janela do historico que serve de referencia
   # Broker do RM: cache que o RM.Host so gera quando o arquivo NAO existe. Se a
   # geracao aborta no meio, sobra um arquivo curto e o RM sobe "com sucesso"
   # sem as customizacoes - por isso o tamanho e comparado entre os hosts.
