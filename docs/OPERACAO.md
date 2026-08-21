@@ -232,20 +232,46 @@ válido. O serviço sobe "com sucesso" com um cache truncado, e continua assim p
 
 ### Correção definitiva
 
-1. **Tirar o arquivo de paginação do modo automático** nos hosts que falham. Fixar
-   inicial = máximo, com folga para o pico (regra prática: RAM + 50%, mínimo 32 GB
-   nestes servidores de aplicação). Em PowerShell, como administrador, e com reboot
-   depois:
+1. **Tirar o arquivo de paginação do modo automático** nos hosts do RM. O tamanho fixo
+   (inicial = máximo) sai do maior entre: **16 GB**, **1,5× o pico já usado do pagefile**
+   e **metade da RAM** — sem passar de 1/4 do espaço livre em `C:`. Hosts de mesmo papel
+   ficam iguais, para não virar caso a caso na hora do incidente.
+
+   Aplicado em 21/08/2026 (**efetivo no próximo reboot** de cada host):
+
+   | Host | RAM | pagefile antes (aloc / pico) | limite de commit antes | pagefile fixo | limite depois |
+   |---|---|---|---|---|---|
+   | `.34` SRV06N | 55,5 GB | 8 / 0,1 GB | 63,5 GB | 32 GB | ~87 GB |
+   | `.188` WIN2016 | 32 GB | 25 / **21,3** GB | 56,6 GB | 32 GB | ~64 GB |
+   | `.190` WIN2016-2 | 32 GB | 4,9 / 1,2 GB | 36,7 GB | 32 GB | ~64 GB |
+   | `.222` SRV11 (jobs) | 15,9 GB | 49 / **48,4** GB | 63,8 GB | 80 GB | ~96 GB |
+   | `.223` SRV12 (web) | 4,7 GB | 1,7 / **1,7** GB | **6,4 GB** | 16 GB | ~21 GB |
+   | `.218` FIEPSRV-008 (homolog) | 16 GB | 2,4 / 0,5 GB | 18,4 GB | 16 GB | ~32 GB |
+
+   Os três em negrito já vinham batendo no teto: o pico de uso do pagefile encostou no
+   que estava alocado, que é o retrato do `ERROR_COMMITMENT_LIMIT` acontecendo.
 
    ```powershell
    $cs = Get-WmiObject Win32_ComputerSystem
    if ($cs.AutomaticManagedPagefile) { $cs.AutomaticManagedPagefile = $false; [void]$cs.Put() }
-   $pf = Get-WmiObject Win32_PageFileSetting -Filter "Name='C:\\pagefile.sys'"
+   # Sem -Filter: escapar barra invertida em WQL e fonte de "consulta invalida"
+   $pf = @(Get-WmiObject Win32_PageFileSetting | Where-Object { $_.Name -like 'C:*' })[0]
    if (-not $pf) { $pf = ([WmiClass]'Win32_PageFileSetting').CreateInstance(); $pf.Name = 'C:\pagefile.sys' }
-   $pf.InitialSize = 49152; $pf.MaximumSize = 49152; [void]$pf.Put()   # 48 GB, exige o espaco em disco
+   $pf.InitialSize = 32768; $pf.MaximumSize = 32768; [void]$pf.Put()
    ```
 
-   Confira depois do reboot (`AllocatedBaseSize` tem de vir com o valor fixado):
+   Quem manda no próximo boot é o registro — confira ali, não no WMI:
+
+   ```powershell
+   (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management').PagingFiles
+   ```
+
+   Se a criação da instância falhar depois de desligar o automático, **volte
+   `AutomaticManagedPagefile` para `$true`**: ficar sem pagefile nenhum é pior que o
+   problema original. E confira que `C:` tem o espaço da diferença, porque o arquivo só
+   cresce até o tamanho novo no boot.
+
+   Depois do reboot, `AllocatedBaseSize` tem de vir com o valor fixado:
 
    ```powershell
    Get-WmiObject Win32_PageFileUsage | Select-Object Name, AllocatedBaseSize, PeakUsage
