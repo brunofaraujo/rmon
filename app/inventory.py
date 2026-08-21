@@ -311,20 +311,39 @@ def _parse_dist(dist: Any) -> list[tuple[str, int]]:
     return saida
 
 
+def _mesma_linha(a: str | None, b: str | None) -> bool:
+    """As duas versoes pertencem a mesma linha de release (mesmos dois primeiros
+    componentes, ex.: 12.1)?
+
+    A pasta do RM mistura assemblies da TOTVS que seguem a versao do produto
+    (12.1.xxxx) com bibliotecas que a TOTVS assina mas versiona por conta
+    propria (1.0.0.0, 6.0.290.0). Sem separar as duas coisas, "assembly atras
+    da versao base" apontaria sempre para um 1.0.0.0 que nunca fez parte da
+    linha do produto.
+    """
+    ta, tb = version_tuple(a)[:2], version_tuple(b)[:2]
+    return bool(ta) and ta == tb
+
+
 def _resumo_instalacao(base: str | None,
                        dist: list[tuple[str, int]]) -> tuple[str, dict | None]:
     """Descreve a instalacao e, se houver, destaca o residuo antigo.
 
     Numa instalacao do RM a maioria dos assemblies fica na versao do produto e
-    um punhado sobe de patch - isso e normal. O que chama atencao e o contrario:
-    arquivo que ficou **para tras** da versao base, resto de uma atualizacao que
-    nao trocou tudo. Esse caso vira um item proprio, comparavel entre hosts.
+    um punhado sobe de patch pelo RM.Atualizador - isso e normal. O que chama
+    atencao e o contrario: arquivo da mesma linha de release que ficou **para
+    tras** da base, resto de uma atualizacao que nao trocou tudo. Esse caso vira
+    um item proprio, comparavel entre hosts.
     """
     total = sum(q for _, q in dist)
     na_base = sum(q for v, q in dist if compare_versions(v, base) == 0)
-    atrasados = [(v, q) for v, q in dist if compare_versions(v, base) < 0]
+    linha = [(v, q) for v, q in dist if _mesma_linha(v, base)]
+    acima = sum(q for v, q in linha if compare_versions(v, base) > 0)
+    atrasados = [(v, q) for v, q in linha if compare_versions(v, base) < 0]
+    proprios = total - sum(q for _, q in linha)
     resumo = (f"{total} assemblies TOTVS: {na_base} na versao base, "
-              f"{total - na_base} fora dela ({len(dist)} versoes distintas)")
+              f"{acima} em patch mais novo, {sum(q for _, q in atrasados)} atras da base, "
+              f"{proprios} com versionamento proprio")
     if not atrasados:
         return resumo, None
     atrasados.sort(key=lambda x: version_tuple(x[0]))

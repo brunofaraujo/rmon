@@ -91,7 +91,7 @@ def _conn() -> psycopg.Connection:
 
 # Versao do formato do inventario. Subir este numero faz o inventario ser
 # recolhido do zero na proxima coleta.
-INVENTORY_SCHEMA = 2
+INVENTORY_SCHEMA = 3
 
 
 def init_db() -> None:
