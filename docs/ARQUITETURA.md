@@ -78,6 +78,9 @@ idempotente (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EX
 | `audit_log` | Auditoria de ações (login, restart, logoff, config…) |
 | `alerts_log` | Histórico de problemas levantados/resolvidos |
 | `app_config` | Configuração runtime (tema/refresh da UI, limiares de alerta) em `jsonb` |
+| `host_packages` | Inventário atual de software por `(servidor, pacote)`: versão, fabricante, data, fonte, `first_seen`/`last_seen` |
+| `package_events` | Mudanças de software (instalado/atualizado/regrediu/removido), guardadas por 1 ano |
+| `inventory_runs` | Última coleta de inventário por servidor (ok, nº de pacotes, erro, duração) |
 
 Índices por `ts DESC` e por `(server, ts DESC)` sustentam as consultas de histórico e
 "último por servidor" (`SELECT DISTINCT ON (server) …`).
@@ -112,6 +115,8 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/api/tv` | GET | Estado completo do mural: KPIs, cartões e ocorrências já classificados por severidade (JSON, requer login; cache de 3 s no processo) |
 | `/service/action` | POST | start/stop/restart de serviço (admin) |
 | `/sessions/logoff` | POST | Logoff de sessões selecionadas (admin) |
+| `/pacotes.csv` | GET | Inventário achatado para planilha (CSV `;`, requer login) |
+| `/pacotes/coletar` | POST | Dispara uma coleta de inventário fora da cadência (admin) |
 
 ## Perfil `viewer` (quiosque)
 

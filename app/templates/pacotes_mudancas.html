@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Mudancas de software - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Mudancas de software</h1>
+    <div class="sub">
+      {{ eventos|length }} evento(s) nos ultimos {{ dias }} dia(s) &middot;
+      o que foi instalado, atualizado ou removido em cada host
+    </div>
+  </div>
+  <a class="btn" href="/pacotes">&#8592; Inventario</a>
+</div>
+
+<form class="toolbar" method="get" action="/pacotes/mudancas">
+  <select name="servidor" class="input">
+    <option value="">Todos os servidores</option>
+    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}
+  </select>
+  <select name="dias" class="input">
+    {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if dias==d else '' }}>{{ d }} dias</option>{% endfor %}
+  </select>
+  <button class="btn" type="submit">Filtrar</button>
+</form>
+
+{% if not eventos %}
+  <div class="alert ok small">
+    Nenhuma mudanca registrada no periodo. O historico comeca na segunda coleta de
+    cada host: a primeira e apenas a fotografia inicial do que ja estava instalado.
+  </div>
+{% else %}
+<div class="table-wrap">
+  <table class="tbl">
+    <thead><tr>
+      <th>Quando</th><th>Servidor</th><th>O que houve</th><th>Pacote</th><th>Versao</th>
+    </tr></thead>
+    <tbody>
+      {% for e in eventos %}
+      <tr>
+        <td class="muted small">{{ e.ts | dt }}</td>
+        <td>{{ e.server }}</td>
+        <td>
+          {% if e.kind == 'downgraded' %}<span class="pill red">{{ labels.get(e.kind, e.kind) }}</span>
+          {% elif e.kind == 'removed' %}<span class="pill amber">{{ labels.get(e.kind, e.kind) }}</span>
+          {% elif e.kind == 'installed' %}<span class="pill green">{{ labels.get(e.kind, e.kind) }}</span>
+          {% else %}<span class="pill">{{ labels.get(e.kind, e.kind) }}</span>{% endif %}
+        </td>
+        <td><b>{{ e.name }}</b>{% if e.source == 'binary' %} <span class="pill">binario</span>{% endif %}</td>
+        <td class="mono small">
+          {% if e.old_version and e.new_version %}{{ e.old_version }} &rarr; {{ e.new_version }}
+          {% elif e.new_version %}{{ e.new_version }}
+          {% elif e.old_version %}{{ e.old_version }}
+          {% else %}&mdash;{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
