@@ -22,26 +22,20 @@ _last: dict[str, dict] = {}
 
 DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
                   "down_after": 3, "commit_pct": 90, "broker_min_pct": 60,
-                  "broker_min_kb": 0, "broker_settle_min": 10}
+                  "broker_min_kb": 0, "broker_settle_min": 10,
+                  "broker_history_days": 30}
 
 
-def broker_reference(resultados: Iterable[dict]) -> dict[str, int]:
-    """Maior tamanho visto no parque para cada arquivo de broker.
+def broker_reference(dias: int | None = None) -> dict[str, dict[str, int]]:
+    """Tamanho de referencia do broker de cada host: o maior que ele ja teve.
 
-    O tamanho "certo" do broker e uma caracteristica do cliente (depende de
-    quantas customizacoes ele tem), nao um numero que caiba no codigo. Como os
-    hosts do mesmo parque rodam a mesma instalacao, o maior tamanho observado e
-    a melhor referencia disponivel - e e exatamente o arquivo que a operacao
-    copia a mao quando um host sobe truncado.
+    O tamanho "certo" do broker depende de quantas customizacoes a instalacao
+    tem - o mesmo painel enxerga um host de 558KB e outro de 33KB, os dois
+    corretos -, entao comparar host contra host acusaria diferenca onde nao ha.
+    O que caracteriza a falha e a queda: o arquivo era grande e voltou pequeno,
+    e assim fica, porque o RM so gera o broker quando ele nao existe.
     """
-    ref: dict[str, int] = {}
-    for r in resultados:
-        for b in r.get("broker") or []:
-            tamanho = b.get("size")
-            nome = b.get("name")
-            if nome and tamanho:
-                ref[nome] = max(ref.get(nome, 0), int(tamanho))
-    return ref
+    return db.broker_max(int(dias or 30))
 
 
 def _kb(n: float) -> str:
@@ -54,9 +48,10 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None) -> dic
     O RM so gera `_BrokerCustom.dat` quando o arquivo NAO existe. Se a geracao
     aborta no meio (tipicamente por estouro do limite de commit), sobra um
     arquivo curto - e a partir dai todo start reusa esse cache: o servico sobe
-    "com sucesso" e as customizacoes simplesmente nao carregam. Por isso o
-    tamanho e comparado com o do resto do parque, e nao com o passado do proprio
-    host: truncado, ele fica truncado para sempre.
+    "com sucesso" e as customizacoes simplesmente nao carregam.
+
+    `ref` e o historico DESTE host ({arquivo: maior tamanho ja visto}), vindo de
+    broker_reference().
     """
     p: dict[str, str] = {}
     brokers = r.get("broker") or []
@@ -88,7 +83,7 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None) -> dic
             p[chave] = (f"{nome} com {_kb(tamanho)} (minimo esperado {_kb(min_kb * 1024)}): "
                         "cache truncado, customizacoes nao carregam")
         elif maior and min_pct and tamanho < maior * min_pct / 100:
-            p[chave] = (f"{nome} com {_kb(tamanho)} contra {_kb(maior)} no resto do parque: "
+            p[chave] = (f"{nome} com {_kb(tamanho)}, contra {_kb(maior)} que este host ja teve: "
                         "geracao abortada, customizacoes nao carregam")
     return p
 
@@ -186,18 +181,15 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
             coletas.append((server, result))
 
-        # O veredito do broker compara host contra host, entao so pode ser dado
-        # depois que todo o parque respondeu. A ultima coleta conhecida entra
-        # junto: senao, num ciclo em que so os hosts truncados respondem, a
-        # referencia cairia para o proprio tamanho errado e o alerta sumiria.
-        ref = broker_reference([r for _, r in coletas] + db.latest_per_server())
+        # Referencia do broker: o historico de cada host, lido uma vez por ciclo.
+        ref = broker_reference(th.get("broker_history_days"))
         for server, result in coletas:
             db.insert_check(server.name, result)
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
             log.info("coleta %s -> %s", server.name, state)
 
             streak = 0 if result.get("reachable") else db.fail_streak(server.name)
-            probs = problems(result, th, streak, ref)
+            probs = problems(result, th, streak, ref.get(server.name))
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

@@ -272,7 +272,7 @@ válido. O serviço sobe "com sucesso" com um cache truncado, e continua assim p
 ### O que o RMonitor faz
 
 A coleta lê tamanho e data de `_BrokerCustom.dat`/`_Broker.dat` em cada host e compara
-com o maior do parque; abaixo de `broker_min_pct` (padrão 60%) sai alerta
+com o maior tamanho que aquele host já teve; abaixo de `broker_min_pct` (padrão 60%) sai alerta
 `broker:_BrokerCustom.dat` no Telegram/Slack e uma tarja no card do servidor. O
 `commit charge` também é coletado e alerta em `commit_pct` (padrão 90%) — é o indicador
 que antecede a falha. Ver [CONFIGURACAO.md](CONFIGURACAO.md#broker-do-rm-defaultsbroker).
