@@ -383,10 +383,10 @@ def dashboard(request: Request):
             summary["offline"] += 1
     # Veredito do broker calculado aqui (uma vez, com os limiares lidos uma vez)
     # e nao no template: e o mesmo criterio do alerta, sem duplicar regra no HTML.
-    ref = scheduler.broker_reference(latest.values())
     th = _thresholds()
+    ref = scheduler.broker_reference(th.get("broker_history_days"))
     for r in rows:
-        r["broker"] = scheduler.broker_problems(r["data"] or {}, th, ref)
+        r["broker"] = scheduler.broker_problems(r["data"] or {}, th, ref.get(r["cfg"].name))
     return templates.TemplateResponse(
         "dashboard.html",
         {"request": request, "rows": rows, "summary": summary, "broker_ref": ref,
@@ -405,12 +405,13 @@ def server_detail(request: Request, name: str):
             {"request": request, "name": name, "hist": [], "current": None},
             status_code=404,
         )
-    ref = scheduler.broker_reference(db.latest_per_server())
+    th = _thresholds()
+    ref = scheduler.broker_reference(th.get("broker_history_days")).get(name) or {}
     return templates.TemplateResponse(
         "server.html",
         {"request": request, "name": name, "current": hist[0], "hist": hist,
          "broker_ref": ref,
-         "broker_alerta": scheduler.broker_problems(hist[0], _thresholds(), ref)},
+         "broker_alerta": scheduler.broker_problems(hist[0], th, ref)},
     )
 
 
