@@ -30,6 +30,7 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from typing import Any
 
 from .collector import _as_list, _decode, _ps_str, _run_ps_resilient
@@ -496,6 +497,18 @@ FONTE_LABEL = {"rm": "produto", "assembly": "biblioteca", "custom": "customizaca
 
 
 # ---------- comparacao entre hosts ----------
+# Rotulo da secao em que cada fonte aparece na tela de inventario. Agrupar por
+# fonte e o que faz o nome repetido parar de confundir: o mesmo `RM.Lib.X.dll`
+# pode existir como biblioteca da instalacao e como customizacao na pasta
+# Custom - sao dois itens de verdade, cada um na sua secao.
+GRUPO_LABEL = {
+    "rm": "Produto RM",
+    "custom": "Customizacoes do cliente",
+    "assembly": "Bibliotecas e executaveis",
+    "registry": "Instaladores (registro do Windows)",
+    "hotfix": "Hotfixes do Windows",
+}
+
 FONTES = {
     "totvs": ("rm", "assembly", "custom"),
     "custom": ("custom",),
@@ -505,6 +518,20 @@ FONTES = {
     "hotfix": ("hotfix",),
     "todos": ("rm", "assembly", "custom", "registry", "hotfix"),
 }
+
+
+def _pista(p: dict) -> str | None:
+    """Como diferenciar duas linhas de mesmo nome: arquitetura ou pasta."""
+    if p.get("arch"):
+        return p["arch"]
+    for celula in p["cells"].values():
+        partes = [x for x in (celula.get("detail") or "").replace("\\", "/").split("/") if x]
+        if not partes:
+            continue
+        # o detalhe e um caminho: de arquivo (vale a pasta) ou de pasta (vale ela)
+        pasta = partes[-2] if "." in partes[-1] and len(partes) > 1 else partes[-1]
+        return pasta[:40]
+    return None
 
 
 def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
@@ -546,7 +573,8 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         if p is None:
             p = por_pacote[r["pkg_key"]] = {
                 "key": r["pkg_key"], "name": r["name"], "source": r["source"],
-                "publisher": r["publisher"], "cells": {}, "latest": None,
+                "publisher": r["publisher"], "arch": r.get("arch"),
+                "cells": {}, "latest": None, "oldest": None,
             }
         p["cells"][r["server"]] = {
             "version": r["version"],
@@ -556,6 +584,8 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         }
         if compare_versions(r["version"], p["latest"]) > 0:
             p["latest"] = r["version"]
+        if p["oldest"] is None or compare_versions(r["version"], p["oldest"]) < 0:
+            p["oldest"] = r["version"]
 
     saida: list[dict] = []
     catalogo = disponivel or {}
@@ -575,6 +605,7 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         for cell in p["cells"].values():
             cell["status"] = ("ok" if not p["latest"] or
                               compare_versions(cell["version"], p["latest"]) == 0 else "behind")
+        p["atrasados"] = [s for s, c in p["cells"].items() if c["status"] == "behind"]
         p["disp"] = catalogo.get(p["key"])
         p["atualizavel"] = bool(
             p["disp"] and compare_versions(p["disp"].get("version"), p["latest"]) > 0)
@@ -587,6 +618,14 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         if filtro == "problemas" and not (p["drift"] or p["parcial"]):
             continue
         saida.append(p)
+
+    # Nome repetido dentro da mesma secao (dois pacotes distintos que o Windows
+    # mostra com o mesmo DisplayName, tipicamente x64 e x86): sem uma pista de
+    # desempate, a tela mostra duas linhas iguais e ninguem sabe qual e qual.
+    repetidos = Counter((p["source"], (p["name"] or "").lower()) for p in saida)
+    for p in saida:
+        p["ambiguo"] = repetidos[(p["source"], (p["name"] or "").lower())] > 1
+        p["pista"] = _pista(p) if p["ambiguo"] else None
 
     # produto primeiro, depois customizacoes, e dentro de cada grupo o que
     # diverge sobe: e a leitura que se quer fazer ao abrir a tela.

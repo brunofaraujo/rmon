@@ -774,6 +774,27 @@ def _catalogo_do_ambiente(catalogo: list[dict], ambiente: str, validos: set[str]
             if not e.get("pasta") or e["pasta"] not in validos or e["pasta"] == ambiente]
 
 
+def _agrupar_por_fonte(linhas: list[dict]) -> list[dict]:
+    """Quebra a matriz em secoes por fonte (produto, customizacao, biblioteca...).
+
+    Uma lista unica de centenas de itens nao se le: o nome de uma biblioteca e o
+    de uma customizacao se parecem, e sem a secao a tela vira um paredao. As
+    linhas ja chegam ordenadas por fonte, entao aqui so se corta a fita.
+    """
+    secoes: list[dict] = []
+    for linha in linhas:
+        fonte = linha["source"]
+        if not secoes or secoes[-1]["fonte"] != fonte:
+            secoes.append({"fonte": fonte,
+                           "label": inventory.GRUPO_LABEL.get(fonte, fonte),
+                           "linhas": []})
+        secoes[-1]["linhas"].append(linha)
+    for secao in secoes:
+        secao["problemas"] = sum(1 for l in secao["linhas"]
+                                 if l["drift"] or l["parcial"] or l["atualizavel"])
+    return secoes
+
+
 def _pacotes_ctx(request: Request) -> dict:
     """Contexto comum das telas de inventario: matriz, filtros e ultima coleta."""
     inv = STATE["inv"]
@@ -787,6 +808,7 @@ def _pacotes_ctx(request: Request) -> dict:
     servidores = [s.name for s in srvs]
     papeis = {s.name: s.role for s in srvs}
     servidor = q.get("servidor") if q.get("servidor") in servidores else ""
+    vis = q.get("vis") if q.get("vis") in ("resumo", "matriz") else "resumo"
     catalogo = _catalogo_do_ambiente(db.list_catalog(), ambiente,
                                      {e for e, _ in ambientes})
     linhas = inventory.build_matrix(db.all_packages(), servidores, fonte=fonte,
@@ -796,8 +818,10 @@ def _pacotes_ctx(request: Request) -> dict:
     runs = db.inventory_runs()
     return {
         "request": request, "servidores": servidores, "linhas": linhas, "runs": runs,
+        "grupos": _agrupar_por_fonte(linhas), "vis": vis,
         "fonte": fonte, "filtro": filtro, "busca": busca, "servidor": servidor,
         "ambiente": ambiente, "ambientes": ambientes, "papeis": papeis,
+        "ambiente_hosts": {e: len(inv.servers_of(e)) for e, _ in ambientes},
         "ambiente_label": dict(ambientes).get(ambiente, ambiente),
         "resumo": {
             "pacotes": len(linhas),

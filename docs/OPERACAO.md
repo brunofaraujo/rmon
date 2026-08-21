@@ -28,7 +28,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/server/{name}` | Detalhe e histórico de um servidor | login |
 | `/jobs` | Estatísticas de jobs do RM (pool, por servidor, por solicitante, falhas) | login |
 | `/ocorrencias` | Erros/críticos recentes do Event Log, consolidados | login |
-| `/pacotes` | Inventário TOTVS: matriz item × host (produto, customizações, bibliotecas), divergências e ausências | login (coletar: admin) |
+| `/pacotes` | Inventário TOTVS por ambiente, em seções (produto, customizações, bibliotecas, instaladores): **Resumo** (uma linha por item, hosts sob demanda) ou **Matriz** (item × host) | login (coletar: admin) |
 | `/pacotes/mudancas` | Linha do tempo de instalações, atualizações, regressões e remoções | login |
 | `/pacotes/catalogo` | Versões disponíveis: repositório de pacotes baixados do TDN, vínculos e registro manual | admin |
 | `/pacotes/tarefas` | Instalações: pré-voo (somente leitura) e, se armada, execução de pacotes nos hosts | admin |

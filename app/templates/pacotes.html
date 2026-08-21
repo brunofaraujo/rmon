@@ -1,29 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Pacotes - RMonitor{% endblock %}
 {% block content %}
+{# base de link que preserva os filtros atuais (as KPIs so trocam o filtro) #}
+{% set base_qs_sem_vis = 'ambiente=' ~ ambiente ~ '&fonte=' ~ fonte ~ '&servidor=' ~ servidor
+                         ~ '&q=' ~ busca|urlencode %}
+{% set base_qs = base_qs_sem_vis ~ '&vis=' ~ vis %}
 <div class="page-head">
   <div>
     <h1>Inventario de software</h1>
     <div class="sub">
-      {% if ambientes %}
-        {{ resumo.pacotes }} item(ns) TOTVS em <b>{{ ambiente_label }}</b>
-        &middot; {{ servidores|length }} servidor(es) &middot; referencia = maior versao deste ambiente
-      {% else %}
-        {{ resumo.pacotes }} item(ns) TOTVS &middot; referencia = maior versao instalada no parque
-      {% endif %}
+      Software TOTVS instalado, comparado entre os hosts
+      {% if ambientes %}de <b>{{ ambiente_label }}</b>{% else %}do parque{% endif %}
     </div>
-    {% if ambientes|length > 1 %}
-    <div class="pills" style="margin-top:.6rem">
-      {% for id, rotulo in ambientes %}
-      <a class="pill {{ 'green' if id == ambiente else '' }}"
-         href="/pacotes?ambiente={{ id }}&fonte={{ fonte }}&filtro={{ filtro }}">{{ rotulo }}</a>
-      {% endfor %}
-    </div>
-    {% endif %}
   </div>
   <div class="pills">
     <a class="pill" href="/pacotes/mudancas?ambiente={{ ambiente }}">&#128337; Mudancas</a>
-    {% if request.session.get('role') == 'admin' %}<a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>
+    {% if request.session.get('role') == 'admin' %}
+    <a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>
     <a class="pill" href="/pacotes/tarefas">&#9881; Instalacoes</a>{% endif %}
     <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
     {% if request.session.get('role') == 'admin' %}
@@ -33,6 +26,19 @@
     {% endif %}
   </div>
 </div>
+
+{% if ambientes|length > 1 %}
+{# Ambientes sao instalacoes separadas do RM: a tela mostra um de cada vez, e o
+   seletor precisa deixar obvio que os outros existem (e quantos hosts tem). #}
+<div class="envbar" aria-label="Ambiente">
+  {% for id, rotulo in ambientes %}
+  <a class="envtab {{ 'on' if id == ambiente else '' }}"
+     href="/pacotes?ambiente={{ id }}&fonte={{ fonte }}&filtro={{ filtro }}&vis={{ vis }}">
+    {{ rotulo }}<span class="n">{{ ambiente_hosts.get(id, 0) }} host(s)</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
 
 {% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
 {% if resumo.sem_coleta %}
@@ -49,21 +55,43 @@
 {% endif %}
 
 <div class="kpis">
-  <div class="kpi"><div class="val">{{ resumo.pacotes }}</div><div class="lbl">Itens distintos</div></div>
-  <div class="kpi {{ 'warn' if resumo.drift else 'ok' }}">
+  <a class="kpi {{ 'sel' if filtro == 'todos' else '' }}" href="/pacotes?{{ base_qs }}&filtro=todos">
+    <div class="val">{{ resumo.pacotes }}</div><div class="lbl">Itens no ambiente</div></a>
+  <a class="kpi {{ 'warn' if resumo.drift else 'ok' }} {{ 'sel' if filtro == 'drift' else '' }}"
+     href="/pacotes?{{ base_qs }}&filtro=drift">
     <div class="val {{ 'txt-amber' if resumo.drift else 'txt-green' }}">{{ resumo.drift }}</div>
-    <div class="lbl">Versoes divergentes</div>
-  </div>
-  <div class="kpi"><div class="val">{{ resumo.parcial }}</div><div class="lbl">Ausentes em algum host</div></div>
-  <div class="kpi {{ 'warn' if resumo.atualizavel else '' }}">
+    <div class="lbl">Versoes divergentes</div></a>
+  <a class="kpi {{ 'sel' if filtro == 'ausentes' else '' }}" href="/pacotes?{{ base_qs }}&filtro=ausentes">
+    <div class="val">{{ resumo.parcial }}</div><div class="lbl">Ausentes em algum host</div></a>
+  <a class="kpi {{ 'warn' if resumo.atualizavel else '' }} {{ 'sel' if filtro == 'atualizavel' else '' }}"
+     href="/pacotes?{{ base_qs }}&filtro=atualizavel">
     <div class="val {{ 'txt-amber' if resumo.atualizavel else '' }}">{{ resumo.atualizavel }}</div>
-    <div class="lbl">Com pacote mais novo baixado</div>
+    <div class="lbl">Com pacote mais novo baixado</div></a>
+</div>
+
+{# Tudo o que antes ficava espremido no cabecalho de cada coluna da matriz:
+   papel, ultima coleta e ultima atualizacao aplicada, um cartao por host. #}
+<div class="hostbar">
+  {% for s in servidores %}
+  {% set r = runs.get(s) %}
+  <div class="hostchip {{ 'bad' if r and not r.ok else ('idle' if not r else '') }}">
+    <b>{{ s }}</b>
+    <span class="muted small">{{ papel_label.get(papeis.get(s), papeis.get(s)) or 'sem papel' }}</span>
+    <span class="faint small">
+      {% if not r %}sem coleta
+      {% elif not r.ok %}falha na coleta
+      {% else %}coleta {{ r.ts | dt }}{% endif %}
+      {% if r and r.last_upgrade %}
+        &middot; <span title="ultima atualizacao aplicada pelo RM.Atualizador">&#8635; {{ r.last_upgrade.strftime('%d/%m/%Y') }}</span>
+      {% endif %}
+    </span>
   </div>
-  <div class="kpi"><div class="val">{{ servidores|length - resumo.sem_coleta|length }}/{{ servidores|length }}</div><div class="lbl">Hosts inventariados</div></div>
+  {% endfor %}
 </div>
 
 <form class="toolbar" method="get" action="/pacotes">
   <input type="hidden" name="ambiente" value="{{ ambiente }}">
+  <input type="hidden" name="vis" value="{{ vis }}">
   <input type="search" name="q" class="input" value="{{ busca }}"
          placeholder="&#128269;  Pesquisar pacote ou versao...">
   <select name="fonte" class="input">
@@ -76,86 +104,161 @@
     <option value="todos"    {{ 'selected' if fonte=='todos' else '' }}>Tudo</option>
   </select>
   <select name="filtro" class="input">
-    <option value="todos"     {{ 'selected' if filtro=='todos' else '' }}>Todos</option>
+    <option value="todos"       {{ 'selected' if filtro=='todos' else '' }}>Todos</option>
     <option value="atualizavel" {{ 'selected' if filtro=='atualizavel' else '' }}>So com atualizacao baixada</option>
-    <option value="problemas" {{ 'selected' if filtro=='problemas' else '' }}>So divergentes ou ausentes</option>
-    <option value="drift"     {{ 'selected' if filtro=='drift' else '' }}>So versoes divergentes</option>
-    <option value="ausentes"  {{ 'selected' if filtro=='ausentes' else '' }}>So ausentes em algum host</option>
+    <option value="problemas"   {{ 'selected' if filtro=='problemas' else '' }}>So divergentes ou ausentes</option>
+    <option value="drift"       {{ 'selected' if filtro=='drift' else '' }}>So versoes divergentes</option>
+    <option value="ausentes"    {{ 'selected' if filtro=='ausentes' else '' }}>So ausentes em algum host</option>
   </select>
   <select name="servidor" class="input">
     <option value="">Todos os servidores</option>
     {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}
   </select>
   <button class="btn" type="submit">Filtrar</button>
+  <span class="spacer"></span>
+  <span class="segmented">
+    <a class="{{ 'on' if vis == 'resumo' else '' }}"
+       href="/pacotes?{{ base_qs_sem_vis }}&filtro={{ filtro }}&vis=resumo">Resumo</a>
+    <a class="{{ 'on' if vis == 'matriz' else '' }}"
+       href="/pacotes?{{ base_qs_sem_vis }}&filtro={{ filtro }}&vis=matriz">Matriz</a>
+  </span>
 </form>
+
+{% macro selo(l) %}
+  {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
+  {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
+  {% if l.atualizavel %}<span class="pill blue">atualizacao baixada</span>{% endif %}
+  {% if l.pista %}<span class="pill" title="pista para diferenciar itens de mesmo nome">{{ l.pista }}</span>{% endif %}
+{% endmacro %}
 
 {% if not linhas %}
   <div class="alert ok small">Nenhum pacote para os filtros escolhidos.</div>
+
+{% elif vis == 'resumo' %}
+  {# Visao padrao: uma linha por item e o detalhe por host so quando pedido. A
+     matriz inteira (uma coluna por host) fica na visao ao lado. #}
+  {% for g in grupos %}
+  <details class="grupo" {{ 'open' if loop.index <= 2 or g.problemas else '' }}>
+    <summary>
+      <b>{{ g.label }}</b>
+      <span class="badge-count">{{ g.linhas|length }}</span>
+      {% if g.problemas %}<span class="pill amber">{{ g.problemas }} a olhar</span>{% endif %}
+    </summary>
+    <div class="table-wrap">
+      <table class="tbl inv">
+        <thead><tr>
+          <th>Item</th><th>Versao instalada</th><th>Hosts</th><th>Disponivel</th>
+        </tr></thead>
+        <tbody>
+          {% for l in g.linhas %}
+          <tr>
+            <td class="item">
+              <b>{{ l.name }}</b> {{ selo(l) }}
+              {% if l.publisher %}<div class="faint small">{{ l.publisher }}</div>{% endif %}
+            </td>
+            <td class="{{ 'txt-amber' if l.drift else '' }}">
+              {% if l.drift %}
+                <span class="mono">{{ l.oldest }}</span> &rarr; <span class="mono">{{ l.latest }}</span>
+                <div class="faint small">{{ l.atrasados|length }} host(s) atras da maior versao</div>
+              {% else %}
+                <span class="mono">{{ l.latest or 'instalado' }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <details class="hosts">
+                <summary>{{ l.hosts }}/{{ servidores|length }}</summary>
+                <ul class="hostlist">
+                  {% for s in servidores %}
+                  {% set c = l.cells.get(s) %}
+                  <li class="{{ 'absent' if not c else ('behind' if c.status == 'behind' else '') }}">
+                    <span class="h">{{ s }}</span>
+                    {% if c %}
+                      <span class="mono">{{ c.version or 'instalado' }}</span>
+                      {% if c.date %}<span class="faint small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada else '' }}</span>{% endif %}
+                    {% else %}
+                      <span class="faint">{{ 'faltando neste papel' if s in l.ausentes else 'nao instalado' }}</span>
+                    {% endif %}
+                  </li>
+                  {% endfor %}
+                </ul>
+              </details>
+            </td>
+            <td class="{{ 'txt-accent' if l.atualizavel else '' }}"
+                title="{{ (l.disp.arquivo or l.disp.nota or '') if l.disp else '' }}">
+              {% if l.disp %}<span class="mono">{{ l.disp.version }}</span>
+                {% if l.atualizavel %}<div class="small">baixado, nao aplicado</div>{% endif %}
+              {% else %}<span class="faint">&mdash;</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endfor %}
+
 {% else %}
-<div class="table-wrap">
-  <table class="tbl matrix">
-    <thead>
-      <tr>
-        <th class="sticky-col">Item</th>
-        <th class="avail">Disponivel</th>
-        {% for s in servidores %}
-        <th class="host-col">
-          {{ s }}
-          {% if papeis.get(s) %}<div class="muted small">{{ papel_label.get(papeis[s], papeis[s]) }}</div>{% endif %}
-          {% if runs.get(s) %}<div class="muted small">{{ runs[s].ts | dt }}</div>{% endif %}
-          {% if runs.get(s) and runs[s].last_upgrade %}
-          <div class="muted small" title="ultima atualizacao aplicada pelo RM.Atualizador">
-            &#8635; {{ runs[s].last_upgrade.strftime('%d/%m/%Y') }}
-          </div>
-          {% endif %}
-        </th>
-        {% endfor %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for l in linhas %}
-      <tr>
-        <td class="sticky-col">
-          <b>{{ l.name }}</b>
-          {% if l.source != 'registry' %}<span class="pill">{{ fonte_label.get(l.source, l.source) }}</span>{% endif %}
-          {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
-          {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
-          <div class="muted small">{{ l.publisher or '' }}</div>
-        </td>
-        <td class="avail {{ 'novo' if l.atualizavel else '' }}"
-            title="{{ l.disp.arquivo or l.disp.nota or '' if l.disp else '' }}">
-          {% if l.disp %}
-            <span class="mono">{{ l.disp.version }}</span>
-            {% if l.atualizavel %}<div class="small">baixado, nao aplicado</div>{% endif %}
-          {% else %}<span class="muted">&mdash;</span>{% endif %}
-        </td>
-        {% for s in servidores %}
-          {% set c = l.cells.get(s) %}
-          {% if c %}
-          <td class="cell {{ 'behind' if c.status == 'behind' else 'okcell' }}"
-              title="{{ c.detail or '' }}">
-            <span class="mono">{{ c.version or 'instalado' }}</span>
-            {% if c.date %}
-            <div class="muted small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada else '' }}</div>
-            {% endif %}
+  {# Visao matriz: item x host, para comparar coluna a coluna. #}
+  <div class="table-wrap">
+    <table class="tbl matrix">
+      <thead>
+        <tr>
+          <th class="sticky-col">Item</th>
+          <th class="avail">Disponivel</th>
+          {% for s in servidores %}
+          <th class="host-col" title="{{ papel_label.get(papeis.get(s), papeis.get(s)) or '' }}">{{ s }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in grupos %}
+        <tr class="grp"><td colspan="{{ servidores|length + 2 }}">
+          {{ g.label }} <span class="badge-count">{{ g.linhas|length }}</span>
+        </td></tr>
+        {% for l in g.linhas %}
+        <tr>
+          <td class="sticky-col item"><b>{{ l.name }}</b> {{ selo(l) }}</td>
+          <td class="avail {{ 'novo' if l.atualizavel else '' }}"
+              title="{{ (l.disp.arquivo or l.disp.nota or '') if l.disp else '' }}">
+            {% if l.disp %}<span class="mono">{{ l.disp.version }}</span>
+            {% else %}<span class="faint">&mdash;</span>{% endif %}
           </td>
-          {% else %}
-          <td class="cell absent">&mdash;</td>
-          {% endif %}
+          {% for s in servidores %}
+            {% set c = l.cells.get(s) %}
+            {% if c %}
+            <td class="cell {{ 'behind' if c.status == 'behind' else 'okcell' }}"
+                title="{{ c.detail or '' }}{% if c.date %} - {{ c.date.strftime('%d/%m/%Y') }}{{ ' (estimado)' if c.estimada else '' }}{% endif %}">
+              <span class="mono">{{ c.version or 'instalado' }}</span>
+            </td>
+            {% else %}
+            <td class="cell absent" title="nao instalado">&mdash;</td>
+            {% endif %}
+          {% endfor %}
+        </tr>
         {% endfor %}
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-<div class="muted small" style="margin-top:.7rem">
-  Celula em ambar = versao abaixo da maior encontrada no parque &middot;
-  &mdash; = nao instalado naquele host (so conta como falta entre hosts do mesmo papel) &middot;
-  <b>*</b> = data estimada pela primeira coleta do RMon (o registro do Windows nao informa a data) &middot;
-  <b>Disponivel</b> = maior versao ja baixada do TDN para aquele item
-  ({{ resumo.catalogo }} pacote(s) no repositorio{% if resumo.sem_vinculo %},
-  {{ resumo.sem_vinculo }} sem item vinculado{% endif %}) &middot;
-  &#8635; no cabecalho = ultima atualizacao aplicada pelo RM.Atualizador naquele host.
-</div>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
+{% if linhas %}
+<details class="legenda">
+  <summary class="muted small">Como ler esta tela</summary>
+  <div class="muted small">
+    A comparacao acontece <b>dentro de um ambiente</b>: {{ ambiente_label or 'o parque' }} tem
+    {{ servidores|length }} host(s), e a referencia de "atualizado" e a maior versao encontrada
+    entre eles &middot;
+    <b>divergente</b> = os hosts nao estao todos na mesma versao &middot;
+    <b>ausente</b> = falta em algum host <i>do mesmo papel</i> (a camada web nao tem o mesmo
+    software que a de aplicacao, e isso nao conta como falta) &middot;
+    <b>Disponivel</b> = maior versao ja baixada do TDN para aquele item
+    ({{ resumo.catalogo }} pacote(s) no repositorio{% if resumo.sem_vinculo %},
+    {{ resumo.sem_vinculo }} sem item vinculado{% endif %}) &middot;
+    <b>*</b> na data = estimada pela primeira coleta do RMon (o registro do Windows nao
+    informa a data) &middot; <b>&#8635;</b> no cartao do host = ultima atualizacao aplicada
+    pelo RM.Atualizador.
+  </div>
+</details>
 {% endif %}
 {% endblock %}
