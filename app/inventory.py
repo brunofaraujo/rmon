@@ -161,8 +161,9 @@ foreach ($d in @($dirs.Keys)) {
     }
 
     # O RM.Atualizador deixa um log por execucao: o mais recente diz quando
-    # este host foi atualizado pela ultima vez.
-    $logs = @(Get-ChildItem -LiteralPath (Join-Path $d 'Atualizador') -Filter 'RM.Upgrade*.log' -File | Sort-Object LastWriteTime -Descending)
+    # este host foi atualizado pela ultima vez. Recursivo porque o arquivo fica
+    # em Atualizador\Log, nao na raiz da pasta (o -Filter mantem isso barato).
+    $logs = @(Get-ChildItem -LiteralPath (Join-Path $d 'Atualizador') -Filter 'RM.Upgrade*.log' -File -Recurse | Sort-Object LastWriteTime -Descending)
     if ($logs.Count -gt 0) {
         $quando = $logs[0].LastWriteTime
         if (-not $ultimaAtualizacao -or $quando -gt $ultimaAtualizacao) { $ultimaAtualizacao = $quando }
