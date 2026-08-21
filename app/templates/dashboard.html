@@ -78,6 +78,9 @@
         {% if d.users_count is not none %}<span class="pill">&#128100; {{ d.users_count }} usuarios</span>{% endif %}
         {% if d.app_ok is not none %}<span class="pill {{ 'green' if d.app_ok else 'red' }}">App {{ 'OK' if d.app_ok else 'FALHA' }}</span>{% endif %}
         {% if d.jobs %}{% if d.jobs.error %}<span class="pill red" title="{{ d.jobs.error }}">&#9881; Jobs: erro SQL</span>{% else %}<span class="pill {{ 'red' if d.jobs.failed and d.jobs.failed > 0 else 'green' }}">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} falha{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>{% endif %}{% endif %}
+        {% set bp = broker_probs(d, broker_ref) %}
+        {% if bp %}<span class="pill red" title="{{ bp.values() | join(' | ') }}">&#9888; Broker do RM</span>{% endif %}
+        {% if d.commit_pct is not none and d.commit_pct >= 80 %}<span class="pill {{ 'red' if d.commit_pct >= 90 else 'amber' }}" title="RAM + pagefile ja reservados">Commit {{ d.commit_pct }}%</span>{% endif %}
         {% if d.events %}<span class="pill amber occ-link" data-href="/ocorrencias?server={{ row.cfg.name }}" title="Ver ocorrencias">{{ d.events | length }} ocorrencia(s)</span>{% endif %}
       </div>
     {% else %}

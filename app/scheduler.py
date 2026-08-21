@@ -5,6 +5,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -20,7 +21,76 @@ _last: dict[str, dict] = {}
 
 
 DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
-                  "down_after": 3}
+                  "down_after": 3, "commit_pct": 90, "broker_min_pct": 60,
+                  "broker_min_kb": 0, "broker_settle_min": 10}
+
+
+def broker_reference(resultados: Iterable[dict]) -> dict[str, int]:
+    """Maior tamanho visto no parque para cada arquivo de broker.
+
+    O tamanho "certo" do broker e uma caracteristica do cliente (depende de
+    quantas customizacoes ele tem), nao um numero que caiba no codigo. Como os
+    hosts do mesmo parque rodam a mesma instalacao, o maior tamanho observado e
+    a melhor referencia disponivel - e e exatamente o arquivo que a operacao
+    copia a mao quando um host sobe truncado.
+    """
+    ref: dict[str, int] = {}
+    for r in resultados:
+        for b in r.get("broker") or []:
+            tamanho = b.get("size")
+            nome = b.get("name")
+            if nome and tamanho:
+                ref[nome] = max(ref.get(nome, 0), int(tamanho))
+    return ref
+
+
+def _kb(n: float) -> str:
+    return f"{n / 1024:.0f}KB"
+
+
+def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None) -> dict[str, str]:
+    """Broker de customizacao truncado ou ausente.
+
+    O RM so gera `_BrokerCustom.dat` quando o arquivo NAO existe. Se a geracao
+    aborta no meio (tipicamente por estouro do limite de commit), sobra um
+    arquivo curto - e a partir dai todo start reusa esse cache: o servico sobe
+    "com sucesso" e as customizacoes simplesmente nao carregam. Por isso o
+    tamanho e comparado com o do resto do parque, e nao com o passado do proprio
+    host: truncado, ele fica truncado para sempre.
+    """
+    p: dict[str, str] = {}
+    brokers = r.get("broker") or []
+    if not brokers:
+        return p
+    ref = ref or {}
+    settle = int(th.get("broker_settle_min", 10) or 0)
+    min_pct = float(th.get("broker_min_pct", 60) or 0)
+    min_kb = float(th.get("broker_min_kb", 0) or 0)
+    # Ausencia so e anomalia se ha RM.Host no ar: com o host parado, ninguem
+    # tinha mesmo de ter gerado o arquivo.
+    host_no_ar = any(
+        (s.get("status") or "") == "Running" and str(s.get("name") or "").startswith("RM.Host")
+        for s in (r.get("services") or [])
+    )
+    for b in brokers:
+        nome = b.get("name") or "broker"
+        chave = f"broker:{nome}"
+        tamanho = b.get("size")
+        if tamanho is None:
+            if host_no_ar:
+                p[chave] = f"{nome} nao existe em {b.get('path')} com o RM.Host no ar"
+            continue
+        idade = b.get("age_min")
+        if idade is not None and settle and idade < settle:
+            continue  # recem-gerado: pode ainda estar sendo escrito
+        maior = int(ref.get(nome) or 0)
+        if min_kb and tamanho < min_kb * 1024:
+            p[chave] = (f"{nome} com {_kb(tamanho)} (minimo esperado {_kb(min_kb * 1024)}): "
+                        "cache truncado, customizacoes nao carregam")
+        elif maior and min_pct and tamanho < maior * min_pct / 100:
+            p[chave] = (f"{nome} com {_kb(tamanho)} contra {_kb(maior)} no resto do parque: "
+                        "geracao abortada, customizacoes nao carregam")
+    return p
 
 
 def service_down(s: dict) -> bool:
@@ -54,7 +124,8 @@ def service_groups(services: list[dict] | None) -> list[dict]:
     return list(grupos.values())
 
 
-def problems(r: dict, th: dict, fail_streak: int | None = None) -> dict[str, str]:
+def problems(r: dict, th: dict, fail_streak: int | None = None,
+             broker_ref: dict[str, int] | None = None) -> dict[str, str]:
     """Problemas ativos de uma coleta. `fail_streak` = coletas consecutivas sem
     contato (db.fail_streak); enquanto ficar abaixo de `down_after`, a falha e
     tratada como instabilidade e nao vira DOWN - e o que evita a enxurrada de
@@ -83,6 +154,11 @@ def problems(r: dict, th: dict, fail_streak: int | None = None) -> dict[str, str
         p["DISK"] = f"disco {main.get('drive')} em {main.get('used_pct')}%"
     if r.get("app_ok") is True and r.get("app_ms") is not None and r["app_ms"] > th["app_ms"]:
         p["APPSLOW"] = f"app_health lento: {r['app_ms']}ms"
+    commit = r.get("commit_pct")
+    if commit is not None and commit >= th.get("commit_pct", 90):
+        p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
+                       "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
+    p.update(broker_problems(r, th, broker_ref))
     jb = r.get("jobs")
     if isinstance(jb, dict) and jb.get("failed") is not None and jb["failed"] >= th.get("jobs_failed", 3):
         p["JOBS"] = (f"{jb['failed']} execucoes de job com erro em {jb.get('window_min')}min "
@@ -99,6 +175,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             pool.submit(collect_server, s, inv.winrm, inv.defaults): s
             for s in inv.servers
         }
+        coletas = []
         for fut, server in list(futures.items()):
             try:
                 result = fut.result()
@@ -107,12 +184,18 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             if server.jobs:
                 jb = server.jobs
                 result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
+            coletas.append((server, result))
+
+        # O veredito do broker compara host contra host, entao so pode ser dado
+        # depois que todo o parque respondeu.
+        ref = broker_reference(r for _, r in coletas)
+        for server, result in coletas:
             db.insert_check(server.name, result)
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
             log.info("coleta %s -> %s", server.name, state)
 
             streak = 0 if result.get("reachable") else db.fail_streak(server.name)
-            probs = problems(result, th, streak)
+            probs = problems(result, th, streak, ref)
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

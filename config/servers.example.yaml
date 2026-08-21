@@ -24,6 +24,25 @@ defaults:
   # Manual/Disabled aparece em ambar (parada de proposito).
   service_patterns:
     - "RM.Host*"
+  # Limiares dos alertas
+  alerts:
+    disk_pct: 90
+    mem_pct: 90
+    app_ms: 3000
+    down_after: 3
+    # Commit charge (RAM + arquivo de paginacao ja reservados). E esse limite,
+    # nao a RAM livre, que estoura com 0x800705AF e derruba a geracao do broker.
+    commit_pct: 90
+    # Broker truncado: tamanho minimo, em % do maior arquivo do parque.
+    broker_min_pct: 60
+    broker_min_kb: 0          # piso absoluto em KB (0 = so a regra relativa)
+    broker_settle_min: 10     # ignora arquivo gerado ha menos que isso (pode estar sendo escrito)
+  # Broker do RM: cache que o RM.Host so gera quando o arquivo NAO existe. Se a
+  # geracao aborta no meio, sobra um arquivo curto e o RM sobe "com sucesso"
+  # sem as customizacoes - por isso o tamanho e comparado entre os hosts.
+  broker:
+    enabled: true
+    files: ["_BrokerCustom.dat", "_Broker.dat"]
   eventlog:
     logs: [System, Application]
     level: 2               # 1=Critical, 2=Error, 3=Warning

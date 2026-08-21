@@ -48,6 +48,8 @@ _SCHEMA = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS email text",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS users_count integer",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS jobs jsonb",
+    "ALTER TABLE checks ADD COLUMN IF NOT EXISTS broker jsonb",
+    "ALTER TABLE checks ADD COLUMN IF NOT EXISTS commit_pct real",
     # --- inventario de software (cadencia propria, nao entra em checks) ---
     """CREATE TABLE IF NOT EXISTS host_packages (
         server text NOT NULL,
@@ -157,13 +159,15 @@ def insert_check(server: str, result: dict[str, Any]) -> None:
     with _conn() as c:
         c.execute(
             """INSERT INTO checks (server, reachable, cpu, mem_pct, uptime_sec,
-                 disks, services, events, app_ok, app_ms, error, users_count, jobs)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                 disks, services, events, app_ok, app_ms, error, users_count, jobs,
+                 broker, commit_pct)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (server, bool(result.get("reachable")), result.get("cpu"), result.get("mem_pct"),
              result.get("uptime_sec"), Jsonb(result.get("disks") or []),
              Jsonb(result.get("services") or []), Jsonb(result.get("events") or []),
              result.get("app_ok"), result.get("app_ms"), result.get("error"), result.get("users_count"),
-             Jsonb(result["jobs"]) if result.get("jobs") else None),
+             Jsonb(result["jobs"]) if result.get("jobs") else None,
+             Jsonb(result.get("broker") or []), result.get("commit_pct")),
         )
 
 

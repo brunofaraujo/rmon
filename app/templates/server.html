@@ -51,6 +51,28 @@
     </div>
   </div>
 
+  {% if d.broker %}
+  {% set bp = broker_probs(d, broker_ref) %}
+  <div class="panel">
+    <h2>Broker do RM <span class="muted small">(cache de customizacoes na pasta de instalacao)</span></h2>
+    <div class="pills">
+      {% for b in d.broker %}
+      {% set ruim = bp.get('broker:' ~ b.name) %}
+      <span class="pill {{ 'red' if ruim else 'green' }}" title="{{ b.path }}{% if b.mtime %} &middot; gerado em {{ b.mtime }}{% endif %}{% if broker_ref.get(b.name) %} &middot; maior no parque: {{ (broker_ref.get(b.name) / 1024) | round | int }}KB{% endif %}">
+        <span class="d"></span>{{ b.name }} &middot; {% if b.size %}{{ (b.size / 1024) | round | int }}KB{% else %}ausente{% endif %}</span>
+      {% endfor %}
+      {% if d.commit_pct is not none %}<span class="pill {{ 'red' if d.commit_pct >= 90 else ('amber' if d.commit_pct >= 80 else '') }}" title="RAM + arquivo de paginacao ja reservados. E esse limite, e nao a RAM livre, que estoura na geracao do broker.">Commit charge &middot; {{ d.commit_pct }}%</span>{% endif %}
+    </div>
+    {% if bp %}
+    <div class="alert small" style="margin-top:.6rem">
+      {% for msg in bp.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
+      <div class="muted">O RM so gera o broker quando o arquivo <b>nao existe</b>: truncado, ele continua truncado a cada start.
+        Pare os RM.Host do host, apague o arquivo e suba <b>um</b> servico por vez, com o parque descarregado.</div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="panel">
     <h2>Servicos monitorados</h2>
     <div class="pills">

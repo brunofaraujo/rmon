@@ -187,3 +187,96 @@ Nos hosts afetados, verificar na aba **Ocorrências** se há `Application Error`
 `Application Hang` do `RM.exe` e quantas sessões RDP estão abertas: travamentos de
 WinRM costumam acompanhar sobrecarga do servidor de aplicação. Encerrar sessões
 presas (tela **Sessões**) ou reiniciar o host resolve o sintoma.
+
+---
+
+## Broker truncado (customizações não carregam)
+
+Sintoma: depois de instalar um pacote TOTVS, apagar o `_BrokerCustom.dat` e reiniciar o
+RM Host, o serviço sobe **com sucesso**, mas o arquivo é recriado com uma fração do
+tamanho normal (ex.: 50 KB no lugar de 560 KB) e as customizações não carregam para os
+usuários daquele servidor. Paliativo conhecido: copiar o arquivo de um host que gerou
+certo.
+
+### Por que acontece
+
+`_BrokerCustom.dat` é o cache de reflexão sobre as DLLs de customização
+(`RM.Net\Custom`, ~65 MB / 237 assemblies neste parque). O `RM.Host` só o gera quando o
+arquivo **não existe** — e a geração é um pico grande de memória *comprometida*, somado
+ao `_Broker.dat` (11 MB em disco, muito mais em memória), aos `RM.Host.JobRunner` (30+
+processos) e às sessões RDP com `RM.exe` que já estão no ar.
+
+Quando esse pico bate no **limite de commit** da máquina (RAM + arquivo de paginação já
+reservados), o .NET falha no meio da geração. O próprio Visualizador de Eventos registra
+as duas formas do erro nos hosts afetados:
+
+```
+RM.Host.Service — Serviço não pode ser iniciado. System.IO.FileLoadException:
+  Não foi possível carregar arquivo ou assembly 'System.Windows.Forms' ...
+  O arquivo de paginação é muito pequeno para que esta operação seja concluída.
+  (Exceção de HRESULT: 0x800705AF)  em RM.Lib.RMSBroker.InternalStartHost()
+
+RM.Host.Service — Erro ao Registrar Servers iniciais (2) - BrokerServer:
+  Erro ao ler arquivo ...\_Broker.dat: 'System.OutOfMemoryException'
+  - Favor apagar este arquivo e reiniciar o aplicativo.
+```
+
+`0x800705AF` é `ERROR_COMMITMENT_LIMIT`: **não** é falta de RAM livre nem de disco, é o
+limite de commit. Com o arquivo de paginação em "gerenciado pelo sistema", ele começa
+pequeno depois de cada boot e cresce **depois** da demanda — tarde demais para um pico
+que dura segundos.
+
+O que transforma a falha em problema permanente é o resto: o RM **não apaga** o arquivo
+parcial e, no start seguinte, encontra um `_BrokerCustom.dat` existente e o considera
+válido. O serviço sobe "com sucesso" com um cache truncado, e continua assim para sempre.
+
+### Correção definitiva
+
+1. **Tirar o arquivo de paginação do modo automático** nos hosts que falham. Fixar
+   inicial = máximo, com folga para o pico (regra prática: RAM + 50%, mínimo 32 GB
+   nestes servidores de aplicação). Em PowerShell, como administrador, e com reboot
+   depois:
+
+   ```powershell
+   $cs = Get-WmiObject Win32_ComputerSystem
+   if ($cs.AutomaticManagedPagefile) { $cs.AutomaticManagedPagefile = $false; [void]$cs.Put() }
+   $pf = Get-WmiObject Win32_PageFileSetting -Filter "Name='C:\\pagefile.sys'"
+   if (-not $pf) { $pf = ([WmiClass]'Win32_PageFileSetting').CreateInstance(); $pf.Name = 'C:\pagefile.sys' }
+   $pf.InitialSize = 49152; $pf.MaximumSize = 49152; [void]$pf.Put()   # 48 GB, exige o espaco em disco
+   ```
+
+   Confira depois do reboot (`AllocatedBaseSize` tem de vir com o valor fixado):
+
+   ```powershell
+   Get-WmiObject Win32_PageFileUsage | Select-Object Name, AllocatedBaseSize, PeakUsage
+   ```
+
+2. **Gerar o broker com a máquina descarregada.** A geração compete com tudo que já
+   está no ar. Na janela de manutenção, sem sessões RDP:
+   pare **todos** os `RM.Host*` do host → apague `_BrokerCustom.dat` → suba **um**
+   serviço só → espere o arquivo parar de crescer → confira o tamanho → só então suba
+   os demais. Subir três instâncias juntas faz as três gerarem o mesmo arquivo ao
+   mesmo tempo.
+
+3. **Conferir antes de liberar.** O tamanho do broker gerado tem de bater com o dos
+   outros hosts do parque:
+
+   ```powershell
+   (Get-Item 'C:\totvs\CorporeRM\RM.Net\_BrokerCustom.dat').Length
+   ```
+
+   Se veio truncado, **apague-o** (não deixe para depois: o RM vai reusá-lo) e repita
+   o passo 2. Copiar o arquivo de outro host resolve o sintoma, mas só depois de o
+   passo 1 estar feito o problema para de voltar.
+
+### O que o RMonitor faz
+
+A coleta lê tamanho e data de `_BrokerCustom.dat`/`_Broker.dat` em cada host e compara
+com o maior do parque; abaixo de `broker_min_pct` (padrão 60%) sai alerta
+`broker:_BrokerCustom.dat` no Telegram/Slack e uma tarja no card do servidor. O
+`commit charge` também é coletado e alerta em `commit_pct` (padrão 90%) — é o indicador
+que antecede a falha. Ver [CONFIGURACAO.md](CONFIGURACAO.md#broker-do-rm-defaultsbroker).
+
+Assim a checagem que hoje é manual ("o arquivo ficou do tamanho certo?") passa a valer
+para o parque inteiro, minutos depois da instalação, sem depender de um usuário
+reclamar que a customização sumiu.
