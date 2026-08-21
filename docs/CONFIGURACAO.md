@@ -205,6 +205,78 @@ instalação. O RMon lê a data do mais recente e mostra no cabeçalho de cada h
 (`↻ dd/mm/aaaa`) — dá para ver, por exemplo, que um pacote foi baixado em agosto
 e o host ainda está com a atualização de julho.
 
+## Instalar e atualizar nos hosts (`defaults.execution`)
+
+A tela `/pacotes/tarefas` enfileira tarefas de instalação. Ela nasce
+**desarmada** e a maior parte do valor está no modo que não instala nada.
+
+### Pré-voo (o padrão)
+
+Com `execution.enabled: false`, toda tarefa é um **pré-voo**: o RMon faz
+checagens **somente-leitura** no host e mostra o comando exato que seria
+executado. Nada é baixado, copiado ou iniciado.
+
+O que ele confere:
+
+| Checagem | Pergunta |
+|---|---|
+| `acao` | a ação existe no catálogo permitido? |
+| `habilitado` / `host_liberado` | a execução real está armada para este host? |
+| `janela` | estamos na janela de manutenção? |
+| `sessoes` | quantas sessões RDP ativas há agora? |
+| `disco` | há espaço livre suficiente (mínimo, ou o dobro do pacote)? |
+| `destino` | a pasta de destino existe? |
+| `servicos` | os serviços exigidos estão parados? |
+| `pacote` | o arquivo existe no repositório? qual o SHA-256? |
+| `versao` | o host está mesmo atrás da versão do pacote? |
+| `alcance` | o host consegue chegar no RMon para baixar o pacote? |
+
+Uma checagem **dura** reprovada bloqueia a tarefa: ela não "tenta assim mesmo".
+
+### Armar a execução real
+
+Três coisas, todas obrigatórias, nenhuma delas por acidente:
+
+1. `execution.enabled: true` no `servers.yaml`;
+2. o host listado em `execution.hosts` (a lista vazia, que é o padrão, não
+   libera ninguém);
+3. na tela, digitar o nome do host exatamente como ele aparece no painel.
+
+Além disso o pré-voo roda de novo antes de agir, e a trava mestra é conferida
+mais uma vez no momento da execução — entre enfileirar e executar, alguém pode
+ter desarmado, e quem manda é a configuração na hora de agir.
+
+### Ações: não existe comando livre
+
+O que roda sai de `execution.actions`. O executável é **sempre** o pacote que o
+próprio RMon colocou no host, e os argumentos são texto fixo do YAML. Nada
+digitado na tela entra numa linha de comando. Uma ação é descartada (com aviso
+no log) se o `id` tiver formato estranho, se `dest` não for uma subpasta
+simples, ou se `args` contiver `;`, `&`, `|`, `<`, `>`, `` ` `` ou `$`.
+
+Dois tipos:
+
+- **`dest`** → copia o arquivo para aquela subpasta da instalação do RM
+  (a pasta da instalação vem do inventário, não de configuração nova);
+- **`args`** → executa o pacote com aqueles argumentos e espera terminar.
+
+### Como o pacote chega ao host
+
+O RMon serve o arquivo em `/pacotes/stage/{id}`, com assinatura HMAC e prazo,
+válido só enquanto aquela tarefa está viva e só com a execução habilitada. O
+host baixa, **confere o SHA-256 antes de executar** e apaga o arquivo
+temporário no fim.
+
+Isso exige que o host alcance o RMon na porta do painel — é o que a checagem
+`alcance` responde. Se o firewall da VM não liberar a faixa dos servidores RM, a
+execução real fica bloqueada (o pré-voo continua funcionando normalmente).
+
+### Depois de um restart
+
+Tarefa que ficou `running` quando o processo morreu é marcada como falha e
+**não** é repetida: repetir uma instalação sozinho, sem ninguém pedir, é pior do
+que exigir um clique novo.
+
 ## Variáveis de ambiente (`.env`)
 
 Modelo completo em [`.env.example`](../.env.example). A aplicação lê o `.env` com um

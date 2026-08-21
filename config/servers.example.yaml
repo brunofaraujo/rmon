@@ -48,6 +48,33 @@ defaults:
       - "Update for Microsoft*"
       - "Security Update for*"
 
+  # Execucao de instalacoes (pagina /pacotes/tarefas). DESARMADA por padrao:
+  # com enabled: false o RMon so faz o PRE-VOO - checagens somente-leitura no
+  # host e o comando exato que seria executado. Nada e instalado.
+  execution:
+    enabled: false           # trava mestra. true = pode instalar de verdade
+    hosts: []                # lista explicita de hosts liberados. Vazia = nenhum
+    window: "20:00-06:00"    # janela de manutencao (vazio = qualquer hora)
+    max_sessions: 0          # recusa se houver mais sessoes RDP que isto
+    min_free_gb: 2           # espaco livre minimo no disco de destino
+    require_services_stopped: []   # ex.: ["RM.Host*"] - exige parados antes
+    temp_dir: "C:\\totvs\\rmon-stage"   # onde o pacote fica antes de instalar
+    # Endereco do RMon COMO O HOST O ENXERGA: e por aqui que o pacote viaja da
+    # VM para o servidor Windows (exige a porta liberada no firewall da VM).
+    base_url: ""             # ex.: "http://10.10.10.110:8080"
+    # Catalogo de acoes permitidas. Nao existe comando livre: o executavel e
+    # sempre o pacote que o RMon colocou no host, e os argumentos sao estes.
+    actions: []
+    #   - id: copiar-custom
+    #     label: "Copiar DLL para a pasta Custom da instalacao"
+    #     dest: "Custom"            # subpasta simples dentro da instalacao do RM
+    #     extensions: [".dll"]
+    #   - id: instalador-silencioso
+    #     label: "Instalador TOTVS em modo silencioso"
+    #     args: "/S"                # texto fixo; ; & | < > ` $ sao recusados
+    #     extensions: [".exe"]
+    #     timeout_sec: 1800
+
 servers:
   - name: rm-app-01
     host: 10.10.10.50

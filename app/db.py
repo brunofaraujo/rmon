@@ -88,6 +88,19 @@ _SCHEMA = [
         computer text, os text
     )""",
     "ALTER TABLE inventory_runs ADD COLUMN IF NOT EXISTS last_upgrade timestamptz",
+    """CREATE TABLE IF NOT EXISTS install_tasks (
+        id bigserial PRIMARY KEY,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        created_by text,
+        server text NOT NULL,
+        produto text, version text, arquivo text, pkg_key text,
+        action text NOT NULL,
+        mode text NOT NULL,
+        status text NOT NULL DEFAULT 'pending',
+        started_at timestamptz, finished_at timestamptz,
+        exit_code integer, comando text, output text, error text, checks jsonb
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_install_tasks_fila ON install_tasks(status, id)",
 ]
 
 
@@ -500,3 +513,87 @@ def set_inventory_upgrade(server: str, quando: Any) -> None:
     with _conn() as c:
         c.execute("UPDATE inventory_runs SET last_upgrade=%s WHERE server=%s",
                   (_as_ts(quando), server))
+
+
+# ---------- fila de tarefas de instalacao ----------
+def create_task(server: str, produto: str | None, version: str | None,
+                arquivo: str | None, pkg_key: str | None, action: str, mode: str,
+                created_by: str) -> int:
+    with _conn() as c:
+        row = c.execute(
+            """INSERT INTO install_tasks
+                 (server, produto, version, arquivo, pkg_key, action, mode, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (server, produto, version, arquivo, pkg_key, action, mode, created_by),
+        ).fetchone()
+    return int(row["id"])
+
+
+def next_pending_task() -> dict | None:
+    """Proxima tarefa da fila, pulando hosts que ja tem tarefa rodando.
+
+    `FOR UPDATE SKIP LOCKED` mantem a fila correta mesmo se um dia houver mais
+    de um worker; a marcacao para 'running' vai na mesma transacao.
+    """
+    with _conn() as c:
+        with c.transaction():
+            row = c.execute(
+                """SELECT * FROM install_tasks t
+                    WHERE t.status='pending'
+                      AND NOT EXISTS (SELECT 1 FROM install_tasks r
+                                       WHERE r.status='running' AND r.server=t.server)
+                    ORDER BY t.id LIMIT 1 FOR UPDATE SKIP LOCKED"""
+            ).fetchone()
+            if not row:
+                return None
+            c.execute("UPDATE install_tasks SET status='running', started_at=now() WHERE id=%s",
+                      (row["id"],))
+    return row
+
+
+def finish_task(task_id: int, status: str, *, checks: Any = None, comando: str | None = None,
+                exit_code: int | None = None, output: str | None = None,
+                error: str | None = None) -> None:
+    with _conn() as c:
+        c.execute(
+            """UPDATE install_tasks
+                  SET status=%s, finished_at=now(), checks=%s, comando=%s,
+                      exit_code=%s, output=%s, error=%s
+                WHERE id=%s""",
+            (status, Jsonb(checks) if checks is not None else None, comando,
+             exit_code, output, error, task_id),
+        )
+
+
+def cancel_task(task_id: int) -> bool:
+    """So cancela o que ainda nao comecou."""
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE install_tasks SET status='canceled', finished_at=now() "
+            "WHERE id=%s AND status='pending'", (task_id,))
+        return cur.rowcount > 0
+
+
+def list_tasks(limit: int = 100) -> list[dict]:
+    with _conn() as c:
+        return _epoch(c.execute(
+            "SELECT * FROM install_tasks ORDER BY id DESC LIMIT %s", (limit,)).fetchall())
+
+
+def get_task(task_id: int) -> dict | None:
+    with _conn() as c:
+        return c.execute("SELECT * FROM install_tasks WHERE id=%s", (task_id,)).fetchone()
+
+
+def reset_running_tasks() -> int:
+    """Tarefa que ficou 'running' num processo que morreu nao volta a rodar.
+
+    Sem isto, um restart no meio de uma instalacao deixaria a tarefa presa para
+    sempre - e, pior, poderia executa-la de novo sem ninguem pedir.
+    """
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE install_tasks SET status='failed', finished_at=now(), "
+            "error='o RMon foi reiniciado enquanto esta tarefa rodava' "
+            "WHERE status='running'")
+        return cur.rowcount

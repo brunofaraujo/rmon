@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, inventory, jobstats, packages, scheduler
+from . import __version__, db, execution, inventory, jobstats, packages, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import load_inventory, load_settings
 from .scheduler import build_scheduler, poll_all, poll_inventory, scan_packages
@@ -31,10 +31,13 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
-def _fmt_dt(ts: float | None) -> str:
+def _fmt_dt(ts) -> str:
+    """Aceita epoch (o que vem das consultas de historico) ou datetime."""
     import datetime
     if not ts:
         return "-"
+    if isinstance(ts, datetime.datetime):
+        return ts.strftime("%d/%m %H:%M:%S")
     return datetime.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M:%S")
 
 
@@ -97,6 +100,10 @@ async def lifespan(app: FastAPI):
         log.info("usuario admin inicial '%s' criado no banco", settings.admin_user)
     STATE.update(settings=settings, inv=inv)
     _apply_ui_globals()
+    presas = db.reset_running_tasks()
+    if presas:
+        log.warning("%d tarefa(s) de instalacao ficaram presas no restart e foram "
+                    "marcadas como falha (nao serao repetidas)", presas)
 
     threading.Thread(target=poll_all, args=(inv, settings), daemon=True).start()
 
@@ -922,3 +929,126 @@ def catalogo_varrer(request: Request):
     n = scan_packages(_settings())
     db.audit(request.session["user"], "catalog_scan", f"{n} arquivo(s)", _ip(request))
     return _catalogo_redirect(request, f"Repositorio lido: {n} arquivo(s).")
+
+
+# ---------- fila de instalacao (F4) ----------
+TASK_LABEL = {"pending": "na fila", "running": "executando", "ok": "concluida",
+              "failed": "falhou", "blocked": "bloqueada", "canceled": "cancelada"}
+templates.env.globals["task_label"] = TASK_LABEL
+
+
+def _exec_cfg() -> dict:
+    return execution.settings_for(STATE["inv"].defaults)
+
+
+@app.get("/pacotes/tarefas", response_class=HTMLResponse)
+def tarefas_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    inv = STATE["inv"]
+    cfg = _exec_cfg()
+    catalogo = [e for e in db.list_catalog() if e["arquivo"]]
+    return templates.TemplateResponse(
+        "tarefas.html",
+        {"request": request, "tarefas": db.list_tasks(60),
+         "servidores": [s.name for s in inv.servers], "catalogo": catalogo,
+         "acoes": execution.actions_for(inv.defaults),
+         "cfg": {"enabled": bool(cfg.get("enabled")), "hosts": list(cfg.get("hosts") or []),
+                 "window": cfg.get("window") or "", "max_sessions": cfg.get("max_sessions", 0),
+                 "base_url": cfg.get("base_url") or "", "temp_dir": cfg.get("temp_dir")},
+         "flash": request.session.pop("tflash", None), "version": __version__})
+
+
+def _tarefas_redirect(request: Request, msg: str) -> RedirectResponse:
+    request.session["tflash"] = msg
+    return RedirectResponse("/pacotes/tarefas", status_code=303)
+
+
+@app.post("/pacotes/tarefas")
+async def tarefas_criar(request: Request):
+    """Enfileira uma tarefa.
+
+    O modo real so passa com a trava mestra ligada, o host na lista de liberados
+    e o nome do host digitado a mao - as tres coisas, sempre. Na duvida, cai
+    para o pre-voo, que nao executa nada.
+    """
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    inv = STATE["inv"]
+    servidor = form.get("server") or ""
+    if servidor not in {s.name for s in inv.servers}:
+        return _tarefas_redirect(request, "Servidor desconhecido.")
+    acao = form.get("action") or ""
+    if acao not in execution.actions_for(inv.defaults):
+        return _tarefas_redirect(request, "Acao fora do catalogo permitido.")
+    try:
+        entrada_id = int(form.get("catalog_id") or 0)
+    except ValueError:
+        entrada_id = 0
+    entrada = next((e for e in db.list_catalog() if e["id"] == entrada_id and e["arquivo"]), None)
+    if not entrada:
+        return _tarefas_redirect(request, "Pacote nao encontrado no repositorio.")
+
+    modo = "dry_run"
+    if form.get("mode") == "real":
+        cfg = _exec_cfg()
+        if not cfg.get("enabled"):
+            return _tarefas_redirect(
+                request, "Execucao real esta desligada (execution.enabled). "
+                         "Nada foi enfileirado.")
+        if servidor not in (cfg.get("hosts") or []):
+            return _tarefas_redirect(
+                request, f"{servidor} nao esta em execution.hosts. Nada foi enfileirado.")
+        if (form.get("confirm") or "").strip() != servidor:
+            return _tarefas_redirect(
+                request, "Para executar de verdade, digite o nome do host exatamente "
+                         "como aparece no painel. Nada foi enfileirado.")
+        modo = "real"
+
+    task_id = db.create_task(servidor, entrada["produto"], entrada["version"],
+                             entrada["arquivo"], entrada["pkg_key"], acao, modo,
+                             request.session["user"])
+    db.audit(request.session["user"], "install_task_create",
+             f"#{task_id} {servidor} {entrada['produto']} {entrada['version']} "
+             f"({acao}, {modo})", _ip(request))
+    return _tarefas_redirect(
+        request, f"Tarefa #{task_id} na fila "
+                 f"({'EXECUCAO REAL' if modo == 'real' else 'pre-voo, sem executar'}).")
+
+
+@app.post("/pacotes/tarefas/{task_id}/cancelar")
+def tarefas_cancelar(request: Request, task_id: int):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if db.cancel_task(task_id):
+        db.audit(request.session["user"], "install_task_cancel", str(task_id), _ip(request))
+        return _tarefas_redirect(request, f"Tarefa #{task_id} cancelada.")
+    return _tarefas_redirect(request, f"Tarefa #{task_id} ja saiu da fila.")
+
+
+@app.get("/pacotes/stage/{task_id}")
+def pacote_stage(request: Request, task_id: int, exp: int = 0, sig: str = ""):
+    """Entrega o pacote ao host durante a instalacao.
+
+    Sem sessao, porque quem baixa e o servidor Windows. Em compensacao: so
+    existe com a execucao habilitada, exige assinatura HMAC com prazo, so serve
+    a tarefa daquele id enquanto ela esta viva, e o arquivo tem de estar dentro
+    do repositorio de pacotes.
+    """
+    if not _exec_cfg().get("enabled"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not execution.stage_token_ok(_settings().secret_key, task_id, exp, sig):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    task = db.get_task(task_id)
+    if not task or task["status"] not in ("pending", "running") or task["mode"] != "real":
+        return JSONResponse({"error": "not found"}, status_code=404)
+    caminho = execution.pacote_local(_settings(), task["arquivo"] or "")
+    if not caminho:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    from fastapi.responses import FileResponse
+    log.info("stage: entregando %s para a tarefa %d", caminho.name, task_id)
+    return FileResponse(str(caminho), filename=caminho.name,
+                        media_type="application/octet-stream")

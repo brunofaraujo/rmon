@@ -31,6 +31,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/pacotes` | Inventário TOTVS: matriz item × host (produto, customizações, bibliotecas), divergências e ausências | login (coletar: admin) |
 | `/pacotes/mudancas` | Linha do tempo de instalações, atualizações, regressões e remoções | login |
 | `/pacotes/catalogo` | Versões disponíveis: repositório de pacotes baixados do TDN, vínculos e registro manual | admin |
+| `/pacotes/tarefas` | Instalações: pré-voo (somente leitura) e, se armada, execução de pacotes nos hosts | admin |
 | `/sessions` | Sessões RDP ao vivo; encerrar sessões selecionadas | admin p/ logoff |
 | `/logs` | Auditoria de ações | admin |
 | `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |
