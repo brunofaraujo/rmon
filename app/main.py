@@ -71,14 +71,6 @@ def _thresholds() -> dict:
     return {**scheduler.DEFAULT_ALERTS, **yaml_alerts, **(db.get_config("alerts", {}) or {})}
 
 
-def _broker_probs(d: dict | None, ref: dict | None) -> dict:
-    """Mesmo veredito do alerta, para o HTML nao inventar um criterio proprio."""
-    return scheduler.broker_problems(d or {}, _thresholds(), ref or {})
-
-
-templates.env.globals["broker_probs"] = _broker_probs
-
-
 def _assets_tag() -> str:
     """Selo de cache dos estaticos: muda a cada deploy, senao a TV fica com o
     CSS/JS antigo em cache ate alguem limpar o navegador na marra."""
@@ -389,7 +381,12 @@ def dashboard(request: Request):
             summary["alerts"] += sum(int(e.get("count", 1)) for e in (d["events"] or []))
         else:
             summary["offline"] += 1
+    # Veredito do broker calculado aqui (uma vez, com os limiares lidos uma vez)
+    # e nao no template: e o mesmo criterio do alerta, sem duplicar regra no HTML.
     ref = scheduler.broker_reference(latest.values())
+    th = _thresholds()
+    for r in rows:
+        r["broker"] = scheduler.broker_problems(r["data"] or {}, th, ref)
     return templates.TemplateResponse(
         "dashboard.html",
         {"request": request, "rows": rows, "summary": summary, "broker_ref": ref,
@@ -408,10 +405,12 @@ def server_detail(request: Request, name: str):
             {"request": request, "name": name, "hist": [], "current": None},
             status_code=404,
         )
+    ref = scheduler.broker_reference(db.latest_per_server())
     return templates.TemplateResponse(
         "server.html",
         {"request": request, "name": name, "current": hist[0], "hist": hist,
-         "broker_ref": scheduler.broker_reference(db.latest_per_server())},
+         "broker_ref": ref,
+         "broker_alerta": scheduler.broker_problems(hist[0], _thresholds(), ref)},
     )
 
 

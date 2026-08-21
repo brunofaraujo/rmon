@@ -187,8 +187,10 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             coletas.append((server, result))
 
         # O veredito do broker compara host contra host, entao so pode ser dado
-        # depois que todo o parque respondeu.
-        ref = broker_reference(r for _, r in coletas)
+        # depois que todo o parque respondeu. A ultima coleta conhecida entra
+        # junto: senao, num ciclo em que so os hosts truncados respondem, a
+        # referencia cairia para o proprio tamanho errado e o alerta sumiria.
+        ref = broker_reference([r for _, r in coletas] + db.latest_per_server())
         for server, result in coletas:
             db.insert_check(server.name, result)
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
