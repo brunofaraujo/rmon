@@ -82,6 +82,7 @@ idempotente (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EX
 | `package_events` | Mudanças de software (instalado/atualizado/regrediu/removido), guardadas por 1 ano |
 | `inventory_runs` | Última coleta de inventário por servidor (ok, nº de itens, erro, duração, última atualização do RM.Atualizador) |
 | `package_catalog` | Versões disponíveis: espelho do repositório de pacotes (`origin='repo'`, reescrito a cada varredura) mais o registro manual (`origin='manual'`) |
+| `install_tasks` | Fila de instalação: modo (pré-voo/real), situação, checagens do pré-voo, comando, código de saída e saída |
 
 Índices por `ts DESC` e por `(server, ts DESC)` sustentam as consultas de histórico e
 "último por servidor" (`SELECT DISTINCT ON (server) …`).
@@ -120,6 +121,8 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/pacotes/coletar` | POST | Dispara uma coleta de inventário fora da cadência (admin) |
 | `/pacotes/catalogo/varrer` | POST | Relê o repositório de pacotes (admin) |
 | `/pacotes/catalogo/vincular` | POST | Liga um pacote baixado a um item do inventário (admin) |
+| `/pacotes/tarefas` | POST | Enfileira um pré-voo ou (se armado) uma instalação (admin) |
+| `/pacotes/stage/{id}` | GET | Entrega o pacote ao host durante a instalação — sem sessão, com HMAC e prazo, só com a execução habilitada |
 
 ## Perfil `viewer` (quiosque)
 

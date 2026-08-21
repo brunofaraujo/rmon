@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Instalacoes - RMonitor{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Instalacoes</h1>
+    <div class="sub">pre-voo e execucao de pacotes nos hosts</div>
+  </div>
+  <a class="btn" href="/pacotes">&#8592; Inventario</a>
+</div>
+
+{% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
+
+{% if not cfg.enabled %}
+<div class="alert small">
+  <b>Execucao real desligada.</b> Com <code>execution.enabled: false</code> no
+  inventario, o RMon so faz o <b>pre-voo</b>: checagens somente-leitura no host e
+  o comando exato que seria executado. Nada e instalado, copiado ou iniciado.
+  Para armar, veja <code>docs/CONFIGURACAO.md</code> &mdash; alem da trava, o host
+  precisa estar em <code>execution.hosts</code>.
+</div>
+{% else %}
+<div class="alert small">
+  <b>Execucao real ARMADA</b> para: {{ cfg.hosts|join(', ') or '(nenhum host)' }}.
+  Janela: {{ cfg.window or 'qualquer hora' }} &middot;
+  maximo de sessoes RDP: {{ cfg.max_sessions }} &middot;
+  pacote entregue por {{ cfg.base_url or '(base_url nao configurada)' }}.
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Nova tarefa</h2>
+  {% if not acoes %}
+    <div class="muted small">
+      Nenhuma acao no catalogo (<code>execution.actions</code> vazio). Sem acao
+      declarada nao ha o que executar &mdash; e de proposito: o RMon nao aceita
+      comando livre.
+    </div>
+  {% elif not catalogo %}
+    <div class="muted small">Nenhum pacote no repositorio. Coloque o arquivo baixado do TDN
+      na pasta de pacotes e use <a href="/pacotes/catalogo">Ler repositorio</a>.</div>
+  {% else %}
+  <form method="post" action="/pacotes/tarefas" id="form-tarefa">
+    <div class="toolbar">
+      <select name="server" class="input" required>
+        <option value="">Servidor...</option>
+        {% for s in servidores %}
+        <option value="{{ s }}">{{ s }}{% if s in cfg.hosts %} (liberado){% endif %}</option>
+        {% endfor %}
+      </select>
+      <select name="catalog_id" class="input" required>
+        <option value="">Pacote...</option>
+        {% for e in catalogo %}
+        <option value="{{ e.id }}">{{ e.produto }} {{ e.version }}</option>
+        {% endfor %}
+      </select>
+      <select name="action" class="input" required>
+        <option value="">Acao...</option>
+        {% for id, a in acoes.items() %}
+        <option value="{{ id }}">{{ a.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="toolbar">
+      <label class="pill green">
+        <input type="radio" name="mode" value="dry_run" checked> Pre-voo (nao executa nada)
+      </label>
+      <label class="pill {{ 'red' if cfg.enabled else '' }}">
+        <input type="radio" name="mode" value="real" {{ '' if cfg.enabled else 'disabled' }}>
+        Executar de verdade
+      </label>
+      <input class="input" type="text" name="confirm" id="confirm"
+             placeholder="Para executar: digite o nome do host" disabled>
+      <button class="btn primary" type="submit">Enfileirar</button>
+    </div>
+  </form>
+  <div class="muted small">
+    O pre-voo confere sessoes RDP ativas, espaco em disco, pasta de destino,
+    servicos exigidos parados, integridade do pacote e se o host alcanca o RMon
+    para baixa-lo &mdash; e mostra o comando exato. Tudo somente-leitura.
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Tarefas <span class="muted small">({{ tarefas|length }})</span></h2>
+  {% if not tarefas %}
+    <div class="muted small">Nenhuma tarefa ainda.</div>
+  {% else %}
+  <div class="table-wrap"><table class="tbl">
+    <thead><tr>
+      <th>#</th><th>Quando</th><th>Servidor</th><th>Pacote</th><th>Acao</th>
+      <th>Modo</th><th>Situacao</th><th>Resultado</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for t in tarefas %}
+      <tr>
+        <td class="mono">{{ t.id }}</td>
+        <td class="muted small">{{ t.created_at | dt }}</td>
+        <td>{{ t.server }}</td>
+        <td><b>{{ t.produto }}</b> <span class="mono small">{{ t.version }}</span></td>
+        <td class="muted small">{{ t.action }}</td>
+        <td>
+          {% if t.mode == 'real' %}<span class="pill red">real</span>
+          {% else %}<span class="pill green">pre-voo</span>{% endif %}
+        </td>
+        <td>
+          {% if t.status == 'ok' %}<span class="pill green">{{ task_label.get(t.status) }}</span>
+          {% elif t.status in ('failed', 'blocked') %}<span class="pill red">{{ task_label.get(t.status) }}</span>
+          {% elif t.status == 'running' %}<span class="pill amber">{{ task_label.get(t.status) }}</span>
+          {% else %}<span class="pill">{{ task_label.get(t.status, t.status) }}</span>{% endif %}
+        </td>
+        <td class="muted small">
+          {% if t.comando %}<div class="mono small">{{ t.comando }}</div>{% endif %}
+          {% if t.error %}<div class="txt-red">{{ t.error }}</div>{% endif %}
+          {% if t.output %}<div>{{ t.output }}</div>{% endif %}
+          {% if t.checks %}
+          <details>
+            <summary class="muted small">checagens</summary>
+            <ul class="checklist">
+              {% for c in t.checks %}
+              <li class="{{ 'txt-green' if c.ok else ('txt-red' if c.dura else 'txt-amber') }}">
+                {{ '&#10003;' | safe if c.ok else '&#10007;' | safe }}
+                <b>{{ c.nome }}</b>: {{ c.texto }}
+              </li>
+              {% endfor %}
+            </ul>
+          </details>
+          {% endif %}
+        </td>
+        <td>
+          {% if t.status == 'pending' %}
+          <form method="post" action="/pacotes/tarefas/{{ t.id }}/cancelar" style="display:inline">
+            <button class="btn small" type="submit">Cancelar</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</div>
+
+<script>
+(function () {
+  var form = document.getElementById('form-tarefa');
+  if (!form) return;
+  var confirmar = document.getElementById('confirm');
+  form.addEventListener('change', function () {
+    var real = form.querySelector('input[name="mode"]:checked').value === 'real';
+    confirmar.disabled = !real;
+    confirmar.required = real;
+  });
+  form.addEventListener('submit', function (e) {
+    var real = form.querySelector('input[name="mode"]:checked').value === 'real';
+    if (!real) return;
+    var host = form.querySelector('select[name="server"]').value;
+    if (!confirm('EXECUTAR DE VERDADE em ' + host + '?\n\nIsto vai baixar o pacote no '
+                 + 'servidor e rodar a acao escolhida.')) { e.preventDefault(); }
+  });
+})();
+</script>
+{% endblock %}

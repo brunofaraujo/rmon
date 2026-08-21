@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, inventory, jobstats, notify, packages
+from . import db, execution, inventory, jobstats, notify, packages
 from .collector import collect_server
 from .config import Inventory, Settings
 from .inventory import collect_inventory
@@ -215,6 +216,79 @@ def _notify_package_changes(name: str, host: str, eventos: list[dict]) -> None:
                 f"{name} ({host})\n" + "\n".join(linhas))
 
 
+def _url_stage(settings: Settings, inv: Inventory, task_id: int, segundos: int) -> str:
+    """Endereco temporario e assinado de onde o host baixa o pacote."""
+    base = str(execution.settings_for(inv.defaults).get("base_url") or "").rstrip("/")
+    if not base:
+        return ""
+    expira = int(time.time()) + max(120, segundos)
+    assinatura = execution.stage_token(settings.secret_key, task_id, expira)
+    return f"{base}/pacotes/stage/{task_id}?exp={expira}&sig={assinatura}"
+
+
+def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
+    """Processa UMA tarefa da fila por vez.
+
+    Toda tarefa passa pelo pre-voo, inclusive a real: as checagens sao
+    somente-leitura e uma reprovacao dura bloqueia em vez de "tentar assim
+    mesmo". Tarefa em seco para no pre-voo e nao encosta no host alem disso.
+    """
+    task = db.next_pending_task()
+    if task is None:
+        return
+    servidores = {s.name: s for s in inv.servers}
+    server = servidores.get(task["server"])
+    linhas = list(db.packages_of(task["server"]).values())
+    task = dict(task)
+    task["install_dir"] = execution.install_dir_from(linhas)
+    instalado = next((r["version"] for r in linhas if r["pkg_key"] == task.get("pkg_key")), None)
+
+    acao = execution.actions_for(inv.defaults).get(task.get("action") or "")
+    prazo = acao["timeout_sec"] if acao else 900
+    base = str(execution.settings_for(inv.defaults).get("base_url") or "").rstrip("/")
+    plano = execution.preflight(task, server, inv.winrm, inv.defaults, settings,
+                                instalado=instalado,
+                                url_check=f"{base}/healthz" if base else "")
+
+    if task["mode"] != "real":
+        db.finish_task(task["id"], "ok" if plano["ok"] else "blocked",
+                       checks=plano["checks"], comando=plano["comando"],
+                       output="pre-voo: nada foi executado no host",
+                       error=None if plano["ok"] else
+                       "bloqueado por: " + ", ".join(plano["bloqueios"]))
+        log.info("tarefa %d (%s, em seco) -> %s", task["id"], task["server"],
+                 "ok" if plano["ok"] else "bloqueada")
+        return
+
+    if not plano["ok"]:
+        db.finish_task(task["id"], "blocked", checks=plano["checks"],
+                       comando=plano["comando"], output="nada foi executado",
+                       error="bloqueado por: " + ", ".join(plano["bloqueios"]))
+        log.warning("tarefa %d (%s) BLOQUEADA: %s", task["id"], task["server"],
+                    ", ".join(plano["bloqueios"]))
+        return
+
+    destino = ""
+    if acao and acao["kind"] == "copy" and task["install_dir"]:
+        destino = task["install_dir"].rstrip(chr(92)) + chr(92) + acao["dest"]
+    log.warning("tarefa %d: EXECUTANDO em %s -> %s", task["id"], task["server"],
+                plano["comando"])
+    url = _url_stage(settings, inv, task["id"], prazo + 600)
+    res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url, destino)
+    db.finish_task(task["id"], "ok" if res.get("ok") else "failed",
+                   checks=plano["checks"], comando=plano["comando"],
+                   exit_code=res.get("exit_code"), output=res.get("output"),
+                   error=res.get("error"))
+    db.audit(task.get("created_by"), "install_task",
+             f"{task['server']} {task.get('produto')} {task.get('version')} -> "
+             f"{'ok' if res.get('ok') else 'falhou'}")
+    if notify.enabled():
+        marca = "\u2705" if res.get("ok") else "\u274C"
+        notify.send(f"{marca} RMonitor \u2014 {task['server']}: {task.get('produto')} "
+                    f"{task.get('version')} ({task['action']}) "
+                    f"{'concluido' if res.get('ok') else 'FALHOU: ' + str(res.get('error'))[:200]}")
+
+
 def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
     sched = BackgroundScheduler(timezone="America/Recife")
     sched.add_job(
@@ -222,6 +296,9 @@ def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
         id="poll_all", max_instances=1, coalesce=True,
     )
     sched.add_job(db.prune, "interval", hours=6, id="prune", max_instances=1, coalesce=True)
+    # A fila e curta e barata de olhar; o intervalo curto e so latencia da tela.
+    sched.add_job(run_pending_tasks, "interval", seconds=20, args=[inv, settings],
+                  id="run_pending_tasks", max_instances=1, coalesce=True)
     cfg = inventory.settings_for(inv.defaults)
     if cfg.get("enabled", True):
         # Primeira execucao logo apos o start (o APScheduler so dispararia depois

@@ -10,7 +10,8 @@
   </div>
   <div class="pills">
     <a class="pill" href="/pacotes/mudancas">&#128337; Mudancas</a>
-    {% if request.session.get('role') == 'admin' %}<a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>{% endif %}
+    {% if request.session.get('role') == 'admin' %}<a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>
+    <a class="pill" href="/pacotes/tarefas">&#9881; Instalacoes</a>{% endif %}
     <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
     {% if request.session.get('role') == 'admin' %}
     <form method="post" action="/pacotes/coletar" style="display:inline">
