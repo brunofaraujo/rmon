@@ -20,7 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__, db, execution, inventory, jobstats, packages, scheduler
 from .collector import list_sessions, logoff_session, service_action
-from .config import load_inventory, load_settings
+from .config import PAPEIS, load_inventory, load_settings
 from .scheduler import build_scheduler, poll_all, poll_inventory, scan_packages
 from .security import hash_password, verify_password
 
@@ -62,6 +62,8 @@ templates.env.globals["svc_down"] = scheduler.service_down
 templates.env.globals["svc_groups"] = scheduler.service_groups
 # Rotulo curto de cada fonte do inventario (produto, customizacao, biblioteca...)
 templates.env.globals["fonte_label"] = inventory.FONTE_LABEL
+# Rotulo do papel de cada host (aplicacao, job server, camada web...)
+templates.env.globals["papel_label"] = PAPEIS
 
 
 def _thresholds() -> dict:
@@ -746,6 +748,32 @@ async def sessions_logoff(request: Request):
 
 
 # ---------- inventario de software (pacotes/versoes por host) ----------
+def _ambiente_escolhido(request: Request) -> tuple[str, list]:
+    """Ambiente da tela e os servidores dele.
+
+    O inventario e comparado **dentro** de um ambiente: SGE/Financeiro e RH sao
+    instalacoes separadas do RM e misturar as duas so gera divergencia falsa.
+    Sem ambiente configurado, cai no comportamento antigo (todos juntos).
+    """
+    inv = STATE["inv"]
+    ambientes = inv.envs()
+    validos = {e for e, _ in ambientes}
+    pedido = request.query_params.get("ambiente") or ""
+    escolhido = pedido if pedido in validos else (ambientes[0][0] if ambientes else "")
+    return escolhido, inv.servers_of(escolhido)
+
+
+def _catalogo_do_ambiente(catalogo: list[dict], ambiente: str, validos: set[str]) -> list[dict]:
+    """Pacotes que valem para este ambiente.
+
+    A subpasta do repositorio serve de marcador: um arquivo em `pacotes/rh/` e
+    do RH e nao aparece como disponivel para o Financeiro. Arquivo solto na
+    raiz vale para todos.
+    """
+    return [e for e in catalogo
+            if not e.get("pasta") or e["pasta"] not in validos or e["pasta"] == ambiente]
+
+
 def _pacotes_ctx(request: Request) -> dict:
     """Contexto comum das telas de inventario: matriz, filtros e ultima coleta."""
     inv = STATE["inv"]
@@ -754,16 +782,23 @@ def _pacotes_ctx(request: Request) -> dict:
     filtros = ("todos", "atualizavel", "drift", "ausentes", "problemas")
     filtro = q.get("filtro") if q.get("filtro") in filtros else "todos"
     busca = (q.get("q") or "").strip()[:80]
-    servidores = [s.name for s in inv.servers]
+    ambiente, srvs = _ambiente_escolhido(request)
+    ambientes = inv.envs()
+    servidores = [s.name for s in srvs]
+    papeis = {s.name: s.role for s in srvs}
     servidor = q.get("servidor") if q.get("servidor") in servidores else ""
-    catalogo = db.list_catalog()
+    catalogo = _catalogo_do_ambiente(db.list_catalog(), ambiente,
+                                     {e for e, _ in ambientes})
     linhas = inventory.build_matrix(db.all_packages(), servidores, fonte=fonte,
                                     busca=busca, filtro=filtro, servidor=servidor,
-                                    disponivel=packages.available_by_key(catalogo))
+                                    disponivel=packages.available_by_key(catalogo),
+                                    papeis=papeis)
     runs = db.inventory_runs()
     return {
         "request": request, "servidores": servidores, "linhas": linhas, "runs": runs,
         "fonte": fonte, "filtro": filtro, "busca": busca, "servidor": servidor,
+        "ambiente": ambiente, "ambientes": ambientes, "papeis": papeis,
+        "ambiente_label": dict(ambientes).get(ambiente, ambiente),
         "resumo": {
             "pacotes": len(linhas),
             "drift": sum(1 for l in linhas if l["drift"]),
@@ -796,12 +831,15 @@ def pacotes_csv(request: Request):
     import io as _io
     buf = _io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["servidor", "pacote", "versao", "fabricante", "arquitetura",
-                "fonte", "instalado_em", "data_estimada", "detalhe"])
+    inv = STATE["inv"]
+    meta = {s.name: (s.env, s.role) for s in inv.servers}
+    w.writerow(["servidor", "ambiente", "papel", "pacote", "versao", "fabricante",
+                "arquitetura", "fonte", "instalado_em", "data_estimada", "detalhe"])
     for r in db.all_packages():
         data = r["install_date"] or (r["first_seen"].date() if r.get("first_seen") else None)
-        w.writerow([r["server"], r["name"], r["version"] or "", r["publisher"] or "",
-                    r["arch"] or "", r["source"], data or "",
+        env, papel = meta.get(r["server"], ("", ""))
+        w.writerow([r["server"], env, papel, r["name"], r["version"] or "",
+                    r["publisher"] or "", r["arch"] or "", r["source"], data or "",
                     "sim" if not r["install_date"] else "nao", r["detail"] or ""])
     from fastapi.responses import Response
     return Response(
@@ -814,19 +852,22 @@ def pacotes_mudancas(request: Request):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
     inv = STATE["inv"]
-    servidores = [s.name for s in inv.servers]
+    ambiente, srvs = _ambiente_escolhido(request)
+    servidores = [s.name for s in srvs]
     q = request.query_params
     servidor = q.get("servidor") if q.get("servidor") in servidores else ""
     try:
         dias = min(max(int(q.get("dias", 90)), 1), 365)
     except ValueError:
         dias = 90
-    eventos = db.recent_package_events(limit=500, server=servidor or None, days=dias)
+    eventos = [e for e in db.recent_package_events(limit=800, server=servidor or None,
+                                                   days=dias)
+               if e["server"] in set(servidores)][:500]
     return templates.TemplateResponse(
         "pacotes_mudancas.html",
         {"request": request, "eventos": eventos, "servidores": servidores,
          "servidor": servidor, "dias": dias, "labels": inventory.EVENT_LABEL,
-         "version": __version__})
+         "ambiente": ambiente, "ambientes": inv.envs(), "version": __version__})
 
 
 @app.post("/pacotes/coletar")

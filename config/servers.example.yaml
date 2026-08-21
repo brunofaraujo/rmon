@@ -3,6 +3,12 @@
 
 poll_interval_seconds: 60
 
+# Ambientes: escopos que NAO se comparam entre si. Cada instalacao do RM tem
+# pacotes, customizacoes e base propria - misturar so gera divergencia falsa.
+environments:
+  fin: "SGE/Financeiro"
+  rh: "RH"
+
 winrm:
   scheme: https            # https (5986, recomendado) ou http (5985)
   port: 5986
@@ -85,20 +91,24 @@ defaults:
     base_url: ""             # ex.: "http://10.10.10.110:8080"
     # Catalogo de acoes permitidas. Nao existe comando livre: o executavel e
     # sempre o pacote que o RMon colocou no host, e os argumentos sao estes.
+    # SO INSTALADOR (.exe/.msi): copiar arquivo solto para dentro da instalacao
+    # nao aparece em "Programas e Recursos" e nao teria como ser desinstalado.
     actions: []
-    #   - id: copiar-custom
-    #     label: "Copiar DLL para a pasta Custom da instalacao"
-    #     dest: "Custom"            # subpasta simples dentro da instalacao do RM
-    #     extensions: [".dll"]
     #   - id: instalador-silencioso
     #     label: "Instalador TOTVS em modo silencioso"
     #     args: "/S"                # texto fixo; ; & | < > ` $ sao recusados
     #     extensions: [".exe"]
     #     timeout_sec: 1800
+    #   - id: pacote-msi
+    #     label: "Pacote MSI silencioso"
+    #     args: "/qn REBOOT=ReallySuppress"   # vai depois de: msiexec /i <pacote>
+    #     extensions: [".msi"]
 
 servers:
   - name: rm-app-01
     host: 10.10.10.50
+    env: fin                 # ambiente (ver 'environments' no topo)
+    role: app                # app | jobs | web | db | homolog
     # services: [...]          # opcional: sobrescreve defaults.services
     # service_patterns: [...]  # opcional: sobrescreve defaults.service_patterns
     app_health:
@@ -108,6 +118,8 @@ servers:
 
   - name: rm-db-01
     host: 10.10.10.51
+    env: fin
+    role: db
     services:
       - "MSSQLSERVER"
       - "SQLSERVERAGENT"

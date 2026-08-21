@@ -5,11 +5,24 @@
   <div>
     <h1>Inventario de software</h1>
     <div class="sub">
-      {{ resumo.pacotes }} item(ns) TOTVS &middot; referencia = maior versao instalada no parque
+      {% if ambientes %}
+        {{ resumo.pacotes }} item(ns) TOTVS em <b>{{ ambiente_label }}</b>
+        &middot; {{ servidores|length }} servidor(es) &middot; referencia = maior versao deste ambiente
+      {% else %}
+        {{ resumo.pacotes }} item(ns) TOTVS &middot; referencia = maior versao instalada no parque
+      {% endif %}
     </div>
+    {% if ambientes|length > 1 %}
+    <div class="pills" style="margin-top:.6rem">
+      {% for id, rotulo in ambientes %}
+      <a class="pill {{ 'green' if id == ambiente else '' }}"
+         href="/pacotes?ambiente={{ id }}&fonte={{ fonte }}&filtro={{ filtro }}">{{ rotulo }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
   <div class="pills">
-    <a class="pill" href="/pacotes/mudancas">&#128337; Mudancas</a>
+    <a class="pill" href="/pacotes/mudancas?ambiente={{ ambiente }}">&#128337; Mudancas</a>
     {% if request.session.get('role') == 'admin' %}<a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>
     <a class="pill" href="/pacotes/tarefas">&#9881; Instalacoes</a>{% endif %}
     <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
@@ -50,6 +63,7 @@
 </div>
 
 <form class="toolbar" method="get" action="/pacotes">
+  <input type="hidden" name="ambiente" value="{{ ambiente }}">
   <input type="search" name="q" class="input" value="{{ busca }}"
          placeholder="&#128269;  Pesquisar pacote ou versao...">
   <select name="fonte" class="input">
@@ -87,6 +101,7 @@
         {% for s in servidores %}
         <th class="host-col">
           {{ s }}
+          {% if papeis.get(s) %}<div class="muted small">{{ papel_label.get(papeis[s], papeis[s]) }}</div>{% endif %}
           {% if runs.get(s) %}<div class="muted small">{{ runs[s].ts | dt }}</div>{% endif %}
           {% if runs.get(s) and runs[s].last_upgrade %}
           <div class="muted small" title="ultima atualizacao aplicada pelo RM.Atualizador">
@@ -135,7 +150,7 @@
 </div>
 <div class="muted small" style="margin-top:.7rem">
   Celula em ambar = versao abaixo da maior encontrada no parque &middot;
-  &mdash; = pacote nao instalado naquele host &middot;
+  &mdash; = nao instalado naquele host (so conta como falta entre hosts do mesmo papel) &middot;
   <b>*</b> = data estimada pela primeira coleta do RMon (o registro do Windows nao informa a data) &middot;
   <b>Disponivel</b> = maior versao ja baixada do TDN para aquele item
   ({{ resumo.catalogo }} pacote(s) no repositorio{% if resumo.sem_vinculo %},
