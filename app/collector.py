@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from base64 import b64encode
 from typing import Any, Iterable
 
 import httpx
@@ -159,6 +160,15 @@ def _winrm_session(host: str, wc: WinRMConfig, user: str, pw: str) -> winrm.Sess
     )
 
 
+# Bootstrap: le o stdin inteiro e executa de uma vez. Nao da para mandar o
+# script direto em "powershell -Command -", porque nesse modo o PowerShell le
+# linha a linha como se fosse digitado e o primeiro bloco multilinha (foreach,
+# ForEach-Object...) engole silenciosamente todo o resto - saida vazia, rc 0.
+_BOOTSTRAP = b64encode(
+    "$s = [Console]::In.ReadToEnd(); Invoke-Expression $s".encode("utf_16_le")
+).decode("ascii")
+
+
 def _deadline(wc: WinRMConfig) -> float:
     """Prazo maximo de uma execucao remota, para nenhuma chamada ficar presa."""
     return time.monotonic() + max(30, wc.read_timeout_sec * 2)
@@ -198,18 +208,19 @@ def _run_ps(session: winrm.Session, script: str, deadline: float | None = None) 
     _run_ps_resilient), vale garantir a limpeza para nao deixar shells presos
     justamente nos hosts que ja estao sobrecarregados.
 
-    O script vai por STDIN, e nao em -encodedcommand: encodado ele viraria
+    O script vai por STDIN, e nao inteiro em -EncodedCommand: encodado ele vira
     base64 de UTF-16LE (~2,7 caracteres por caractere de script) na linha de
     comando do cmd.exe, que corta em ~8k - a coleta inteira morria com "Linha
-    de comando muito longa" assim que o script cresceu. Por stdin o tamanho do
-    script deixa de ser um limite.
+    de comando muito longa" assim que o script cresceu. Por stdin o tamanho
+    deixa de ser um limite; o que vai na linha de comando e so o bootstrap.
     """
     proto = session.protocol
     shell_id = proto.open_shell()
     command_id = None
     try:
         command_id = proto.run_command(
-            shell_id, "powershell -NoProfile -NonInteractive -Command -", console_mode_stdin=False)
+            shell_id, f"powershell -NoProfile -NonInteractive -EncodedCommand {_BOOTSTRAP}",
+            console_mode_stdin=False)
         proto.send_command_input(shell_id, command_id, script.encode("utf-8"), end=True)
         std_out, std_err, status = _receive(proto, shell_id, command_id, deadline)
         if std_err:
