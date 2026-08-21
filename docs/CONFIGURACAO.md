@@ -151,6 +151,60 @@ a se comportar diferente.
 > antigas sejam lidas como desinstalação e encham a linha do tempo de remoções
 > que nunca aconteceram.
 
+## Versões disponíveis (repositório de pacotes)
+
+A tela `/pacotes` mostra uma coluna **Disponível** ao lado dos hosts: a maior
+versão de cada item que **já foi baixada do TDN**.
+
+> **O RMon não acessa o TDN.** Automatizar login no portal com a credencial de
+> alguém seria frágil (o Confluence muda, o SSO expira, um bloqueio derruba a
+> coleta em silêncio) e exigiria guardar essa senha no servidor. O caminho aqui
+> é outro: **baixar o pacote já é a declaração de que aquela versão existe**.
+
+Duas formas de alimentar o catálogo:
+
+**1. Repositório de pacotes** (`RMON_PACKAGES_DIR`, padrão `./pacotes` — na VM,
+`/opt/rmon/pacotes`). Coloque ali os arquivos baixados do TDN. O RMon só **lê**
+a pasta: nunca escreve, nunca apaga, nunca executa nada. A cada coleta de
+inventário (e no botão *Ler repositório*) ele varre a pasta e tira produto e
+versão do nome do arquivo:
+
+```
+pacotes/
+├── TOTVS_CES_RM_Office365_CNI_12.1.2602.002.exe   → produto ...CNI, versão 12.1.2602.002
+├── BibliotecaRM_12.1.2606.120.exe                 → BibliotecaRM 12.1.2606.120
+└── customizacoes/RM.Cst.CNI.Lib.Api_12.1.2602.003.dll
+```
+
+A versão é o último número de 3 ou 4 componentes no nome; o que vem antes é o
+produto. Separador não importa (`_`, `-`, espaço). Extensões reconhecidas:
+`.exe`, `.msi`, `.zip`, `.rar`, `.7z`, `.cab`, `.dll`. Subpastas viram rótulo de
+agrupamento (até 3 níveis, no máximo 2.000 arquivos).
+
+**2. Registro manual** (`/pacotes/catalogo`, admin). Para o que o nome do arquivo
+não revela, ou para marcar uma versão como alvo antes de baixar: produto,
+versão, link do TDN e observação.
+
+### Como o pacote encontra o item instalado
+
+O nome do arquivo é comparado com o nome do item do inventário descartando tudo
+que não é letra ou número — `TOTVS-CES-RM-Office365-CNI` casa com
+`TOTVS_CES_RM_Office365_CNI` do registro. Pacotes do próprio produto (`RM`,
+`CorporeRM`) são ligados por apelido ao item `RM - versao base`.
+
+Sem casamento automático, a entrada aparece em `/pacotes/catalogo` esperando que
+alguém diga a que ela pertence — melhor do que adivinhar errado e anunciar
+"atualização disponível" para o item errado. O vínculo é **por produto**, não
+por arquivo: sobrevive à próxima varredura e vale para a próxima versão do mesmo
+pacote.
+
+### Última atualização aplicada
+
+O `RM.Atualizador` deixa um log por execução na pasta `Atualizador` da
+instalação. O RMon lê a data do mais recente e mostra no cabeçalho de cada host
+(`↻ dd/mm/aaaa`) — dá para ver, por exemplo, que um pacote foi baixado em agosto
+e o host ainda está com a atualização de julho.
+
 ## Variáveis de ambiente (`.env`)
 
 Modelo completo em [`.env.example`](../.env.example). A aplicação lê o `.env` com um

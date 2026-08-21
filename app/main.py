@@ -18,10 +18,10 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, inventory, jobstats, scheduler
+from . import __version__, db, inventory, jobstats, packages, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import load_inventory, load_settings
-from .scheduler import build_scheduler, poll_all, poll_inventory
+from .scheduler import build_scheduler, poll_all, poll_inventory, scan_packages
 from .security import hash_password, verify_password
 
 log = logging.getLogger("rmon")
@@ -727,12 +727,15 @@ def _pacotes_ctx(request: Request) -> dict:
     inv = STATE["inv"]
     q = request.query_params
     fonte = q.get("fonte") if q.get("fonte") in inventory.FONTES else "totvs"
-    filtro = q.get("filtro") if q.get("filtro") in ("todos", "drift", "ausentes", "problemas") else "todos"
+    filtros = ("todos", "atualizavel", "drift", "ausentes", "problemas")
+    filtro = q.get("filtro") if q.get("filtro") in filtros else "todos"
     busca = (q.get("q") or "").strip()[:80]
     servidores = [s.name for s in inv.servers]
     servidor = q.get("servidor") if q.get("servidor") in servidores else ""
+    catalogo = db.list_catalog()
     linhas = inventory.build_matrix(db.all_packages(), servidores, fonte=fonte,
-                                    busca=busca, filtro=filtro, servidor=servidor)
+                                    busca=busca, filtro=filtro, servidor=servidor,
+                                    disponivel=packages.available_by_key(catalogo))
     runs = db.inventory_runs()
     return {
         "request": request, "servidores": servidores, "linhas": linhas, "runs": runs,
@@ -743,6 +746,9 @@ def _pacotes_ctx(request: Request) -> dict:
             "parcial": sum(1 for l in linhas if l["parcial"]),
             "sem_coleta": [s for s in servidores if s not in runs],
             "falhas": [s for s, r in runs.items() if not r["ok"]],
+            "atualizavel": sum(1 for l in linhas if l["atualizavel"]),
+            "catalogo": len(catalogo),
+            "sem_vinculo": sum(1 for e in catalogo if not e["pkg_key"]),
         },
         "version": __version__,
     }
@@ -816,3 +822,103 @@ def pacotes_coletar(request: Request):
     request.session["pflash"] = ("Coleta de inventario disparada. "
                                 "Atualize a pagina em alguns instantes.")
     return RedirectResponse("/pacotes", status_code=303)
+
+
+# ---------- catalogo de versoes disponiveis (pacotes baixados do TDN) ----------
+def _itens_do_inventario() -> list[dict]:
+    """Itens distintos do inventario, para vincular um pacote baixado a um deles."""
+    vistos: dict[str, str] = {}
+    for r in db.all_packages():
+        vistos.setdefault(r["pkg_key"], r["name"])
+    return [{"key": k, "name": n} for k, n in sorted(vistos.items(), key=lambda x: x[1].lower())]
+
+
+@app.get("/pacotes/catalogo", response_class=HTMLResponse)
+def catalogo_page(request: Request):
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    catalogo = db.list_catalog()
+    instalado = {}
+    for r in db.all_packages():
+        atual = instalado.get(r["pkg_key"])
+        if atual is None or inventory.compare_versions(r["version"], atual) > 0:
+            instalado[r["pkg_key"]] = r["version"]
+    return templates.TemplateResponse(
+        "catalogo.html",
+        {"request": request, "catalogo": catalogo, "itens": _itens_do_inventario(),
+         "instalado": instalado, "pasta": _settings().packages_dir,
+         "flash": request.session.pop("cflash", None), "version": __version__})
+
+
+def _catalogo_redirect(request: Request, msg: str) -> RedirectResponse:
+    request.session["cflash"] = msg
+    return RedirectResponse("/pacotes/catalogo", status_code=303)
+
+
+@app.post("/pacotes/catalogo/manual")
+async def catalogo_manual(request: Request):
+    """Registra a mao uma versao disponivel (o que o nome do arquivo nao revela)."""
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    produto = (form.get("produto") or "").strip()[:200]
+    versao = (form.get("version") or "").strip()[:80]
+    if not produto or not versao:
+        return _catalogo_redirect(request, "Informe produto e versao.")
+    if not re.fullmatch(r"[0-9][0-9.]{0,78}[0-9]", versao):
+        return _catalogo_redirect(request, "Versao invalida: use apenas numeros e pontos.")
+    url = (form.get("url") or "").strip()[:400]
+    if url and not url.startswith(("http://", "https://")):
+        return _catalogo_redirect(request, "O link deve comecar com http:// ou https://.")
+    db.insert_manual_catalog(produto, versao, (form.get("pkg_key") or "").strip() or None,
+                             url or None, (form.get("nota") or "").strip()[:300] or None)
+    db.audit(request.session["user"], "catalog_add", f"{produto} {versao}", _ip(request))
+    return _catalogo_redirect(request, f"Versao {versao} de '{produto}' registrada.")
+
+
+@app.post("/pacotes/catalogo/{entry_id}/excluir")
+def catalogo_delete(request: Request, entry_id: int):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    db.delete_catalog(entry_id)
+    db.audit(request.session["user"], "catalog_delete", str(entry_id), _ip(request))
+    return _catalogo_redirect(request, "Entrada removida.")
+
+
+@app.post("/pacotes/catalogo/vincular")
+async def catalogo_vincular(request: Request):
+    """Diz a que item do inventario um pacote baixado se refere.
+
+    O vinculo e por nome de produto, nao pela linha do catalogo: as entradas do
+    repositorio sao reescritas a cada varredura, e o vinculo precisa sobreviver
+    a isso (e valer para a proxima versao do mesmo pacote).
+    """
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    produto = (form.get("produto") or "").strip()
+    pkg_key = (form.get("pkg_key") or "").strip()
+    chave = packages.match_key(produto)
+    if not chave:
+        return _catalogo_redirect(request, "Produto invalido.")
+    vinculos = dict(db.get_config("catalog_bind", {}) or {})
+    if pkg_key:
+        vinculos[chave] = pkg_key
+    else:
+        vinculos.pop(chave, None)
+    db.set_config("catalog_bind", vinculos)
+    scan_packages(_settings())
+    db.audit(request.session["user"], "catalog_bind", f"{produto} -> {pkg_key or '(nenhum)'}",
+             _ip(request))
+    return _catalogo_redirect(request, f"Vinculo de '{produto}' atualizado.")
+
+
+@app.post("/pacotes/catalogo/varrer")
+def catalogo_varrer(request: Request):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    n = scan_packages(_settings())
+    db.audit(request.session["user"], "catalog_scan", f"{n} arquivo(s)", _ip(request))
+    return _catalogo_redirect(request, f"Repositorio lido: {n} arquivo(s).")

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, inventory, jobstats, notify
+from . import db, inventory, jobstats, notify, packages
 from .collector import collect_server
 from .config import Inventory, Settings
 from .inventory import collect_inventory
@@ -159,9 +159,34 @@ def poll_inventory(inv: Inventory, settings: Settings) -> None:
             db.insert_package_events(server.name, eventos)
             db.record_inventory_run(server.name, True, len(itens), None, gasto,
                                     res.get("computer"), res.get("os"))
+            if res.get("last_upgrade"):
+                db.set_inventory_upgrade(server.name, res["last_upgrade"])
             log.info("inventario %s -> %d pacotes, %d mudanca(s) em %dms",
                      server.name, len(itens), len(eventos), gasto)
             _notify_package_changes(server.name, server.host, eventos)
+    scan_packages(settings)
+
+
+def scan_packages(settings: Settings) -> int:
+    """Le o repositorio de pacotes baixados e atualiza o catalogo.
+
+    Roda junto com a coleta de inventario porque o casamento entre "arquivo
+    baixado" e "item instalado" depende do inventario recem-gravado: o nome do
+    pacote do TDN e o mesmo que o item usa no registro do Windows.
+    """
+    entradas = packages.scan(settings.packages_dir)
+    if not entradas:
+        db.replace_repo_catalog([])
+        return 0
+    indice = packages.build_index(db.all_packages())
+    vinculos = db.get_config("catalog_bind", {}) or {}
+    for e in entradas:
+        e["pkg_key"] = packages.resolve(e["produto"], indice, vinculos)
+    db.replace_repo_catalog(entradas)
+    sem_casar = sum(1 for e in entradas if not e["pkg_key"])
+    log.info("repositorio de pacotes: %d arquivo(s), %d sem item correspondente",
+             len(entradas), sem_casar)
+    return len(entradas)
 
 
 def _notify_package_changes(name: str, host: str, eventos: list[dict]) -> None:

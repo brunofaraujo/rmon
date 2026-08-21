@@ -136,6 +136,7 @@ if ($svcPatterns.Count -gt 0) {
 }
 foreach ($extra in @(__PATHS__)) { if (Test-Path -LiteralPath $extra) { $dirs[$extra] = $true } }
 
+$ultimaAtualizacao = $null
 foreach ($d in @($dirs.Keys)) {
     $arq = @(Get-ChildItem -LiteralPath $d -File | Where-Object { $_.Extension -eq '.dll' -or $_.Extension -eq '.exe' })
     if ($arq.Count -eq 0) { continue }
@@ -159,6 +160,14 @@ foreach ($d in @($dirs.Keys)) {
         }
     }
 
+    # O RM.Atualizador deixa um log por execucao: o mais recente diz quando
+    # este host foi atualizado pela ultima vez.
+    $logs = @(Get-ChildItem -LiteralPath (Join-Path $d 'Atualizador') -Filter 'RM.Upgrade*.log' -File | Sort-Object LastWriteTime -Descending)
+    if ($logs.Count -gt 0) {
+        $quando = $logs[0].LastWriteTime
+        if (-not $ultimaAtualizacao -or $quando -gt $ultimaAtualizacao) { $ultimaAtualizacao = $quando }
+    }
+
     # Customizacoes do cliente: as subpastas configuradas, so os arquivos RM.*
     foreach ($sp in $subpastas) {
         $alvo = Join-Path $d $sp
@@ -179,10 +188,13 @@ if (__HOTFIXES__) {
     }
 }
 
+$upg = $null
+if ($ultimaAtualizacao) { $upg = $ultimaAtualizacao.ToString('yyyy-MM-dd HH:mm:ss') }
 [pscustomobject]@{
     items = @($items)
     computer = $env:COMPUTERNAME
     os = (Get-CimInstance Win32_OperatingSystem).Caption
+    last_upgrade = $upg
 } | ConvertTo-Json -Depth 4 -Compress
 """
 
@@ -403,7 +415,7 @@ def collect_inventory(server: ServerConfig, wc: WinRMConfig,
                       defaults: dict[str, Any]) -> dict[str, Any]:
     """Coleta o inventario de um host. Nunca levanta excecao."""
     out: dict[str, Any] = {"ok": False, "items": [], "error": None, "computer": None,
-                           "os": None, "ms": 0}
+                           "os": None, "ms": 0, "last_upgrade": None}
     user, pw = credential_for(server.cred)
     if not (user and pw):
         out["error"] = f"sem credencial para o perfil '{server.cred}'"
@@ -421,7 +433,8 @@ def collect_inventory(server: ServerConfig, wc: WinRMConfig,
             return out
         data = json.loads(_decode(r.std_out))
         out.update(ok=True, items=_clean(_as_list(data.get("items"))),
-                   computer=data.get("computer"), os=data.get("os"))
+                   computer=data.get("computer"), os=data.get("os"),
+                   last_upgrade=data.get("last_upgrade"))
     except Exception as exc:  # noqa: BLE001 - coleta nunca derruba o ciclo
         out["error"] = f"{type(exc).__name__}: {exc}"[:500]
     out["ms"] = int((time.monotonic() - inicio) * 1000)
@@ -494,13 +507,17 @@ FONTES = {
 
 
 def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
-                 busca: str = "", filtro: str = "todos",
-                 servidor: str = "") -> list[dict]:
+                 busca: str = "", filtro: str = "todos", servidor: str = "",
+                 disponivel: dict[str, dict] | None = None) -> list[dict]:
     """Matriz pacote x host.
 
-    A referencia de cada pacote e a **maior versao encontrada no parque**: sem
-    catalogo publico do TOTVS RM, "esta atualizado" so pode significar "esta no
-    mesmo nivel do host mais novo".
+    Sem `disponivel`, a referencia de cada pacote e a **maior versao encontrada
+    no parque**: nao ha catalogo publico consultavel do TOTVS RM, entao "esta
+    atualizado" so pode significar "esta no mesmo nivel do host mais novo".
+
+    `disponivel` (pkg_key -> entrada do catalogo) muda isso onde ha pacote
+    baixado do TDN: ali a referencia deixa de ser o parque e passa a ser a
+    versao que ja esta na mao para instalar.
     """
     fontes = FONTES.get(fonte, FONTES["totvs"])
     busca_l = (busca or "").strip().lower()
@@ -529,6 +546,7 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
 
     saida: list[dict] = []
     total_hosts = len(servers)
+    catalogo = disponivel or {}
     for p in por_pacote.values():
         if servidor and servidor not in p["cells"]:
             continue
@@ -541,6 +559,11 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
         for cell in p["cells"].values():
             cell["status"] = ("ok" if not p["latest"] or
                               compare_versions(cell["version"], p["latest"]) == 0 else "behind")
+        p["disp"] = catalogo.get(p["key"])
+        p["atualizavel"] = bool(
+            p["disp"] and compare_versions(p["disp"].get("version"), p["latest"]) > 0)
+        if filtro == "atualizavel" and not p["atualizavel"]:
+            continue
         if filtro == "drift" and not p["drift"]:
             continue
         if filtro == "ausentes" and not p["parcial"]:
@@ -552,6 +575,6 @@ def build_matrix(rows: list[dict], servers: list[str], *, fonte: str = "totvs",
     # produto primeiro, depois customizacoes, e dentro de cada grupo o que
     # diverge sobe: e a leitura que se quer fazer ao abrir a tela.
     ordem_fonte = {"rm": 0, "custom": 1, "assembly": 2, "registry": 3, "hotfix": 4}
-    saida.sort(key=lambda p: (ordem_fonte.get(p["source"], 9), not p["drift"],
-                              not p["parcial"], (p["name"] or "").lower()))
+    saida.sort(key=lambda p: (ordem_fonte.get(p["source"], 9), not p["atualizavel"],
+                              not p["drift"], not p["parcial"], (p["name"] or "").lower()))
     return saida

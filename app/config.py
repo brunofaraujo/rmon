@@ -73,6 +73,7 @@ class Settings:
     winrm_user: str
     winrm_password: str
     config_path: str
+    packages_dir: str
     db_path: str
     db_dsn: str
     host: str
@@ -91,6 +92,7 @@ def load_settings() -> Settings:
         winrm_user=os.environ.get("RMON_WINRM_USER", ""),
         winrm_password=os.environ.get("RMON_WINRM_PASSWORD", ""),
         config_path=os.environ.get("RMON_CONFIG", "./config/servers.yaml"),
+        packages_dir=os.environ.get("RMON_PACKAGES_DIR", "./pacotes"),
         db_path=os.environ.get("RMON_DB_PATH", "./data/rmon.db"),
         db_dsn=os.environ.get("RMON_DB_DSN", ""),
         host=os.environ.get("RMON_HOST", "127.0.0.1"),

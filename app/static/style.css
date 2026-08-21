@@ -315,3 +315,9 @@ th.sortable .arrow { color: var(--accent); }
 .tbl.matrix .cell.behind { background: rgba(251,191,36,.10); color: var(--amber); }
 .tbl.matrix .cell.absent { color: var(--faint); }
 .tbl.matrix .sticky-col .pill { margin-left: .35rem; }
+
+/* ---------- Catalogo de versoes disponiveis ---------- */
+.inline-form { display: flex; gap: .4rem; align-items: center; }
+.inline-form .small-select { max-width: 260px; }
+.tbl.matrix .avail { white-space: nowrap; border-right: 1px solid var(--line-2); }
+.tbl.matrix .avail.novo { background: rgba(110,168,254,.12); color: var(--accent); }

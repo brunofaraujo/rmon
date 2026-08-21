@@ -80,7 +80,8 @@ idempotente (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EX
 | `app_config` | Configuração runtime (tema/refresh da UI, limiares de alerta) em `jsonb` |
 | `host_packages` | Inventário TOTVS atual por `(servidor, item)`: versão, fabricante, data, fonte (`rm`/`assembly`/`custom`/`registry`), `first_seen`/`last_seen` |
 | `package_events` | Mudanças de software (instalado/atualizado/regrediu/removido), guardadas por 1 ano |
-| `inventory_runs` | Última coleta de inventário por servidor (ok, nº de pacotes, erro, duração) |
+| `inventory_runs` | Última coleta de inventário por servidor (ok, nº de itens, erro, duração, última atualização do RM.Atualizador) |
+| `package_catalog` | Versões disponíveis: espelho do repositório de pacotes (`origin='repo'`, reescrito a cada varredura) mais o registro manual (`origin='manual'`) |
 
 Índices por `ts DESC` e por `(server, ts DESC)` sustentam as consultas de histórico e
 "último por servidor" (`SELECT DISTINCT ON (server) …`).
@@ -117,6 +118,8 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/sessions/logoff` | POST | Logoff de sessões selecionadas (admin) |
 | `/pacotes.csv` | GET | Inventário achatado para planilha (CSV `;`, requer login) |
 | `/pacotes/coletar` | POST | Dispara uma coleta de inventário fora da cadência (admin) |
+| `/pacotes/catalogo/varrer` | POST | Relê o repositório de pacotes (admin) |
+| `/pacotes/catalogo/vincular` | POST | Liga um pacote baixado a um item do inventário (admin) |
 
 ## Perfil `viewer` (quiosque)
 

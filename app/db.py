@@ -71,12 +71,23 @@ _SCHEMA = [
         kind text NOT NULL, old_version text, new_version text, source text
     )""",
     "CREATE INDEX IF NOT EXISTS idx_package_events_ts ON package_events(ts DESC)",
+    """CREATE TABLE IF NOT EXISTS package_catalog (
+        id bigserial PRIMARY KEY,
+        origin text NOT NULL,
+        produto text NOT NULL,
+        version text NOT NULL,
+        pkg_key text,
+        arquivo text, pasta text, tamanho bigint, url text, nota text,
+        ts timestamptz NOT NULL DEFAULT now()
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_package_catalog_key ON package_catalog(pkg_key)",
     """CREATE TABLE IF NOT EXISTS inventory_runs (
         server text PRIMARY KEY,
         ts timestamptz NOT NULL DEFAULT now(),
         ok boolean NOT NULL, packages integer, error text, duration_ms integer,
         computer text, os text
     )""",
+    "ALTER TABLE inventory_runs ADD COLUMN IF NOT EXISTS last_upgrade timestamptz",
 ]
 
 
@@ -427,3 +438,65 @@ def inventory_runs() -> dict[str, dict]:
     with _conn() as c:
         rows = c.execute("SELECT * FROM inventory_runs").fetchall()
     return {r["server"]: r for r in _epoch(rows)}
+
+
+# ---------- catalogo de versoes disponiveis ----------
+def replace_repo_catalog(entradas: list[dict]) -> None:
+    """Reescreve as entradas vindas do repositorio de pacotes.
+
+    Sao um espelho da pasta: arquivo apagado la some daqui. O cadastro manual
+    (origin='manual') nao e tocado.
+    """
+    with _conn() as c:
+        with c.transaction():
+            c.execute("DELETE FROM package_catalog WHERE origin='repo'")
+            for e in entradas:
+                c.execute(
+                    """INSERT INTO package_catalog
+                         (origin, produto, version, pkg_key, arquivo, pasta, tamanho)
+                       VALUES ('repo',%s,%s,%s,%s,%s,%s)""",
+                    (e["produto"], e["version"], e.get("pkg_key"), e.get("arquivo"),
+                     e.get("pasta"), e.get("tamanho")),
+                )
+
+
+def list_catalog() -> list[dict]:
+    with _conn() as c:
+        return _epoch(c.execute(
+            "SELECT * FROM package_catalog ORDER BY origin, lower(produto), version"
+        ).fetchall())
+
+
+def insert_manual_catalog(produto: str, version: str, pkg_key: str | None,
+                          url: str | None, nota: str | None) -> None:
+    with _conn() as c:
+        c.execute(
+            """INSERT INTO package_catalog (origin, produto, version, pkg_key, url, nota)
+               VALUES ('manual',%s,%s,%s,%s,%s)""",
+            (produto, version, pkg_key or None, url or None, nota or None),
+        )
+
+
+def delete_catalog(entry_id: int) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM package_catalog WHERE id=%s AND origin='manual'", (entry_id,))
+
+
+def _as_ts(value: Any):
+    """'yyyy-mm-dd HH:MM:SS' -> datetime. Valor invalido vira NULL."""
+    import datetime
+    if not value:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value
+    try:
+        return datetime.datetime.fromisoformat(str(value)[:19])
+    except ValueError:
+        return None
+
+
+def set_inventory_upgrade(server: str, quando: Any) -> None:
+    """Data da ultima atualizacao aplicada pelo RM.Atualizador naquele host."""
+    with _conn() as c:
+        c.execute("UPDATE inventory_runs SET last_upgrade=%s WHERE server=%s",
+                  (_as_ts(quando), server))
