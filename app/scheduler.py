@@ -68,6 +68,14 @@ def _kb(n: float) -> str:
     return f"{n / 1024:.0f}KB"
 
 
+def _lista(v) -> list[str]:
+    """Campo que o PowerShell manda como lista - ou como string, quando tem um
+    item so (ConvertTo-Json do 5.1 nao empacota colecao unitaria em array)."""
+    if not v:
+        return []
+    return [str(x) for x in v] if isinstance(v, list) else [str(v)]
+
+
 def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
                     estavel: dict[str, bool] | None = None) -> dict[str, str]:
     """Broker de customizacao truncado ou ausente.
@@ -90,10 +98,13 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
     settle = int(th.get("broker_settle_min", 10) or 0)
     min_pct = float(th.get("broker_min_pct", 60) or 0)
     min_kb = float(th.get("broker_min_kb", 0) or 0)
-    # Ausencia so e anomalia se ha RM.Host no ar: com o host parado, ninguem
-    # tinha mesmo de ter gerado o arquivo.
-    host_no_ar = any(
-        (s.get("status") or "") == "Running" and str(s.get("name") or "").startswith("RM.Host")
+    # Ausencia so e anomalia se um servico DAQUELA pasta subiu: e ele que teria
+    # de ter gerado o arquivo. Com a instalacao parada, ninguem tinha mesmo de
+    # gerar - e o vizinho de outra pasta (ou o Cleanner, que nem gera broker)
+    # nao serve de prova. Coleta antiga, sem os donos da pasta, cai no
+    # comportamento anterior: qualquer servico descoberto no ar vale.
+    legado_no_ar = any(
+        (s.get("status") or "") == "Running" and s.get("src") == "auto"
         for s in (r.get("services") or [])
     )
     for b in brokers:
@@ -101,8 +112,13 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
         chave = f"broker:{nome}"
         tamanho = b.get("size")
         if tamanho is None:
-            if host_no_ar:
-                p[chave] = f"{nome} nao existe em {b.get('path')} com o RM.Host no ar"
+            donos = _lista(b.get("running"))
+            if "running" not in b:
+                if legado_no_ar:
+                    p[chave] = f"{nome} nao existe em {b.get('path')} com o servico no ar"
+            elif donos:
+                quem = ", ".join(donos[:3]) + ("..." if len(donos) > 3 else "")
+                p[chave] = f"{nome} nao existe em {b.get('path')} com {quem} no ar"
             continue
         # Recem-gerado pode ainda estar sendo escrito. A prova de que parou de
         # crescer sao duas coletas iguais; a idade fica so como rede para quem

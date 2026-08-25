@@ -482,6 +482,13 @@ julgado, e um incidente curto não escapa: esperar um tempo fixo deixou passar o
 24/08, em que o arquivo ficou truncado por 7 minutos. O `broker_settle_min` fica só como
 rede para host sem coleta anterior.
 
+A **ausência** do arquivo só vira alerta se um serviço **daquela pasta** que gera broker
+estiver no ar — quem teria de tê-lo criado. `RM.Host.Cleanner` rodando ao lado não conta
+(não gera broker), nem um `RM.Host` de outra instalação. Quem gera sai de
+`defaults.broker.generators` (curingas, padrão `RM.Host.Service*`); pasta em que nenhum
+serviço casa com a lista volta ao critério antigo — qualquer serviço dela no ar vale —,
+para que uma instalação com nome fora do padrão não fique sem vigilância.
+
 A coleta lê o tamanho e a data desses arquivos na pasta de instalação (descoberta pelo
 caminho dos serviços de `service_patterns`) e compara com o **histórico do próprio
 host** — o maior tamanho que ele já teve. Não é comparação entre hosts de propósito: o
@@ -493,6 +500,7 @@ grande e voltou pequeno, e assim fica.
 |---|---|---|
 | `broker.enabled` | `true` | Liga a verificação |
 | `broker.files` | `["_BrokerCustom.dat", "_Broker.dat"]` | Arquivos verificados na pasta do RM |
+| `broker.generators` | `["RM.Host.Service*"]` | Serviços que geram o broker: só eles, no ar, tornam a ausência um alerta |
 | `alerts.broker_min_pct` | `60` | Alerta abaixo desse % do maior tamanho já visto no host |
 | `alerts.broker_min_kb` | `0` | Piso absoluto em KB (0 = só a regra relativa) |
 | `alerts.broker_settle_min` | `10` | Rede para quem não tem coleta anterior: idade mínima antes de julgar |

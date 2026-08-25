@@ -58,6 +58,10 @@ defaults:
   broker:
     enabled: true
     files: ["_BrokerCustom.dat", "_Broker.dat"]
+    # Quem gera o broker ao subir. Cobrar o arquivo de uma pasta onde so o
+    # RM.Host.Cleanner esta no ar seria alarme falso: ele nao gera nada.
+    # Pasta sem nenhum servico casando aqui usa qualquer servico dela.
+    generators: ["RM.Host.Service*"]
   eventlog:
     logs: [System, Application]
     level: 2               # 1=Critical, 2=Error, 3=Warning

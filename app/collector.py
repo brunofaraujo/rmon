@@ -71,8 +71,17 @@ $services = @($services)
 # no lugar - e o RM passa a reusar esse cache truncado para sempre, subindo
 # "com sucesso" e sem as customizacoes. Aqui so medimos: tamanho e idade.
 $brokerFiles = @(__BROKER_FILES__)
+# Quem, dentro da pasta, realmente gera o broker. O Cleanner mora na mesma
+# instalacao do RM.Host.Service e nao gera nada: se ele estiver no ar sozinho,
+# a ausencia do arquivo e esperada, nao anomalia. Pasta onde nenhum servico
+# casa com a lista cai no criterio antigo (qualquer servico dela vale) - assim
+# uma instalacao com nome fora do padrao nao fica sem vigilancia.
+$brokerGen = @(__BROKER_GENERATORS__)
 $broker = New-Object System.Collections.ArrayList
 if ($brokerFiles.Count -gt 0) {
+    # Cada pasta guarda QUEM mora nela: o broker daquela instalacao so tinha de
+    # ter sido gerado se um servico DESSA pasta subiu. Servico de outra pasta -
+    # ou um vizinho que nem gera broker - nao serve de prova.
     $brokerDirs = @{}
     foreach ($s in $allSvc) {
         $casa = $false
@@ -83,9 +92,23 @@ if ($brokerFiles.Count -gt 0) {
         $cmd = "$($s.PathName)".Trim()
         if ($cmd -match '^\s*"([^"]+)"') { $exe = $matches[1] } else { $exe = ($cmd -split '\s+')[0] }
         if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { continue }
-        $brokerDirs[[System.IO.Path]::GetDirectoryName($exe)] = $true
+        $dir = [System.IO.Path]::GetDirectoryName($exe)
+        if (-not $brokerDirs.ContainsKey($dir)) {
+            $brokerDirs[$dir] = New-Object System.Collections.ArrayList
+        }
+        [void]$brokerDirs[$dir].Add([pscustomobject]@{ name = $s.Name; state = $s.State })
     }
     foreach ($d in @($brokerDirs.Keys)) {
+        $donos = @($brokerDirs[$d])
+        $geradores = New-Object System.Collections.ArrayList
+        foreach ($o in $donos) {
+            foreach ($g in $brokerGen) {
+                if ($o.name -like $g) { [void]$geradores.Add($o); break }
+            }
+        }
+        if ($geradores.Count -eq 0) { $geradores = $donos }
+        $nomes = @($geradores | ForEach-Object { $_.name } | Sort-Object)
+        $noAr = @($geradores | Where-Object { $_.state -eq 'Running' } | ForEach-Object { $_.name } | Sort-Object)
         foreach ($bf in $brokerFiles) {
             $alvo = Join-Path $d $bf
             $i = Get-Item -LiteralPath $alvo -ErrorAction SilentlyContinue
@@ -94,10 +117,12 @@ if ($brokerFiles.Count -gt 0) {
                     name = $i.Name; path = $i.FullName; size = [int64]$i.Length
                     mtime = $i.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')
                     age_min = [math]::Round(((Get-Date) - $i.LastWriteTime).TotalMinutes, 0)
+                    services = $nomes; running = $noAr
                 })
             } else {
                 [void]$broker.Add([pscustomobject]@{
-                    name = $bf; path = $alvo; size = $null; mtime = $null; age_min = $null })
+                    name = $bf; path = $alvo; size = $null; mtime = $null; age_min = $null
+                    services = $nomes; running = $noAr })
             }
         }
     }
@@ -175,6 +200,9 @@ def _ps_str(value: str) -> str:
 BROKER_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "files": ["_BrokerCustom.dat", "_Broker.dat"],
+    # Servicos que geram o broker ao subir. Serve para nao cobrar o arquivo de
+    # uma pasta onde so o Cleanner (que nao gera broker) esta no ar.
+    "generators": ["RM.Host.Service*"],
 }
 
 
@@ -192,6 +220,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     noise = el.get("noise_ids") or [10016, 1058, 1030, 1502, 1500, 7000, 7009]
     bk = broker_settings(defaults)
     broker_files = list(bk.get("files") or []) if bk.get("enabled", True) else []
+    broker_gen = list(bk.get("generators") or [])
     prov_re = el.get("providers_regex") or (
         r"\b(RM|TOTVS|SGE|MSSQL|SQL|IIS|W3SVC|WAS|DBAccess|WER)"
         r"|\.NET Runtime|ASP\.NET|Application Error|Application Hang|Windows Error Reporting"
@@ -205,6 +234,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__NOISE_IDS__", ",".join(str(int(n)) for n in noise))
         .replace("__PROV_RE__", prov_re)
         .replace("__BROKER_FILES__", ",".join(_ps_str(f) for f in broker_files))
+        .replace("__BROKER_GENERATORS__", ",".join(_ps_str(g) for g in broker_gen))
     )
 
 
