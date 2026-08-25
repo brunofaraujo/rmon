@@ -95,7 +95,7 @@
     {% set grupos = svc_groups(d.services) %}
     {% if grupos %}
     <div class="pills">
-      {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}">Descobertos por {{ g.pattern }}: {{ g.installed }} instalado(s) &middot; {{ g.running }} em execucao</span>{% endfor %}
+      {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}" title="{{ g.names | join(', ') }} &middot; descobertos pelo padrao {{ g.pattern }}">{{ g.family }}: {{ g.installed }} instancias instaladas &middot; {{ g.running }} em execucao</span>{% endfor %}
     </div>
     {% endif %}
   </div>

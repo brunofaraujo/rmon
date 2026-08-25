@@ -70,8 +70,15 @@ monitor acusava dois serviços em falha.
 
 Com `service_patterns`, o monitor pergunta ao próprio host, a cada coleta,
 quais serviços casam com o curinga (compara **nome** e **nome de exibição**,
-ex.: `RM.Host*`). O que sobra vira a lista real de RM.Hosts instalados, e o
-painel mostra `RM.Host* · 4/4 em execução`.
+ex.: `RM.Host*`). O que sobra vira a lista real de RM.Hosts instalados, cada um
+com sua própria pílula no painel.
+
+O curinga serve para **descobrir**, não para agrupar: `RM.Host.Service` e
+`RM.Host.Cleanner` casam no mesmo padrão, mas são serviços diferentes, com
+funções diferentes, e o painel nunca os soma numa contagem só. O resumo
+`RM.Host.Service · 3/4 instâncias em execução` só aparece para instâncias da
+**mesma** aplicação — nomes que diferem apenas pelo número no fim
+(`RM.Host.Service`, `RM.Host.Service02`).
 
 A diferença de tratamento entre os dois:
 

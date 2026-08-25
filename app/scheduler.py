@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -137,18 +138,52 @@ def service_down(s: dict) -> bool:
     return True
 
 
+# Sufixo de instancia: separador opcional + numero no fim do nome
+# ("RM.Host.Service02", "RM.Host.Service_2", "RM.Host.Service (2)").
+_SUFIXO_INSTANCIA = re.compile(r"^(?P<base>.*[^\W\d_])[ ._\-#]?\(?(?P<n>\d{1,3})\)?$")
+
+
+def service_family(nome: str | None) -> str:
+    """Familia de um servico: o proprio nome, sem o sufixo de instancia.
+
+    Dois servicos que so diferem por um numero no fim ("RM.Host.Service" e
+    "RM.Host.Service02") sao a mesma aplicacao instalada duas vezes e contam
+    juntos. Nomes diferentes - "RM.Host.Service" e "RM.Host.Cleanner" - sao
+    servicos diferentes, com funcoes diferentes, ainda que casem no mesmo
+    curinga de descoberta: o prefixo comum nao faz deles um so.
+    """
+    nome = (nome or "").strip()
+    m = _SUFIXO_INSTANCIA.match(nome)
+    return m.group("base") if m else nome
+
+
 def service_groups(services: list[dict] | None) -> list[dict]:
-    """Resumo dos servicos descobertos por padrao: quantos instalados x rodando."""
+    """Resumo por familia de servico: quantas instancias instaladas x rodando.
+
+    Agrupa pelo nome real do servico (ver service_family), nao pelo curinga que
+    o descobriu - o curinga junta coisas que nada tem a ver uma com a outra.
+    Familia com uma instancia so nao vira resumo: a pilula dela ja esta na
+    lista de servicos, e repetir "1 instalado, 1 em execucao" nao diz nada.
+    """
     grupos: dict[str, dict] = {}
     for s in services or []:
         if s.get("src") != "auto":
             continue
-        g = grupos.setdefault(s.get("pattern") or "*", {"pattern": s.get("pattern") or "*",
-                                                        "installed": 0, "running": 0})
+        familia = service_family(s.get("name"))
+        g = grupos.setdefault(familia, {"family": familia, "patterns": [], "names": [],
+                                        "installed": 0, "running": 0})
+        padrao = s.get("pattern") or "*"
+        if padrao not in g["patterns"]:
+            g["patterns"].append(padrao)
+        g["names"].append(s.get("name") or "")
         g["installed"] += 1
         if (s.get("status") or "") == "Running":
             g["running"] += 1
-    return list(grupos.values())
+    saida = [g for g in grupos.values() if g["installed"] > 1]
+    for g in saida:
+        g["pattern"] = ", ".join(g["patterns"])
+        g["names"].sort()
+    return sorted(saida, key=lambda g: g["family"].lower())
 
 
 def problems(r: dict, th: dict, fail_streak: int | None = None,
