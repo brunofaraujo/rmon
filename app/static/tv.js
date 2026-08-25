@@ -76,24 +76,31 @@
       '<div class="t"><i class="' + c + '" style="width:' + Math.max(0, Math.min(100, pct)) + '%"></i></div></div>';
   }
 
-  /* Servicos do RM compartilham o mesmo prefixo ("RM.Host.Service",
-     "RM.Host.Cleanner"...). Mostrar o prefixo uma vez so e listar o resto
-     abreviado faz caber muito mais nome na mesma faixa da TV. */
-  function prefixoComum(svcs) {
+  /* Instancias da MESMA aplicacao ("RM.Host.Service", "RM.Host.Service02")
+     diferem so pelo numero no fim: mostrar o nome uma vez e listar os numeros
+     faz caber muito mais na faixa da TV. Servicos de nome diferente, ainda que
+     compartilhem prefixo ("RM.Host.Cleanner"), aparecem inteiros - sao outra
+     coisa, nao instancia do vizinho. */
+  var RE_INSTANCIA = /^(.*[^\W\d_])[ ._\-#]?\(?\d{1,3}\)?$/;
+
+  function familia(nm) {
+    var m = RE_INSTANCIA.exec(String(nm || ""));
+    return m ? m[1] : String(nm || "");
+  }
+
+  function familiaComum(svcs) {
     var cont = {};
-    var i, nm, corte, pre;
+    var i, fam;
     for (i = 0; i < svcs.length; i++) {
       if (!svcs[i].ok) { continue; }
-      nm = String(svcs[i].n || "");
-      corte = Math.max(nm.lastIndexOf("."), Math.max(nm.lastIndexOf("_"), nm.lastIndexOf("-")));
-      if (corte < 3) { continue; }
-      pre = nm.slice(0, corte + 1);
-      cont[pre] = (cont[pre] || 0) + 1;
+      fam = familia(svcs[i].n);
+      if (fam.length < 4 || fam === String(svcs[i].n || "")) { continue; }
+      cont[fam] = (cont[fam] || 0) + 1;
     }
     var melhor = "", n = 0;
-    for (pre in cont) {
-      if (cont.hasOwnProperty(pre) && (cont[pre] > n || (cont[pre] === n && pre.length > melhor.length))) {
-        melhor = pre; n = cont[pre];
+    for (fam in cont) {
+      if (cont.hasOwnProperty(fam) && (cont[fam] > n || (cont[fam] === n && fam.length > melhor.length))) {
+        melhor = fam; n = cont[fam];
       }
     }
     return n >= 2 ? melhor : "";
@@ -125,13 +132,14 @@
     if (s.events) {
       t.push('<span class="tv-tag warn">' + s.events + " " + plural(s.events, "ocorrencia", "ocorrencias") + "</span>");
     }
-    var pre = prefixoComum(s.svcs);
+    var pre = familiaComum(s.svcs);
     var marcou = false;
     for (i = 0; i < s.svcs.length; i++) {
       if (s.svcs[i].ok) {
         var nm = String(s.svcs[i].n || "");
-        var curto = pre && nm.length > pre.length && nm.slice(0, pre.length) === pre;
-        // nomes fora do grupo ficam inteiros: "W3SVC" nao vira sobra de "RM.Host."
+        var curto = pre && nm.length > pre.length && familia(nm) === pre;
+        // so instancia da familia encolhe: "RM.Host.Cleanner" nunca vira
+        // sobra de "RM.Host.Service", nem "W3SVC" de coisa nenhuma
         if (curto && !marcou) {
           t.push('<span class="tv-tag pref">' + esc(pre) + "*</span>");
           marcou = true;
@@ -245,7 +253,7 @@
       chip.className = "tv-tag mais";
       c.appendChild(chip);
       while (vis > 0) {
-        // "RM.Host.*" sozinho no fim nao diz nada: some junto com os servicos
+        // "RM.Host.Service*" sozinho no fim nao diz nada: some junto com as instancias
         while (vis > 0 && kids[vis - 1].className.indexOf("pref") >= 0) { vis--; }
         if (!vis) { break; }
         for (j = 0; j < kids.length; j++) { kids[j].style.display = j < vis ? "" : "none"; }
