@@ -439,6 +439,12 @@ quando o arquivo **não existe**. Se a geração aborta no meio (falta de *commi
 abaixo), sobra um arquivo curto, e a partir daí todo start reaproveita esse cache: o
 serviço sobe "com sucesso" e as customizações não carregam.
 
+O veredito só sai quando o arquivo **parou de crescer** — duas coletas seguidas com o
+mesmo tamanho e a mesma data (`db.broker_estado`). Um broker sendo escrito agora não é
+julgado, e um incidente curto não escapa: esperar um tempo fixo deixou passar o caso de
+24/08, em que o arquivo ficou truncado por 7 minutos. O `broker_settle_min` fica só como
+rede para host sem coleta anterior.
+
 A coleta lê o tamanho e a data desses arquivos na pasta de instalação (descoberta pelo
 caminho dos serviços de `service_patterns`) e compara com o **histórico do próprio
 host** — o maior tamanho que ele já teve. Não é comparação entre hosts de propósito: o
@@ -452,7 +458,7 @@ grande e voltou pequeno, e assim fica.
 | `broker.files` | `["_BrokerCustom.dat", "_Broker.dat"]` | Arquivos verificados na pasta do RM |
 | `alerts.broker_min_pct` | `60` | Alerta abaixo desse % do maior tamanho já visto no host |
 | `alerts.broker_min_kb` | `0` | Piso absoluto em KB (0 = só a regra relativa) |
-| `alerts.broker_settle_min` | `10` | Não julga arquivo gerado há menos que isso |
+| `alerts.broker_settle_min` | `10` | Rede para quem não tem coleta anterior: idade mínima antes de julgar |
 | `alerts.broker_history_days` | `30` | Janela do histórico que serve de referência |
 | `alerts.commit_pct` | `90` | Alerta de *commit charge* (RAM + pagefile reservados) |
 

@@ -42,22 +42,25 @@ def _kb(n: float) -> str:
     return f"{n / 1024:.0f}KB"
 
 
-def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None) -> dict[str, str]:
+def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
+                    estavel: dict[str, bool] | None = None) -> dict[str, str]:
     """Broker de customizacao truncado ou ausente.
 
-    O RM so gera `_BrokerCustom.dat` quando o arquivo NAO existe. Se a geracao
-    aborta no meio (tipicamente por estouro do limite de commit), sobra um
-    arquivo curto - e a partir dai todo start reusa esse cache: o servico sobe
+    O RM so gera `_BrokerCustom.dat` quando o arquivo NAO existe, e a primeira
+    geracao costuma sair incompleta (ver docs/OPERACAO.md). Como o arquivo
+    passou a existir, todo start seguinte reusa esse cache curto: o servico sobe
     "com sucesso" e as customizacoes simplesmente nao carregam.
 
     `ref` e o historico DESTE host ({arquivo: maior tamanho ja visto}), vindo de
-    broker_reference().
+    broker_reference(). `estavel` (db.broker_estado) diz se o arquivo parou de
+    crescer entre as duas ultimas coletas - so ai o tamanho vale como veredito.
     """
     p: dict[str, str] = {}
     brokers = r.get("broker") or []
     if not brokers:
         return p
     ref = ref or {}
+    estavel = estavel or {}
     settle = int(th.get("broker_settle_min", 10) or 0)
     min_pct = float(th.get("broker_min_pct", 60) or 0)
     min_kb = float(th.get("broker_min_kb", 0) or 0)
@@ -75,16 +78,20 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None) -> dic
             if host_no_ar:
                 p[chave] = f"{nome} nao existe em {b.get('path')} com o RM.Host no ar"
             continue
+        # Recem-gerado pode ainda estar sendo escrito. A prova de que parou de
+        # crescer sao duas coletas iguais; a idade fica so como rede para quem
+        # ainda nao tem coleta anterior (host novo, RMon recem-subido).
         idade = b.get("age_min")
-        if idade is not None and settle and idade < settle:
-            continue  # recem-gerado: pode ainda estar sendo escrito
+        if not estavel.get(nome):
+            if idade is None or (settle and idade < settle):
+                continue
         maior = int(ref.get(nome) or 0)
         if min_kb and tamanho < min_kb * 1024:
             p[chave] = (f"{nome} com {_kb(tamanho)} (minimo esperado {_kb(min_kb * 1024)}): "
                         "cache truncado, customizacoes nao carregam")
         elif maior and min_pct and tamanho < maior * min_pct / 100:
             p[chave] = (f"{nome} com {_kb(tamanho)}, contra {_kb(maior)} que este host ja teve: "
-                        "geracao abortada, customizacoes nao carregam")
+                        "broker incompleto, customizacoes nao carregam")
     return p
 
 
@@ -120,7 +127,8 @@ def service_groups(services: list[dict] | None) -> list[dict]:
 
 
 def problems(r: dict, th: dict, fail_streak: int | None = None,
-             broker_ref: dict[str, int] | None = None) -> dict[str, str]:
+             broker_ref: dict[str, int] | None = None,
+             broker_estavel: dict[str, bool] | None = None) -> dict[str, str]:
     """Problemas ativos de uma coleta. `fail_streak` = coletas consecutivas sem
     contato (db.fail_streak); enquanto ficar abaixo de `down_after`, a falha e
     tratada como instabilidade e nao vira DOWN - e o que evita a enxurrada de
@@ -153,7 +161,7 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
     if commit is not None and commit >= th.get("commit_pct", 90):
         p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
                        "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
-    p.update(broker_problems(r, th, broker_ref))
+    p.update(broker_problems(r, th, broker_ref, broker_estavel))
     jb = r.get("jobs")
     if isinstance(jb, dict) and jb.get("failed") is not None and jb["failed"] >= th.get("jobs_failed", 3):
         p["JOBS"] = (f"{jb['failed']} execucoes de job com erro em {jb.get('window_min')}min "
@@ -181,15 +189,20 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
             coletas.append((server, result))
 
-        # Referencia do broker: o historico de cada host, lido uma vez por ciclo.
-        ref = broker_reference(th.get("broker_history_days"))
         for server, result in coletas:
             db.insert_check(server.name, result)
             state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
             log.info("coleta %s -> %s", server.name, state)
 
+        # Veredito do broker depois de gravar: a referencia e o historico de cada
+        # host e a estabilidade compara esta coleta com a anterior - as duas
+        # perguntas sao para o banco, uma vez por ciclo, nao por servidor.
+        ref = broker_reference(th.get("broker_history_days"))
+        estado = db.broker_estado()
+        for server, result in coletas:
             streak = 0 if result.get("reachable") else db.fail_streak(server.name)
-            probs = problems(result, th, streak, ref.get(server.name))
+            probs = problems(result, th, streak, ref.get(server.name),
+                             estado.get(server.name))
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

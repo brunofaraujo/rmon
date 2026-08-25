@@ -387,8 +387,11 @@ def dashboard(request: Request):
     # e nao no template: e o mesmo criterio do alerta, sem duplicar regra no HTML.
     th = _thresholds()
     ref = scheduler.broker_reference(th.get("broker_history_days"))
+    estado = db.broker_estado()
     for r in rows:
-        r["broker"] = scheduler.broker_problems(r["data"] or {}, th, ref.get(r["cfg"].name))
+        nome = r["cfg"].name
+        r["broker"] = scheduler.broker_problems(r["data"] or {}, th, ref.get(nome),
+                                                estado.get(nome))
     return templates.TemplateResponse(
         "dashboard.html",
         {"request": request, "rows": rows, "summary": summary, "broker_ref": ref,
@@ -409,11 +412,12 @@ def server_detail(request: Request, name: str):
         )
     th = _thresholds()
     ref = scheduler.broker_reference(th.get("broker_history_days")).get(name) or {}
+    estavel = db.broker_estado().get(name) or {}
     return templates.TemplateResponse(
         "server.html",
         {"request": request, "name": name, "current": hist[0], "hist": hist,
          "broker_ref": ref,
-         "broker_alerta": scheduler.broker_problems(hist[0], th, ref)},
+         "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel)},
     )
 
 

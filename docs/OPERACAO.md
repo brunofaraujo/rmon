@@ -202,33 +202,58 @@ certo.
 
 `_BrokerCustom.dat` é o cache de reflexão sobre as DLLs de customização
 (`RM.Net\Custom`, ~65 MB / 237 assemblies neste parque). O `RM.Host` só o gera quando o
-arquivo **não existe** — e a geração é um pico grande de memória *comprometida*, somado
-ao `_Broker.dat` (11 MB em disco, muito mais em memória), aos `RM.Host.JobRunner` (30+
-processos) e às sessões RDP com `RM.exe` que já estão no ar.
+arquivo **não existe** — e é isso que torna qualquer geração ruim permanente: como o
+arquivo passou a existir, todo start seguinte reusa o cache curto, o serviço sobe "com
+sucesso" e as customizações não carregam.
 
-Quando esse pico bate no **limite de commit** da máquina (RAM + arquivo de paginação já
-reservados), o .NET falha no meio da geração. O próprio Visualizador de Eventos registra
-as duas formas do erro nos hosts afetados:
+O que o histórico do RMon mostra, com o tamanho de cada geração (parque SGE, onde o
+arquivo íntegro tem 571.588 bytes):
+
+| host | 1ª geração | 2ª | 3ª |
+|---|---|---|---|
+| `.190` 21/08 | 17:26 → **55.061** | 17:28 → **55.061** | 17:30 → 571.588 ✅ |
+| `.188` 21/08 | 17:30 → **553.582** | 17:31 → 571.588 ✅ | |
+| `.223` 21/08 | 17:36 → **553.582** | 17:37 → 571.588 ✅ | 17:42 → **553.582**, 17:43 → ✅ |
+| `.222` 21/08 | 17:31 → 571.588 ✅ | | |
+| `.34` 24/08 | 15:53 → **55.061** | 16:00 → **55.061** | (arquivo copiado à mão) |
+
+Três coisas se leem daí:
+
+1. **A primeira geração sai incompleta com frequência, em qualquer host** — não é defeito
+   do `.34` nem do `.188`. O `.190`, que servia de "servidor bom" para copiar o arquivo,
+   também gerou 55.061 na primeira tentativa.
+2. **O tamanho errado é determinístico** (55.061 exato em gerações diferentes, em hosts
+   diferentes; 553.582 idem). Não é corte aleatório por falta de recurso: é o broker de um
+   **subconjunto estável** de assemblies — o que aquele processo enxergou naquele start.
+3. **Uma geração posterior completa o arquivo.** Onde alguém repetiu o ciclo, o tamanho
+   subiu para 571.588 e ficou.
+
+Por que exatamente o segundo start enxerga mais que o primeiro ainda **não está
+confirmado** — a suspeita é qual processo gera (o serviço `RM.Host` sozinho versus o
+conjunto que sobe depois, com `RM.exe` e `JobRunner` já carregando customização). Isso
+exige um teste controlado em homologação para afirmar.
+
+**O que já foi descartado com dados:** falta de memória. Em 24/08 no `.34` a geração
+truncada aconteceu com a máquina recém-reiniciada, *commit charge* entre 3% e 10% e
+87 GB de limite — e sem nenhum erro no Visualizador de Eventos.
+
+#### O erro de commit é outro problema, real, e já corrigido
+
+Em 10/08 e 18/08 o `.34` registrou falhas de start com o pagefile no modo automático:
 
 ```
-RM.Host.Service — Serviço não pode ser iniciado. System.IO.FileLoadException:
-  Não foi possível carregar arquivo ou assembly 'System.Windows.Forms' ...
-  O arquivo de paginação é muito pequeno para que esta operação seja concluída.
-  (Exceção de HRESULT: 0x800705AF)  em RM.Lib.RMSBroker.InternalStartHost()
+RM.Host.Service — System.IO.FileLoadException: ... O arquivo de paginação é muito
+  pequeno para que esta operação seja concluída. (HRESULT: 0x800705AF)
+  em RM.Lib.RMSBroker.InternalStartHost()
 
-RM.Host.Service — Erro ao Registrar Servers iniciais (2) - BrokerServer:
-  Erro ao ler arquivo ...\_Broker.dat: 'System.OutOfMemoryException'
-  - Favor apagar este arquivo e reiniciar o aplicativo.
+RM.Host.Service — Erro ao Registrar Servers iniciais (2) - BrokerServer: Erro ao ler
+  arquivo ...\_Broker.dat: 'System.OutOfMemoryException'
 ```
 
-`0x800705AF` é `ERROR_COMMITMENT_LIMIT`: **não** é falta de RAM livre nem de disco, é o
-limite de commit. Com o arquivo de paginação em "gerenciado pelo sistema", ele começa
-pequeno depois de cada boot e cresce **depois** da demanda — tarde demais para um pico
-que dura segundos.
-
-O que transforma a falha em problema permanente é o resto: o RM **não apaga** o arquivo
-parcial e, no start seguinte, encontra um `_BrokerCustom.dat` existente e o considera
-válido. O serviço sobe "com sucesso" com um cache truncado, e continua assim para sempre.
+`0x800705AF` é `ERROR_COMMITMENT_LIMIT` — nem RAM livre, nem disco: o limite de commit
+(RAM + pagefile). Isso derrubava o start do RM.Host e **pode** deixar um broker parcial
+para trás, mas não é o que explica as gerações truncadas acima. O pagefile fixo (passo 1)
+resolve essa falha; não resolve o broker incompleto.
 
 ### Correção definitiva
 
@@ -277,32 +302,43 @@ válido. O serviço sobe "com sucesso" com um cache truncado, e continua assim p
    Get-WmiObject Win32_PageFileUsage | Select-Object Name, AllocatedBaseSize, PeakUsage
    ```
 
-2. **Gerar o broker com a máquina descarregada.** A geração compete com tudo que já
-   está no ar. Na janela de manutenção, sem sessões RDP:
-   pare **todos** os `RM.Host*` do host → apague `_BrokerCustom.dat` → suba **um**
-   serviço só → espere o arquivo parar de crescer → confira o tamanho → só então suba
-   os demais. Subir três instâncias juntas faz as três gerarem o mesmo arquivo ao
-   mesmo tempo.
-
-3. **Conferir antes de liberar.** O tamanho do broker gerado tem de bater com o dos
-   outros hosts do parque:
+2. **Gerar o broker e não aceitar o primeiro resultado.** Este é o passo que resolve o
+   sintoma hoje, enquanto o mecanismo não está confirmado. Pare **todos** os `RM.Host*`
+   do host, apague o `_BrokerCustom.dat`, suba **um** serviço só, espere o arquivo parar
+   de crescer e **confira o tamanho**:
 
    ```powershell
-   (Get-Item 'C:\totvs\CorporeRM\RM.Net\_BrokerCustom.dat').Length
+   (Get-Item 'C:	otvs\CorporeRM\RM.Net\_BrokerCustom.dat').Length
    ```
 
-   Se veio truncado, **apague-o** (não deixe para depois: o RM vai reusá-lo) e repita
-   o passo 2. Copiar o arquivo de outro host resolve o sintoma, mas só depois de o
-   passo 1 estar feito o problema para de voltar.
+   Enquanto não bater o tamanho de referência do host (571.588 no SGE), **apague o
+   arquivo e repita** — não adianta reiniciar por cima, porque com o arquivo existindo o
+   RM não gera de novo. Foi repetindo o ciclo que `.188`, `.190`, `.222` e `.223`
+   chegaram ao arquivo íntegro em 21/08.
+
+3. **Só então liberar.** Copiar o arquivo de outro host do mesmo parque continua sendo
+   saída válida e imediata — os hosts do SGE têm o arquivo byte a byte igual. Mas copie
+   sabendo que é paliativo: o RMon avisa se o host voltar a subir com o broker curto.
 
 ### O que o RMonitor faz
 
 A coleta lê tamanho e data de `_BrokerCustom.dat`/`_Broker.dat` em cada host e compara
-com o maior tamanho que aquele host já teve; abaixo de `broker_min_pct` (padrão 60%) sai alerta
-`broker:_BrokerCustom.dat` no Telegram/Slack e uma tarja no card do servidor. O
-`commit charge` também é coletado e alerta em `commit_pct` (padrão 90%) — é o indicador
-que antecede a falha. Ver [CONFIGURACAO.md](CONFIGURACAO.md#broker-do-rm-defaultsbroker).
+com o maior tamanho que aquele host já teve; abaixo de `broker_min_pct` (padrão 60%) sai
+alerta `broker:_BrokerCustom.dat` no Telegram/Slack e uma tarja no card do servidor.
 
-Assim a checagem que hoje é manual ("o arquivo ficou do tamanho certo?") passa a valer
-para o parque inteiro, minutos depois da instalação, sem depender de um usuário
-reclamar que a customização sumiu.
+O veredito só é dado quando o arquivo **parou de crescer** — duas coletas seguidas com o
+mesmo tamanho e a mesma data. Isso vale um ciclo de espera (~1 min), não uma janela fixa:
+no incidente de 24/08 o broker do `.34` ficou truncado por 7 minutos e a janela de 10 que
+existia antes engoliu o evento inteiro, sem alertar ninguém.
+
+O `commit charge` também é coletado e alerta em `commit_pct` (padrão 90%) — é o indicador
+da falha de start descrita acima, não do broker incompleto. Ver
+[CONFIGURACAO.md](CONFIGURACAO.md#broker-do-rm-defaultsbroker).
+
+### O que falta confirmar
+
+Por que o segundo start enxerga mais assemblies que o primeiro. O teste que decide é em
+homologação (`.218`), com o arquivo salvo antes: parar os `RM.Host`, apagar o broker,
+subir **só o serviço** e medir; depois abrir um `RM.exe` e medir de novo. Se o tamanho só
+completar com o cliente no ar, a correção definitiva passa a ser gerar o broker com o
+cliente — e não com o serviço — antes de liberar o host.
