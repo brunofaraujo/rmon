@@ -20,7 +20,7 @@
        reservado a fila travada, que e problema de servidor. #}
     <div class="kpi {{ 'warn' if pool.failed else 'ok' }}"><div class="val {{ 'txt-amber' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Terminaram com erro</div></div>
     <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total processado</div></div>
-    {% if fila and fila.pending is not none %}
+    {% if fila and fila.get('pending') is not none %}
     <div class="kpi {{ 'bad' if fila.oldest_min and fila.oldest_min >= 30 else 'ok' }}">
       <div class="val {{ 'txt-red' if fila.oldest_min and fila.oldest_min >= 30 else '' }}">{{ fila.pending }}</div>
       <div class="lbl">Na fila{% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</div></div>

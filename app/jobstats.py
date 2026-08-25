@@ -66,7 +66,8 @@ def queue(servidor: str | None = None) -> dict[str, Any] | None:
         conn = _connect()
     except Exception as exc:  # noqa: BLE001
         log.warning("jobstats.queue: %s", exc)
-        return {"error": f"{type(exc).__name__}: {exc}"[:150]}
+        return {"pending": None, "oldest_min": None, "since_last_min": None,
+                "col": None, "error": f"{type(exc).__name__}: {exc}"[:150]}
     if conn is None:
         return None
     srv_filter, params = "", []

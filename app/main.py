@@ -550,6 +550,8 @@ def ocorrencias_page(request: Request):
     eventos: list[dict] = []
     for r in db.latest_per_server():
         nome = r["server"]
+        if alvo and nome != alvo:
+            continue
         streak = None if r.get("reachable") else db.fail_streak(nome)
         for chave, texto in scheduler.problems(r, th, streak, ref.get(nome),
                                                estado.get(nome)).items():
