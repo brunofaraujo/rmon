@@ -194,6 +194,43 @@ def broker_max(days: int = 30) -> dict[str, dict[str, int]]:
     return ref
 
 
+def broker_estado(days: int = 1) -> dict[str, dict[str, bool]]:
+    """Por host e arquivo: o broker esta ESTAVEL entre as duas ultimas coletas?
+
+    Um broker sendo gerado agora cresce de uma coleta para a outra - julgar o
+    tamanho no meio da escrita seria alarme falso. Esperar um tempo fixo, por
+    outro lado, deixa passar o incidente curto: em 24/08 o arquivo do .34 ficou
+    truncado por 7 minutos e ninguem foi avisado, porque a janela era de 10.
+    Duas coletas com o mesmo tamanho e a mesma data ja provam que parou de
+    crescer, e isso custa um ciclo, nao dez minutos.
+    """
+    with _conn() as c:
+        rows = c.execute(
+            """WITH ult AS (
+                   SELECT server, broker,
+                          row_number() OVER (PARTITION BY server ORDER BY ts DESC) AS rn
+                     FROM checks
+                    WHERE jsonb_typeof(broker) = 'array' AND broker <> '[]'::jsonb
+                      AND ts > now() - (%s || ' days')::interval
+               ), item AS (
+                   SELECT server, rn, b->>'name' AS nome, b->>'size' AS tam, b->>'mtime' AS mtime
+                     FROM ult, LATERAL jsonb_array_elements(broker) b
+                    WHERE rn <= 2
+               )
+               SELECT a.server, a.nome,
+                      (a.tam IS NOT DISTINCT FROM p.tam
+                       AND a.mtime IS NOT DISTINCT FROM p.mtime) AS estavel
+                 FROM item a
+                 LEFT JOIN item p ON p.server = a.server AND p.nome = a.nome AND p.rn = 2
+                WHERE a.rn = 1""",
+            (str(int(days)),),
+        ).fetchall()
+    estado: dict[str, dict[str, bool]] = {}
+    for r in rows:
+        estado.setdefault(r["server"], {})[r["nome"]] = bool(r["estavel"])
+    return estado
+
+
 def latest_per_server() -> list[dict]:
     with _conn() as c:
         rows = c.execute(
