@@ -395,6 +395,21 @@ def record_alert(server: str, kind: str, problem: str, message: str) -> None:
         pass
 
 
+def recent_alerts(hours: int = 48, limit: int = 500, server: str | None = None) -> list[dict]:
+    """Linha do tempo do que o RMon detectou: cada problema aberto e cada
+    problema resolvido, com hora. E o registro que responde "isso ja aconteceu
+    antes?" - a coleta so guarda o estado de agora."""
+    sql = "SELECT * FROM alerts_log WHERE ts >= now() - make_interval(hours => %s)"
+    params: list[Any] = [int(hours)]
+    if server:
+        sql += " AND server = %s"
+        params.append(server)
+    sql += " ORDER BY ts DESC LIMIT %s"
+    params.append(int(limit))
+    with _conn() as c:
+        return _epoch(c.execute(sql, tuple(params)).fetchall())
+
+
 def get_config(key: str, default: Any = None) -> Any:
     with _conn() as c:
         row = c.execute("SELECT value FROM app_config WHERE key=%s", (key,)).fetchone()

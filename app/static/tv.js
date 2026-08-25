@@ -167,6 +167,11 @@
         t.push('<span class="jb' + (falhou ? " warn" : "") + '">jobs ' + s.jobs.win + "min: " +
           s.jobs.ok + " ok" + (falhou ? " &middot; " + s.jobs.failed + " com erro" : "") + "</span>");
       }
+      // Fila parada e outra historia: o que entrou e nao saiu significa RM sem
+      // processar - esse sim pinta o cartao (a severidade vem do servidor).
+      if (s.jobs.qp && s.jobs.qmin >= 30) {
+        t.push('<span class="jb warn">fila: ' + s.jobs.qp + " parada(s) ha " + s.jobs.qmin + "min</span>");
+      }
     }
     if (s.users !== null && s.users !== undefined) {
       t.push("<span>" + s.users + " " + plural(s.users, "usuario", "usuarios") + "</span>");

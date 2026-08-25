@@ -30,9 +30,9 @@ servidores monitorados.
 | **Host** | CPU, memória, discos (uso %), uptime, nº de sessões logadas |
 | **Serviços Windows** | Estado de serviços-chave (`RM.Host.Service*`, `W3SVC`, `MSSQLSERVER`…) |
 | **Saúde da aplicação** | Checagem HTTP de um endpoint configurável (status + latência) |
-| **Ocorrências** | Erros/críticos recentes do Event Log (System/Application), agrupados e filtrados por provedor |
-| **Jobs do RM** | Sucesso × falha na tabela `GJOBXEXECUCAO` (SQL Server), por job server e por solicitante |
-| **Sessões RDP** | Lista de usuários logados (`quser`) com opção de **encerrar sessão** (`logoff`) |
+| **Ocorrências** | Problemas abertos agora, linha do tempo do que abriu/resolveu e os erros/críticos do Event Log (System/Application), agrupados e filtrados por provedor |
+| **Jobs do RM** | Sucesso × erro na tabela `GJOBXEXECUCAO` (SQL Server) e a **fila** (o que entrou e não saiu), por job server e por solicitante |
+| **Sessões RDP** | Lista de usuários logados (`quser`), com ocioso e logon em colunas separadas e opção de **encerrar sessão** (`logoff`) |
 | **Broker do RM** | Tamanho de `_BrokerCustom.dat`/`_Broker.dat` contra o histórico do host + *commit charge* (RAM + pagefile) |
 | **Inventário TOTVS** | Versão do RM, customizações (`RM.Cst.*`), bibliotecas (`RM.Lib.*`) e pacotes TOTVS do registro — com data, comparação entre hosts e histórico de mudanças |
 

@@ -36,6 +36,13 @@ defaults:
     mem_pct: 90
     app_ms: 3000
     down_after: 3
+    # Jobs: erro de execucao e validacao/regra de negocio da aplicacao, entao
+    # `jobs_failed` so acende aviso na tela. O que notifica e a fila parada
+    # (jobs_stuck_min) e a janela inteira falhando sem nenhum sucesso
+    # (jobs_all_failed) - esses sim sao problema de servidor.
+    jobs_failed: 3
+    jobs_all_failed: 10
+    jobs_stuck_min: 30
     # Commit charge (RAM + arquivo de paginacao ja reservados). E esse limite,
     # nao a RAM livre, que estoura com 0x800705AF e derruba a geracao do broker.
     commit_pct: 90

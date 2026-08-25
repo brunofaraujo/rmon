@@ -27,12 +27,12 @@ curl -fsS http://127.0.0.1:8080/healthz
 | `/` | Dashboard: resumo (online/offline, serviços parados, alertas) e cartão por servidor | login |
 | `/server/{name}` | Detalhe e histórico de um servidor | login |
 | `/jobs` | Estatísticas de jobs do RM (pool, por servidor, por solicitante, falhas) | login |
-| `/ocorrencias` | Erros/críticos recentes do Event Log, consolidados | login |
+| `/ocorrencias` | Central de ocorrências: problemas abertos agora, linha do tempo do que abriu/resolveu (`alerts_log`) e os erros/críticos do Event Log | login |
 | `/pacotes` | Inventário TOTVS por ambiente, em seções (produto, customizações, bibliotecas, instaladores): **Resumo** (uma linha por item, hosts sob demanda) ou **Matriz** (item × host) | login (coletar: admin) |
 | `/pacotes/mudancas` | Linha do tempo de instalações, atualizações, regressões e remoções | login |
 | `/pacotes/catalogo` | Versões disponíveis: repositório de pacotes baixados do TDN, vínculos e registro manual | admin |
 | `/pacotes/tarefas` | Instalações: pré-voo (somente leitura) e, se armada, execução de pacotes nos hosts | admin |
-| `/sessions` | Sessões RDP ao vivo; encerrar sessões selecionadas | admin p/ logoff |
+| `/sessions` | Sessões RDP ao vivo (ocioso e logon em colunas separadas); encerrar sessões selecionadas, com barra de progresso host a host. Aceita `?server=` e `?user=` para abrir já filtrada | admin p/ logoff |
 | `/logs` | Auditoria de ações | admin |
 | `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |
 | `/admin/usuarios` | Cadastro de usuários: criar, editar, papel, ativar/desativar, senha, excluir | admin |

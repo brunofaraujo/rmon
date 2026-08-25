@@ -16,10 +16,27 @@
 {% else %}
   <div class="kpis">
     <div class="kpi ok"><div class="val txt-green">{{ pool.ok }}</div><div class="lbl">Sucesso</div></div>
-    <div class="kpi {{ 'bad' if pool.failed else 'ok' }}"><div class="val {{ 'txt-red' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Falhas</div></div>
+    {# Erro de job e validacao/regra de negocio: ambar. O vermelho da tela fica
+       reservado a fila travada, que e problema de servidor. #}
+    <div class="kpi {{ 'warn' if pool.failed else 'ok' }}"><div class="val {{ 'txt-amber' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Terminaram com erro</div></div>
     <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total processado</div></div>
-    <div class="kpi"><div class="val">{{ pool.by_server|length }}</div><div class="lbl">Executores</div></div>
+    {% if fila and fila.get('pending') is not none %}
+    <div class="kpi {{ 'bad' if fila.oldest_min and fila.oldest_min >= 30 else 'ok' }}">
+      <div class="val {{ 'txt-red' if fila.oldest_min and fila.oldest_min >= 30 else '' }}">{{ fila.pending }}</div>
+      <div class="lbl">Na fila{% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</div></div>
+    {% endif %}
     <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Solicitantes</div></div>
+  </div>
+
+  <div class="alert {{ 'info' if not (fila and fila.oldest_min and fila.oldest_min >= 30) else '' }} small">
+    {% if fila and fila.error %}
+      Nao deu para ler a fila: {{ fila.error }}
+    {% elif fila and fila.pending %}
+      <b>{{ fila.pending }} execucao(oes)</b> ainda sem conclusao (sem DATAFIMEXEC){% if fila.oldest_min is not none %}, a mais antiga ha <b>{{ fila.oldest_min }}min</b>{% endif %}{% if fila.since_last_min is not none %}; a ultima conclusao no pool foi ha {{ fila.since_last_min }}min{% endif %}.
+      Fila parada e o que dispara alerta &mdash; job que <i>termina</i> com erro, nao.
+    {% else %}
+      Fila vazia: tudo que entrou ja terminou. Job que termina com erro fica registrado aqui, mas nao dispara alerta &mdash; e validacao/regra de negocio da aplicacao.
+    {% endif %}
   </div>
 
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr))">
@@ -30,9 +47,9 @@
         <tbody>
           {% for s in pool.by_server %}
           <tr><td><b>{{ s.host }}</b></td>
-            <td class="muted small">{{ s.label or '—' }}</td>
+            <td class="muted small">{% if s.server %}<a class="linkish" href="/server/{{ s.server }}">{{ s.label }}</a>{% else %}—{% endif %}</td>
             <td class="txt-green">{{ s.ok }}</td>
-            <td class="{{ 'txt-red' if s.failed else '' }}">{{ s.failed }}</td>
+            <td class="{{ 'txt-amber' if s.failed else '' }}">{{ s.failed }}</td>
             <td class="mono">{{ s.total }}</td></tr>
           {% endfor %}
         </tbody>
@@ -42,26 +59,27 @@
     <div class="panel">
       <h2>Solicitantes (ranking)</h2>
       <div class="pills">
-        {% for rq in pool.top_requesters %}<span class="pill">{{ rq.user }} &middot; {{ rq.c }}</span>{% endfor %}
+        {% for rq in pool.top_requesters %}<a class="pill chip-link" href="/sessions?user={{ rq.user }}" title="Procurar a sessao RDP deste solicitante">{{ rq.user }} &middot; {{ rq.c }}</a>{% endfor %}
         {% if not pool.top_requesters %}<span class="muted small">Sem execucoes na janela.</span>{% endif %}
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <h2>Falhas recentes <span class="muted small">({{ pool.recent_failures|length }})</span></h2>
+    <h2>Execucoes com erro <span class="muted small">({{ pool.recent_failures|length }} &middot; em geral validacao/regra de negocio, nao falha do servidor)</span></h2>
     {% if pool.recent_failures %}
     <div class="table-wrap scroll-y"><table class="tbl">
       <thead><tr><th>Quando</th><th>IDJOB</th><th>Executor</th><th>Solicitante</th><th>Mensagem</th></tr></thead>
       <tbody>
         {% for f in pool.recent_failures %}
         <tr><td class="muted small">{{ f.when }}</td><td class="mono">{{ f.idjob }}</td>
-          <td class="muted small">{{ f.servidor }}</td><td>{{ f.user }}</td>
+          <td class="muted small">{{ f.servidor }}</td>
+          <td><a class="linkish" href="/sessions?user={{ f.user }}" title="Procurar a sessao RDP deste solicitante">{{ f.user }}</a></td>
           <td class="muted small">{{ f.msg }}</td></tr>
         {% endfor %}
       </tbody>
     </table></div>
-    {% else %}<div class="alert ok small">Nenhuma falha na janela de {{ window }} min. 🎉</div>{% endif %}
+    {% else %}<div class="alert ok small">Nenhuma execucao com erro na janela de {{ window }} min.</div>{% endif %}
   </div>
 {% endif %}
 {% endblock %}

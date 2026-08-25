@@ -393,3 +393,82 @@ details.legenda > div { margin-top: .5rem; }
 .checklist { list-style: none; margin: .4rem 0 0; padding: 0; font-size: .78rem; }
 .checklist li { padding: .12rem 0; }
 .tbl details summary { cursor: pointer; }
+
+/* ---------- Acoes assincronas: barra de progresso e aviso de tarefa ---------- */
+/* Encerrar sessao, reiniciar servico: leva segundos por host e pode falhar em
+   um so. A barra existe para a tela nunca ficar parada sem explicacao. */
+.progress { height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
+.progress > span { display: block; height: 100%; width: 0; border-radius: 999px;
+  background: var(--grad); transition: width .35s ease; }
+.progress.indet > span { width: 35%; animation: indet 1.1s ease-in-out infinite; }
+.progress.ok > span { background: var(--green); }
+.progress.bad > span { background: linear-gradient(120deg, #f87171, #ef4444); }
+@keyframes indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .progress.indet > span { animation: none; width: 100%; opacity: .5; }
+}
+
+.task-toast { position: fixed; right: clamp(.8rem, 3vw, 1.6rem); bottom: clamp(.8rem, 3vw, 1.6rem);
+  z-index: 200; width: min(380px, 92vw); background: var(--surface); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  padding: .9rem 1rem; display: flex; flex-direction: column; gap: .55rem; }
+.task-toast[hidden] { display: none; }
+.task-toast .tt-top { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+.task-toast .tt-title { font-weight: 700; font-size: .92rem; }
+.task-toast .tt-close { background: none; border: none; color: var(--faint); cursor: pointer;
+  font-size: 1.1rem; line-height: 1; padding: 0 .2rem; }
+.task-toast .tt-close:hover { color: var(--text); }
+.task-toast .tt-msg { color: var(--muted); font-size: .82rem; }
+.task-toast .tt-log { margin: 0; padding: 0; list-style: none; max-height: 130px; overflow-y: auto;
+  font-size: .78rem; display: flex; flex-direction: column; gap: .15rem; }
+.task-toast .tt-log li.ok::before { content: "\2713 "; color: var(--green); }
+.task-toast .tt-log li.bad::before { content: "\2717 "; color: var(--red); }
+.task-toast .tt-log li.bad { color: var(--red); }
+.task-toast .tt-actions { display: flex; gap: .5rem; }
+
+/* ---------- Celulas e chips que levam a algum lugar ---------- */
+/* O painel ja tinha dado clicavel (usuarios, ocorrencias, jobs), mas sem
+   nenhuma pista visual de que dava para clicar. */
+.jump { cursor: pointer; border-bottom: 1px dotted var(--line-2); }
+.jump:hover { color: var(--accent); border-bottom-color: var(--accent); }
+a.chip-link, .pill.occ-link { cursor: pointer; }
+a.chip-link:hover, .pill.occ-link:hover { border-color: var(--accent); color: var(--accent); }
+.tbl td .linkish { color: var(--accent); cursor: pointer; }
+.tbl td .linkish:hover { text-decoration: underline; }
+.filter-chip { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem .6rem;
+  border-radius: 999px; background: rgba(110,168,254,.12); border: 1px solid rgba(110,168,254,.4);
+  color: var(--accent); font-size: .78rem; font-weight: 600; }
+.filter-chip a { color: inherit; opacity: .8; }
+.filter-chip a:hover { opacity: 1; }
+
+/* ---------- Ocorrencias: problemas abertos + linha do tempo ---------- */
+.issue-list { display: flex; flex-direction: column; gap: .5rem; }
+.issue { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .3rem .8rem;
+  padding: .6rem .8rem; border: 1px solid var(--line); border-left: 3px solid var(--amber);
+  border-radius: var(--radius-sm); background: var(--surface-2); }
+.issue.crit { border-left-color: var(--red); }
+.issue .who { font-weight: 700; font-size: .9rem; }
+.issue .what { color: var(--muted); font-size: .82rem; grid-column: 2 / span 2; }
+.issue .tag { font-size: .72rem; }
+.timeline { position: relative; margin: 0; padding: 0 0 0 1.1rem; list-style: none; }
+.timeline::before { content: ""; position: absolute; left: 4px; top: .3rem; bottom: .3rem;
+  width: 2px; background: var(--line); }
+.timeline li { position: relative; padding: .25rem 0; font-size: .84rem; display: flex;
+  flex-wrap: wrap; align-items: baseline; gap: .5rem; }
+.timeline li::before { content: ""; position: absolute; left: -1.1rem; top: .75rem; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px var(--surface); }
+.timeline li.raised::before { background: var(--red); }
+.timeline li.resolved::before { background: var(--green); }
+.timeline li.package::before { background: var(--accent); }
+.timeline .quando { color: var(--faint); font-size: .76rem; min-width: 108px; }
+.timeline .txt { color: var(--muted); }
+.tabs { display: inline-flex; gap: .2rem; border: 1px solid var(--line); background: var(--surface);
+  border-radius: 999px; padding: .2rem; margin-bottom: 1rem; }
+.tabs button { font: inherit; font-size: .85rem; font-weight: 600; cursor: pointer; color: var(--muted);
+  background: none; border: none; padding: .4rem .9rem; border-radius: 999px; }
+.tabs button.on { color: var(--text); background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* Stat que tambem e atalho (usuarios logados -> sessoes, jobs -> centro de jobs) */
+a.stat { display: block; transition: .15s; }
+a.stat:hover { border-color: var(--line-2); background: var(--surface-3); transform: translateY(-1px); }
+a.kpi:hover .val { color: var(--accent); }
