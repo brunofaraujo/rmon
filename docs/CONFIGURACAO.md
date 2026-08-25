@@ -27,7 +27,9 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     disk_pct: 90                   # alerta se disco principal (C:) >= 90%
     mem_pct: 90                    # alerta se memória >= 90%
     app_ms: 3000                   # app_health respondendo, porém > 3000ms = "lento"
-    jobs_failed: 3                 # alerta se >= N jobs falharam na janela
+    jobs_failed: 3                 # AVISO (só na tela) se >= N jobs terminaram com erro na janela
+    jobs_all_failed: 10            # ALERTA: N+ execuções na janela e nenhuma com sucesso
+    jobs_stuck_min: 30             # ALERTA: fila parada há N minutos (nada concluído)
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
   service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
@@ -420,6 +422,15 @@ falha por job server e por solicitante, além das falhas recentes.
 - Use um login **somente-leitura** dedicado.
 - `servidor:` filtra pelo executor (coluna `SERVIDOR`, formato `NOME:porta`) — assim cada host contabiliza só os jobs que ele processou.
 - `success_status` / `failed_status` mapeiam os códigos de `STATUS` (padrão: `2` = sucesso; `5`/`7` = falha).
+- Além do placar sucesso × erro, o RMon lê a **fila**: execuções sem `DATAFIMEXEC`
+  (entraram e não saíram), a idade da mais antiga e há quanto tempo o pool não conclui
+  nada. A coluna de início varia entre versões do RM, então ela é descoberta no
+  `INFORMATION_SCHEMA` — não há nome de coluna chutado na consulta.
+- A fila conta só o que entrou nas **últimas 24h**, dos dois lados. Execução antiga que
+  ficou com `DATAFIMEXEC` nulo para sempre (job abortado, restart do `RM.Host` no meio)
+  é lixo histórico: contada, abriria um "fila travada" que nunca fecharia — e alerta que
+  nunca fecha mascara o próximo. O recorte também evita varrer anos de histórico a cada
+  ciclo de coleta.
 
 ---
 
@@ -428,9 +439,28 @@ falha por job server e por solicitante, além das falhas recentes.
 Disparados pelo `scheduler` **apenas nas transições** de estado (problema levantou ou
 resolveu), evitando repetição. Condições avaliadas a cada ciclo: servidor sem contato,
 serviço fora de `Running`, `app_health` falhando ou lento, disco/memória acima do
-limiar e jobs com falha. Configure os limiares em `defaults.alerts` (inventário) ou na
-tela **Admin**; os canais (Telegram/Slack) via helpers. Se nenhum canal estiver
-configurado, o envio é inerte (sem erro).
+limiar, broker truncado e problemas de jobs. Configure os limiares em `defaults.alerts`
+(inventário) ou na tela **Admin**; os canais (Telegram/Slack) via helpers. Se nenhum
+canal estiver configurado, o envio é inerte (sem erro).
+
+### Aviso × alerta (o que vai para o Slack/Telegram)
+
+Nem todo problema merece notificação. Um job do RM que termina com erro quase sempre é
+**validação ou regra de negócio da aplicação** (dado errado no cadastro, competência
+fechada) — quem resolve é quem pediu o job, no horário dele. Notificar isso só ensina o
+time a ignorar o canal.
+
+| Chave | Natureza | Slack/Telegram | Cor |
+|---|---|---|---|
+| `JOBS` | jobs terminaram com erro na janela | **não** | âmbar |
+| `JOBSQL` | o RMon não conseguiu ler os jobs no SQL | **não** | âmbar |
+| `JOBQUEUE` | fila travada: entrou e não saiu, nada concluído | sim | vermelho |
+| `JOBFAIL` | a janela inteira falhou, nenhum sucesso | sim | vermelho |
+| `DOWN`, `APP`, `svc:*` | servidor/serviço/aplicação fora | sim | vermelho |
+| demais (`MEM`, `DISK`, `COMMIT`, `broker:*`, `APPSLOW`) | capacidade e integridade | sim | âmbar |
+
+Os avisos continuam **registrados** no `alerts_log` e visíveis em `/ocorrencias` — o que
+muda é só o empurrão no celular. A lista está em `scheduler.AVISOS`/`scheduler.CRITICOS`.
 
 ### Broker do RM (`defaults.broker`)
 

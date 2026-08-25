@@ -19,16 +19,25 @@
 <div class="alert small">Encerrar uma sessao <b>desconecta o usuario imediatamente</b> e pode causar perda de trabalho nao salvo. Requer conta WinRM administradora no servidor.</div>
 
 <div class="toolbar">
-  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar usuario, servidor, sessao..." autocomplete="off">
+  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar usuario, servidor, sessao..." autocomplete="off" value="{{ f_user }}">
   <select id="f-server" class="input">
     <option value="">Todos os servidores</option>
-    {% for r in rows %}{% if r.res.sessions %}<option value="{{ r.cfg.name }}">{{ r.cfg.name }}</option>{% endif %}{% endfor %}
+    {% for r in rows %}{% if r.res.sessions %}<option value="{{ r.cfg.name }}" {{ 'selected' if f_server == r.cfg.name else '' }}>{{ r.cfg.name }}</option>{% endif %}{% endfor %}
   </select>
   <select id="f-state" class="input">
     <option value="">Todos os estados</option>
     <option value="ativo">Ativo</option>
     <option value="disc">Desconectado</option>
   </select>
+  <select id="f-idle" class="input">
+    <option value="">Qualquer tempo ocioso</option>
+    <option value="60">Ocioso ha 1h+</option>
+    <option value="240">Ocioso ha 4h+</option>
+    <option value="1440">Ocioso ha 1 dia+</option>
+  </select>
+  {% if f_server or f_user %}
+  <span class="filter-chip">filtro: {{ f_server or f_user }} <a href="/sessions" title="Limpar filtro">&times;</a></span>
+  {% endif %}
   <span class="muted small" id="vis-count"></span>
 </div>
 
@@ -43,25 +52,30 @@
           <th class="sortable" data-key="id">Sessao <span class="arrow"></span></th>
           <th class="sortable" data-key="state">Estado <span class="arrow"></span></th>
           <th class="sortable" data-key="mem">Memoria <span class="arrow"></span></th>
-          <th class="sortable" data-key="idle">Ocioso / Logon <span class="arrow"></span></th>
+          <th class="sortable" data-key="idle">Ocioso <span class="arrow"></span></th>
+          <th class="sortable" data-key="logon">Logon <span class="arrow"></span></th>
         </tr>
       </thead>
       <tbody>
       {% for r in rows %}
         {% for s in r.res.sessions %}
           {% set ativo = s.state in ('Active','Ativo') %}
+          {% set ocioso = s.get('idle_min') %}
+          {% set entrada = s.get('logon') or s.get('info') or '-' %}
           <tr class="srow"
               data-server="{{ r.cfg.name }}" data-user="{{ s.user }}" data-id="{{ s.id }}"
               data-state="{{ s.state }}" data-statekind="{{ 'ativo' if ativo else 'disc' }}"
-              data-mem="{{ s.mem_mb or 0 }}" data-idle="{{ s.info }}"
+              data-mem="{{ s.mem_mb or 0 }}" data-idle="{{ ocioso if ocioso is not none else -1 }}"
+              data-logon="{{ entrada }}"
               data-text="{{ (r.cfg.name ~ ' ' ~ s.user ~ ' ' ~ (s.session or '') ~ ' ' ~ s.state) | lower }}">
             <td><input type="checkbox" name="target" value="{{ r.cfg.name }}|{{ s.id }}" class="sel"></td>
-            <td class="muted">{{ r.cfg.name }}</td>
-            <td><b>{{ s.user }}</b></td>
+            <td class="muted"><a class="linkish" href="/server/{{ r.cfg.name }}" title="Abrir este servidor">{{ r.cfg.name }}</a></td>
+            <td><b class="jump" data-filter-user="{{ s.user }}" title="Ver so as sessoes deste usuario">{{ s.user }}</b></td>
             <td>{{ s.session or '-' }} <span class="faint small">id {{ s.id }}</span></td>
             <td><span class="pill {{ 'green' if ativo else '' }}"><span class="d"></span>{{ s.state }}</span></td>
             <td class="mono">{{ s.mem_mb or 0 }} MB</td>
-            <td class="muted small">{{ s.info }}</td>
+            <td class="mono {{ 'txt-amber' if ocioso is not none and ocioso >= 240 else '' }}">{{ ocioso | ocioso }}</td>
+            <td class="muted small">{{ entrada }}</td>
           </tr>
         {% endfor %}
       {% endfor %}
@@ -71,7 +85,7 @@
   {% if total == 0 %}<p class="muted" style="margin-top:1rem">Nenhuma sessao ativa nos servidores.</p>{% endif %}
 
   <div class="action-bar">
-    <button type="submit" class="btn danger">Encerrar sessoes selecionadas</button>
+    <button type="submit" class="btn danger" id="btn-logoff"{% if not pode_encerrar %} disabled title="Acao requer perfil admin"{% endif %}>Encerrar sessoes selecionadas</button>
     <span class="muted small" id="sel-count">0 selecionada(s)</span>
   </div>
 </form>
@@ -81,6 +95,7 @@
   var q = document.getElementById('q');
   var fServer = document.getElementById('f-server');
   var fState = document.getElementById('f-state');
+  var fIdle = document.getElementById('f-idle');
   var tbody = document.querySelector('#sess-table tbody');
   var rows = Array.prototype.slice.call(document.querySelectorAll('tr.srow'));
   var selAll = document.getElementById('sel-all-visible');
@@ -91,11 +106,16 @@
   function visibleRows() { return rows.filter(function (r) { return r.style.display !== 'none'; }); }
   function applyFilters() {
     var term = q.value.trim().toLowerCase(), srv = fServer.value, st = fState.value;
+    var minIdle = parseInt(fIdle.value, 10) || 0;
     rows.forEach(function (r) {
       var ok = true;
       if (term && r.getAttribute('data-text').indexOf(term) === -1) ok = false;
       if (ok && srv && r.getAttribute('data-server') !== srv) ok = false;
       if (ok && st && r.getAttribute('data-statekind') !== st) ok = false;
+      if (ok && minIdle) {
+        var v = parseInt(r.getAttribute('data-idle'), 10);
+        if (isNaN(v) || v < minIdle) ok = false;
+      }
       r.style.display = ok ? '' : 'none';
       if (!ok) { var c = r.querySelector('input.sel'); if (c) c.checked = false; }
     });
@@ -107,7 +127,7 @@
   }
   function cmp(a, b, key) {
     var va = a.getAttribute('data-' + key) || '', vb = b.getAttribute('data-' + key) || '';
-    if (key === 'id' || key === 'mem') return (parseInt(va, 10) || 0) - (parseInt(vb, 10) || 0);
+    if (key === 'id' || key === 'mem' || key === 'idle') return (parseInt(va, 10) || 0) - (parseInt(vb, 10) || 0);
     return va.toLowerCase().localeCompare(vb.toLowerCase());
   }
   function sortBy(key) {
@@ -119,23 +139,66 @@
     if (th) th.textContent = sortDir > 0 ? ' ▲' : ' ▼';
   }
   q.addEventListener('input', applyFilters);
-  fServer.addEventListener('change', applyFilters);
-  fState.addEventListener('change', applyFilters);
+  [fServer, fState, fIdle].forEach(function (el) { el.addEventListener('change', applyFilters); });
   document.querySelectorAll('th.sortable').forEach(function (th) {
     th.addEventListener('click', function () { sortBy(th.getAttribute('data-key')); });
+  });
+  // Clicar no nome do usuario e o mesmo que pesquisar por ele: e o caminho que
+  // se percorre vindo do cartao do servidor ou do ranking de solicitantes.
+  document.addEventListener('click', function (e) {
+    var alvo = e.target.closest ? e.target.closest('[data-filter-user]') : null;
+    if (!alvo) return;
+    q.value = alvo.getAttribute('data-filter-user'); applyFilters();
   });
   selAll.addEventListener('change', function () {
     visibleRows().forEach(function (r) { var c = r.querySelector('input.sel'); if (c) c.checked = selAll.checked; });
     updateCounts();
   });
   document.querySelectorAll('input.sel').forEach(function (c) { c.addEventListener('change', updateCounts); });
+
+  // Encerramento com progresso: uma sessao por chamada, para a barra andar e o
+  // log dizer qual host recusou, em vez de recarregar em silencio no fim.
   document.getElementById('logoff-form').addEventListener('submit', function (e) {
     var sel = Array.prototype.slice.call(document.querySelectorAll('input.sel:checked'));
     if (sel.length === 0) { e.preventDefault(); alert('Selecione ao menos uma sessao.'); return; }
-    var lista = sel.map(function (c) { var tr = c.closest('tr'); return '• ' + tr.getAttribute('data-server') + ': ' + tr.getAttribute('data-user'); }).join('\n');
-    if (!confirm('Encerrar ' + sel.length + ' sessao(oes)?\n\n' + lista + '\n\nOs usuarios serao desconectados imediatamente.')) e.preventDefault();
+    var alvos = sel.map(function (c) {
+      var tr = c.closest('tr');
+      return { v: c.value, srv: tr.getAttribute('data-server'), user: tr.getAttribute('data-user'), tr: tr };
+    });
+    var lista = alvos.map(function (a) { return '• ' + a.srv + ': ' + a.user; }).join('\n');
+    if (!confirm('Encerrar ' + alvos.length + ' sessao(oes)?\n\n' + lista + '\n\nOs usuarios serao desconectados imediatamente.')) {
+      e.preventDefault(); return;
+    }
+    if (!window.fetch || !window.rmonTask) return;  // navegador antigo: segue o POST normal
+    e.preventDefault();
+    var btn = document.getElementById('btn-logoff');
+    btn.disabled = true;
+    rmonTask.start('Encerrando sessoes', '0 de ' + alvos.length + ' concluida(s)');
+    var i = 0, okN = 0, falhaN = 0;
+    function proximo() {
+      if (i >= alvos.length) {
+        var resumo = okN + ' encerrada(s)' + (falhaN ? ', ' + falhaN + ' com falha' : '');
+        rmonTask.done(resumo + (falhaN ? '' : '. Atualizando a tela...'), falhaN === 0, true);
+        if (falhaN) btn.disabled = false;
+        return;
+      }
+      var a = alvos[i];
+      rmonTask.step(Math.round((i / alvos.length) * 100), 'Encerrando ' + a.srv + ': ' + a.user + '...');
+      var fd = new FormData(); fd.append('target', a.v);
+      fetch('/api/sessions/logoff', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) {
+          return r.json().catch(function () { return { ok: false, msg: 'resposta invalida (' + r.status + ')' }; });
+        })
+        .then(function (d) {
+          if (d.ok) { okN++; a.tr.style.opacity = '.4'; } else { falhaN++; }
+          rmonTask.log(a.srv + ': ' + a.user + (d.ok ? ' encerrada' : ' - ' + (d.msg || 'falhou')), !!d.ok);
+        })
+        .catch(function () { falhaN++; rmonTask.log(a.srv + ': ' + a.user + ' - erro de rede', false); })
+        .then(function () { i++; rmonTask.step(Math.round((i / alvos.length) * 100)); proximo(); });
+    }
+    proximo();
   });
-  updateCounts();
+  applyFilters();
 })();
 </script>
 {% endblock %}

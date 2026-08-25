@@ -37,7 +37,7 @@
     {% endif %}
     <span class="spacer"></span>
     {% if authed %}
-    <a class="alert-badge" id="alert-badge" href="/" hidden><span class="pulse"></span> <span id="alert-n">0</span></a>
+    <a class="alert-badge" id="alert-badge" href="/ocorrencias" hidden><span class="pulse"></span> <span id="alert-n">0</span></a>
     {% endif %}
     <button class="icon-btn" id="theme-btn" type="button" title="Alternar tema" aria-label="Alternar tema">&#9790;</button>
     {% if authed %}
@@ -55,6 +55,21 @@
   </main>
   <footer class="foot">RMonitor v{{ version or '' }} &middot; monitoramento TOTVS RM</footer>
 
+  <!-- Aviso de tarefa: toda acao que mexe no host (encerrar sessao, mexer em
+       servico) mostra progresso aqui em vez de congelar a tela ate o fim. -->
+  <div class="task-toast" id="task-toast" hidden>
+    <div class="tt-top">
+      <span class="tt-title" id="tt-title">Executando...</span>
+      <button type="button" class="tt-close" id="tt-close" aria-label="Fechar">&times;</button>
+    </div>
+    <div class="progress indet" id="tt-bar"><span></span></div>
+    <div class="tt-msg" id="tt-msg"></div>
+    <ul class="tt-log" id="tt-log"></ul>
+    <div class="tt-actions" id="tt-actions" hidden>
+      <button type="button" class="btn small" id="tt-reload">Atualizar a tela</button>
+    </div>
+  </div>
+
   <script>
   (function () {
     var btn = document.getElementById('theme-btn');
@@ -71,24 +86,64 @@
     var badge = document.getElementById('alert-badge');
     if (badge) {
       var nEl = document.getElementById('alert-n');
+      // O contador vem de /api/tv porque la os problemas ja passaram pelas
+      // mesmas regras do alerta (servico parado x desligado de proposito, job
+      // com erro x fila travada). Contar "status != Running" aqui faria o
+      // cabecalho acusar problema que o resto do painel considera normal.
       function refresh() {
-        fetch('/api/status', { credentials: 'same-origin' })
+        fetch('/api/tv', { credentials: 'same-origin' })
           .then(function (r) { return r.ok ? r.json() : null; })
           .then(function (d) {
-            if (!d) return;
-            var issues = 0;
-            (d.servers || []).forEach(function (s) {
-              if (!s.reachable) { issues++; return; }
-              (s.services || []).forEach(function (x) { if (x.status !== 'Running') issues++; });
-            });
-            if (issues > 0) { nEl.textContent = issues; badge.hidden = false;
-              badge.title = issues + ' alerta(s): servidor/servico com problema'; }
-            else { badge.hidden = true; }
+            if (!d || !d.issues) return;
+            var criticos = d.issues.filter(function (i) { return i.sev === 2; }).length;
+            var total = d.issues.length;
+            if (total > 0) {
+              nEl.textContent = criticos || total;
+              badge.hidden = false;
+              badge.title = criticos
+                ? criticos + ' problema(s) critico(s) aberto(s) - clique para ver'
+                : total + ' aviso(s) aberto(s) - clique para ver';
+            } else { badge.hidden = true; }
           }).catch(function () {});
       }
       refresh();
       setInterval(refresh, 30000);
     }
+
+    // ---- Progresso de tarefa (usado por qualquer tela) ----
+    // Acao remota via WinRM leva segundos e as vezes falha so em um host; a
+    // barra e o log dizem em que ponto esta e o que exatamente deu errado.
+    var T = document.getElementById('task-toast');
+    window.rmonTask = (function () {
+      if (!T) return { start: function () {}, step: function () {}, log: function () {}, done: function () {} };
+      var bar = document.getElementById('tt-bar'), titulo = document.getElementById('tt-title');
+      var msg = document.getElementById('tt-msg'), lista = document.getElementById('tt-log');
+      var acoes = document.getElementById('tt-actions');
+      document.getElementById('tt-close').addEventListener('click', function () { T.hidden = true; });
+      document.getElementById('tt-reload').addEventListener('click', function () { location.reload(); });
+      function setPct(p) {
+        bar.classList.remove('indet');
+        bar.firstElementChild.style.width = Math.max(0, Math.min(100, p)) + '%';
+      }
+      return {
+        start: function (t, texto) {
+          titulo.textContent = t; msg.textContent = texto || '';
+          lista.innerHTML = ''; acoes.hidden = true; T.hidden = false;
+          bar.className = 'progress indet'; bar.firstElementChild.style.width = '';
+        },
+        step: function (pct, texto) { setPct(pct); if (texto) msg.textContent = texto; },
+        log: function (texto, ok) {
+          var li = document.createElement('li');
+          li.className = ok ? 'ok' : 'bad'; li.textContent = texto;
+          lista.appendChild(li); lista.scrollTop = lista.scrollHeight;
+        },
+        done: function (texto, ok, recarregar) {
+          setPct(100); bar.classList.add(ok ? 'ok' : 'bad');
+          msg.textContent = texto; acoes.hidden = !recarregar;
+          if (ok && recarregar) setTimeout(function () { location.reload(); }, 2500);
+        }
+      };
+    })();
 
     var ACT = { start: 'Iniciar', stop: 'Parar', restart: 'Reiniciar' };
     document.addEventListener('click', function (e) {
@@ -96,20 +151,30 @@
       if (!b) return;
       e.preventDefault(); e.stopPropagation();
       var srv = b.getAttribute('data-server'), svc = b.getAttribute('data-service'), act = b.getAttribute('data-action') || 'restart';
-      if (!confirm((ACT[act] || act) + ' o servico "' + svc + '" em ' + srv + '?')) return;
+      var rotulo = ACT[act] || act;
+      if (!confirm(rotulo + ' o servico "' + svc + '" em ' + srv + '?')) return;
       b.disabled = true; var old = b.innerHTML; b.innerHTML = '...';
+      rmonTask.start(rotulo + ' ' + svc, 'em ' + srv + ' - aguardando o WinRM responder...');
       var fd = new FormData(); fd.append('server', srv); fd.append('service', svc); fd.append('action', act);
       fetch('/service/action', { method: 'POST', body: fd, credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          alert(d.ok ? ('Servico reiniciado: ' + svc) : ('Falha: ' + (d.msg || 'erro')));
-          if (d.ok) { setTimeout(function () { location.reload(); }, 1500); }
-          else { b.disabled = false; b.innerHTML = old; }
-        }).catch(function () { alert('Erro de rede'); b.disabled = false; b.innerHTML = old; });
+          rmonTask.log(srv + '/' + svc + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
+          rmonTask.done(d.ok ? 'Concluido. Atualizando a tela...' : 'Falhou: ' + (d.msg || 'erro'), d.ok, true);
+          if (!d.ok) { b.disabled = false; b.innerHTML = old; }
+        }).catch(function () {
+          rmonTask.log('erro de rede', false);
+          rmonTask.done('Erro de rede', false, false);
+          b.disabled = false; b.innerHTML = old;
+        });
     });
 
+    // Atalho para dentro do cartao do servidor: o cartao inteiro ja e um link
+    // para /server/<nome>, e link dentro de link e HTML invalido. Entao os
+    // chips que levam a outro lugar (sessoes daquele host, jobs, ocorrencias)
+    // carregam o destino em data-href e sao resolvidos aqui.
     document.addEventListener('click', function (e) {
-      var o = e.target.closest ? e.target.closest('.occ-link') : null;
+      var o = e.target.closest ? e.target.closest('[data-href]') : null;
       if (!o) return;
       e.preventDefault(); e.stopPropagation();
       var href = o.getAttribute('data-href'); if (href) location.href = href;

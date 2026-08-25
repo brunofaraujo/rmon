@@ -23,7 +23,32 @@ _last: dict[str, dict] = {}
 DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
                   "down_after": 3, "commit_pct": 90, "broker_min_pct": 60,
                   "broker_min_kb": 0, "broker_settle_min": 10,
-                  "broker_history_days": 30}
+                  "broker_history_days": 30,
+                  # fila de jobs: minutos sem a fila andar para virar alerta
+                  "jobs_stuck_min": 30,
+                  # falhas na janela SEM nenhum sucesso = falha em bloco
+                  "jobs_all_failed": 10}
+
+# Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
+# Job que termina com erro e validacao/regra de negocio da aplicacao (dado
+# errado no cadastro, competencia fechada...), nao falha do servidor: quem
+# resolve e o usuario que pediu o job, no horario dele. O que continua acordando
+# alguem e a fila travada (JOBQUEUE) e a falha em bloco (JOBFAIL), que sao
+# problema de infraestrutura.
+AVISOS = frozenset({"JOBS", "JOBSQL"})
+
+# Problemas que pintam o cartao de vermelho (mural e painel).
+CRITICOS = frozenset({"DOWN", "APP", "JOBQUEUE", "JOBFAIL"})
+
+
+def notifica(chave: str) -> bool:
+    """Este problema merece Slack/Telegram?"""
+    return chave not in AVISOS
+
+
+def critico(chave: str) -> bool:
+    """Este problema e vermelho (vs. ambar/aviso)?"""
+    return chave.startswith("svc:") or chave in CRITICOS
 
 
 def broker_reference(dias: int | None = None) -> dict[str, dict[str, int]]:
@@ -162,10 +187,44 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
                        "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
     p.update(broker_problems(r, th, broker_ref, broker_estavel))
-    jb = r.get("jobs")
-    if isinstance(jb, dict) and jb.get("failed") is not None and jb["failed"] >= th.get("jobs_failed", 3):
-        p["JOBS"] = (f"{jb['failed']} execucoes de job com erro em {jb.get('window_min')}min "
+    p.update(job_problems(r.get("jobs"), th))
+    return p
+
+
+def job_problems(jb: dict | None, th: dict) -> dict[str, str]:
+    """Problemas vindos dos jobs do RM, separados por natureza.
+
+    JOBS e aviso: execucao que termina em erro quase sempre e validacao ou regra
+    de negocio da aplicacao. Ja JOBQUEUE (a fila parou de andar) e JOBFAIL (a
+    janela inteira falhou, nenhum sucesso) sao infraestrutura - e so esses dois
+    viram notificacao.
+    """
+    p: dict[str, str] = {}
+    if not isinstance(jb, dict):
+        return p
+    if jb.get("error"):
+        p["JOBSQL"] = f"nao deu para ler os jobs no SQL: {str(jb['error'])[:120]}"
+    falhas, ok = jb.get("failed"), jb.get("ok")
+    janela = jb.get("window_min")
+    if falhas is not None and falhas >= th.get("jobs_failed", 3):
+        p["JOBS"] = (f"{falhas} execucoes de job com erro em {janela}min "
                      "(validacao/regra de negocio, nao falha do servidor)")
+    minimo = int(th.get("jobs_all_failed", 10) or 0)
+    if minimo and falhas is not None and falhas >= minimo and not ok:
+        p["JOBFAIL"] = (f"{falhas} execucoes de job em {janela}min e NENHUMA concluida com "
+                        "sucesso: falha em bloco, nao validacao pontual")
+
+    fila = jb.get("queue") or {}
+    parado = int(th.get("jobs_stuck_min", 30) or 0)
+    pendentes = fila.get("pending")
+    mais_antiga = fila.get("oldest_min")
+    sem_concluir = fila.get("since_last_min")
+    if (parado and pendentes and mais_antiga is not None and mais_antiga >= parado
+            and (sem_concluir is None or sem_concluir >= parado)):
+        quando = ("nenhuma conclusao registrada" if sem_concluir is None
+                  else f"nada concluido ha {sem_concluir}min")
+        p["JOBQUEUE"] = (f"fila de jobs travada: {pendentes} execucao(oes) sem terminar, "
+                         f"a mais antiga ha {mais_antiga}min, {quando}")
     return p
 
 
@@ -187,6 +246,10 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             if server.jobs:
                 jb = server.jobs
                 result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
+                # A fila fica no mesmo bloco `jobs` de proposito: e a mesma
+                # coluna jsonb do banco, sem migracao de schema so para isso.
+                if isinstance(result.get("jobs"), dict):
+                    result["jobs"]["queue"] = jobstats.queue(jb.get("servidor"))
             coletas.append((server, result))
 
         for server, result in coletas:
@@ -210,8 +273,11 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 db.record_alert(server.name, "raised", k, probs[k])
             for k in gone_keys:
                 db.record_alert(server.name, "resolved", k, prev[k])
-            msgs = ["\U0001F534 " + probs[k] for k in new_keys]
-            msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys]
+            # Aviso (job com erro, SQL fora do ar) fica registrado e aparece na
+            # tela, mas nao vira mensagem: alerta que nao exige acao imediata
+            # so ensina o time a ignorar o canal.
+            msgs = ["\U0001F534 " + probs[k] for k in new_keys if notifica(k)]
+            msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys if notifica(k)]
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {server.name} ({server.host})\n" + "\n".join(msgs))
             _last[server.name] = probs

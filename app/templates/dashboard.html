@@ -13,12 +13,13 @@
 <div class="kpis">
   <div class="kpi"><div class="val">{{ summary.total }}</div><div class="lbl">Servidores</div></div>
   <div class="kpi ok"><div class="val txt-green">{{ summary.online }}</div><div class="lbl">Online</div></div>
-  <div class="kpi {{ 'bad' if summary.offline else 'ok' }}">
-    <div class="val {{ 'txt-red' if summary.offline else '' }}">{{ summary.offline }}</div><div class="lbl">Sem contato</div></div>
-  <div class="kpi {{ 'bad' if summary.services_down else 'ok' }}">
-    <div class="val {{ 'txt-red' if summary.services_down else '' }}">{{ summary.services_down }}</div><div class="lbl">Servicos parados</div></div>
-  <div class="kpi {{ 'warn' if summary.alerts else 'ok' }}">
-    <div class="val {{ 'txt-amber' if summary.alerts else '' }}">{{ summary.alerts }}</div><div class="lbl">Ocorrencias (24h)</div></div>
+  <a class="kpi {{ 'bad' if summary.offline else 'ok' }}" href="/ocorrencias">
+    <div class="val {{ 'txt-red' if summary.offline else '' }}">{{ summary.offline }}</div><div class="lbl">Sem contato</div></a>
+  <a class="kpi {{ 'bad' if summary.services_down else 'ok' }}" href="/ocorrencias">
+    <div class="val {{ 'txt-red' if summary.services_down else '' }}">{{ summary.services_down }}</div><div class="lbl">Servicos parados</div></a>
+  <a class="kpi {{ 'warn' if summary.alerts else 'ok' }}" href="/ocorrencias">
+    <div class="val {{ 'txt-amber' if summary.alerts else '' }}">{{ summary.alerts }}</div><div class="lbl">Ocorrencias (24h)</div></a>
+  <a class="kpi" href="/sessions"><div class="val">{{ summary.sessions }}</div><div class="lbl">Sessoes RDP</div></a>
 </div>
 
 {% if not rows %}<div class="alert">Nenhum servidor no inventario.</div>{% endif %}
@@ -75,13 +76,23 @@
 
       <div class="pills">
         {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} {{ dk.used_pct }}% &middot; {{ dk.free_gb }}GB</span>{% endfor %}
-        {% if d.users_count is not none %}<span class="pill">&#128100; {{ d.users_count }} usuarios</span>{% endif %}
+        {% if d.users_count is not none %}<span class="pill chip-link" data-href="/sessions?server={{ row.cfg.name }}" title="Ver as sessoes RDP deste servidor">&#128100; {{ d.users_count }} usuarios</span>{% endif %}
         {% if d.app_ok is not none %}<span class="pill {{ 'green' if d.app_ok else 'red' }}">App {{ 'OK' if d.app_ok else 'FALHA' }}</span>{% endif %}
-        {% if d.jobs %}{% if d.jobs.error %}<span class="pill red" title="{{ d.jobs.error }}">&#9881; Jobs: erro SQL</span>{% else %}<span class="pill {{ 'red' if d.jobs.failed and d.jobs.failed > 0 else 'green' }}">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} falha{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>{% endif %}{% endif %}
+        {% if d.jobs %}
+          {% if d.jobs.error %}
+            <span class="pill amber chip-link" data-href="/jobs" title="{{ d.jobs.error }}">&#9881; Jobs: nao deu para ler o SQL</span>
+          {% else %}
+            {% set fila = d.jobs.queue or {} %}
+            {# Job com erro e validacao/regra de negocio: ambar, nao vermelho.
+               Vermelho fica para a fila travada, que e problema do servidor. #}
+            <span class="pill {{ 'amber' if d.jobs.failed else 'green' }} chip-link" data-href="/jobs?min={{ d.jobs.window_min }}" title="Sucesso x erro na janela. Job que termina em erro costuma ser validacao da aplicacao.">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} erro{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>
+            {% if fila.pending %}<span class="pill {{ 'red' if fila.oldest_min and fila.oldest_min >= 30 else '' }} chip-link" data-href="/jobs" title="Execucoes sem DATAFIMEXEC: o que entrou na fila e ainda nao saiu">&#9203; Fila: {{ fila.pending }} pendente(s){% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</span>{% endif %}
+          {% endif %}
+        {% endif %}
         {% set bp = row.broker %}
         {% if bp %}<span class="pill red" title="{{ bp.values() | join(' | ') }}">&#9888; Broker do RM</span>{% endif %}
         {% if d.commit_pct is not none and d.commit_pct >= 80 %}<span class="pill {{ 'red' if d.commit_pct >= 90 else 'amber' }}" title="RAM + pagefile ja reservados">Commit {{ d.commit_pct }}%</span>{% endif %}
-        {% if d.events %}<span class="pill amber occ-link" data-href="/ocorrencias?server={{ row.cfg.name }}" title="Ver ocorrencias">{{ d.events | length }} ocorrencia(s)</span>{% endif %}
+        {% if d.events %}<span class="pill amber chip-link" data-href="/ocorrencias?server={{ row.cfg.name }}" title="Ver ocorrencias deste servidor">{{ d.events | length }} ocorrencia(s)</span>{% endif %}
       </div>
     {% else %}
       <div class="alert small">{{ d.error if d else 'aguardando primeira coleta...' }}</div>

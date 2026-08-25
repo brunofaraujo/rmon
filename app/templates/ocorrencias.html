@@ -2,57 +2,144 @@
 {% block title %}Ocorrencias - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
+{% set criticos = abertos | selectattr('crit') | list %}
+{% set avisos = abertos | rejectattr('crit') | list %}
 <div class="page-head">
-  <div><h1>Ocorrencias</h1><div class="sub">{{ rows|length }} registro(s) &middot; erros/criticos (24h, ruido filtrado)</div></div>
-  <a class="btn" href="/ocorrencias">&#8635; Atualizar</a>
+  <div>
+    <h1>Ocorrencias</h1>
+    <div class="sub">o que esta aberto agora, o que ja aconteceu e os eventos do Windows por tras</div>
+  </div>
+  <div class="pills">
+    {% for h, rot in [(24, '24h'), (48, '48h'), (168, '7 dias'), (720, '30 dias')] %}
+    <a class="pill chip-link {{ 'green' if horas == h else '' }}" href="/ocorrencias?h={{ h }}{% if alvo %}&server={{ alvo }}{% endif %}">{{ rot }}</a>
+    {% endfor %}
+  </div>
 </div>
 
-<div class="toolbar">
-  <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar origem, mensagem, servidor...">
-  <select id="f-server" class="input">
-    <option value="">Todos os servidores</option>
-    {% for s in rows|map(attribute='server')|unique|sort %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
-  </select>
-  <select id="f-level" class="input">
-    <option value="">Todos os niveis</option>
-    {% for l in rows|map(attribute='level')|unique|sort %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
-  </select>
-  <span class="muted small" id="vis-count"></span>
+<div class="kpis">
+  <div class="kpi {{ 'bad' if criticos else 'ok' }}">
+    <div class="val {{ 'txt-red' if criticos else '' }}">{{ criticos | length }}</div>
+    <div class="lbl">Problemas criticos abertos</div></div>
+  <div class="kpi {{ 'warn' if avisos else 'ok' }}">
+    <div class="val {{ 'txt-amber' if avisos else '' }}">{{ avisos | length }}</div>
+    <div class="lbl">Avisos abertos</div></div>
+  <div class="kpi"><div class="val">{{ hist | selectattr('kind', 'equalto', 'raised') | list | length }}</div>
+    <div class="lbl">Alertas abertos em {{ horas }}h</div></div>
+  <div class="kpi"><div class="val">{{ rows | length }}</div>
+    <div class="lbl">Eventos do Windows (24h)</div></div>
 </div>
 
-{% if not rows %}<div class="alert ok small">Nenhuma ocorrencia relevante no momento.</div>{% endif %}
-<div class="table-wrap">
-  <table class="tbl" id="occ-table">
-    <thead><tr>
-      <th class="sortable" data-key="server">Servidor <span class="arrow"></span></th>
-      <th class="sortable" data-key="level">Nivel <span class="arrow"></span></th>
-      <th class="sortable" data-key="provider">Origem <span class="arrow"></span></th>
-      <th class="sortable" data-key="id">ID <span class="arrow"></span></th>
-      <th class="sortable" data-key="count">Qtd <span class="arrow"></span></th>
-      <th class="sortable" data-key="last">Ultima <span class="arrow"></span></th>
-      <th>Mensagem</th>
-    </tr></thead>
-    <tbody>
-      {% for e in rows %}
-      <tr class="orow" data-server="{{ e.server }}" data-level="{{ e.level }}" data-provider="{{ e.provider }}"
-          data-id="{{ e.id }}" data-count="{{ e.count }}" data-last="{{ e.last }}"
-          data-text="{{ (e.server ~ ' ' ~ e.provider ~ ' ' ~ e.message ~ ' ' ~ (e.level or '')) | lower }}">
-        <td class="muted">{{ e.server }}</td>
-        <td><span class="pill red">{{ e.level or 'Erro' }}</span></td>
-        <td><b>{{ e.provider }}</b></td>
-        <td class="mono">{{ e.id }}</td>
-        <td class="mono">{{ e.count }}</td>
-        <td class="muted small">{{ e.last }}</td>
-        <td class="muted small">{{ e.message }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="panel">
+  <h2>Aberto agora <span class="muted small">(estado da ultima coleta de cada host)</span></h2>
+  {% if abertos %}
+  <div class="issue-list">
+    {% for a in abertos %}
+    <div class="issue {{ 'crit' if a.crit else '' }}">
+      <span class="pill {{ 'red' if a.crit else 'amber' }} tag"><span class="d"></span>{{ a.label }}</span>
+      <a class="who linkish" href="/server/{{ a.server }}" title="Abrir este servidor">{{ a.server }}</a>
+      <span>
+        {% if not a.notifica %}<span class="pill small" title="Aparece aqui, mas nao dispara Slack/Telegram: nao e falha do servidor">so no painel</span>{% endif %}
+        {% if a.key.startswith('JOB') %}<a class="pill blue chip-link" href="/jobs">ver jobs</a>{% endif %}
+        {% if a.key.startswith('svc:') %}<a class="pill blue chip-link" href="/server/{{ a.server }}">ver servicos</a>{% endif %}
+      </span>
+      <div class="what">{{ a.text }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="alert ok small">Nenhum problema aberto. Todos os hosts responderam a ultima coleta dentro dos limiares.</div>
+  {% endif %}
 </div>
+
+<div class="panel">
+  <h2>Linha do tempo <span class="muted small">(ultimas {{ horas }}h{% if alvo %} &middot; {{ alvo }}{% endif %})</span></h2>
+  <div class="toolbar" style="margin-top:0">
+    <input type="search" id="q-hist" class="input" placeholder="&#128269;  Pesquisar problema, servidor, mensagem...">
+    {% if alvo %}<span class="filter-chip">filtro: {{ alvo }} <a href="/ocorrencias?h={{ horas }}" title="Limpar filtro">&times;</a></span>{% endif %}
+    <span class="muted small" id="hist-count"></span>
+  </div>
+  {% if hist %}
+  <ul class="timeline" id="hist-list">
+    {% for a in hist %}
+    <li class="hrow {{ a.kind }}" data-text="{{ (a.server ~ ' ' ~ a.problem ~ ' ' ~ (a.message or '')) | lower }}">
+      <span class="quando mono">{{ a.ts | dt }}</span>
+      <a class="linkish" href="/ocorrencias?h={{ horas }}&server={{ a.server }}" title="So este servidor">{{ a.server }}</a>
+      <span class="pill {{ 'red' if a.kind == 'raised' and a.crit else ('green' if a.kind == 'resolved' else ('blue' if a.kind == 'package' else 'amber')) }} tag">
+        {{ 'abriu' if a.kind == 'raised' else ('resolveu' if a.kind == 'resolved' else a.kind) }} &middot; {{ a.label }}</span>
+      <span class="txt">{{ a.message }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="alert ok small">Nada registrado nas ultimas {{ horas }}h{% if alvo %} para {{ alvo }}{% endif %}.</div>
+  {% endif %}
+</div>
+
+<details class="grupo" {{ 'open' if not abertos and rows else '' }}>
+  <summary><b>Eventos do Windows</b> <span class="muted small">&middot; {{ rows|length }} grupo(s), erros/criticos das ultimas 24h, ruido filtrado</span></summary>
+  <div class="toolbar">
+    <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar origem, mensagem, servidor...">
+    <select id="f-server" class="input">
+      <option value="">Todos os servidores</option>
+      {% for s in rows|map(attribute='server')|unique|sort %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+    <select id="f-level" class="input">
+      <option value="">Todos os niveis</option>
+      {% for l in rows|map(attribute='level')|unique|sort %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
+    </select>
+    <span class="muted small" id="vis-count"></span>
+  </div>
+  {% if not rows %}<div class="alert ok small">Nenhum evento relevante no momento.</div>{% endif %}
+  <div class="table-wrap">
+    <table class="tbl" id="occ-table">
+      <thead><tr>
+        <th class="sortable" data-key="server">Servidor <span class="arrow"></span></th>
+        <th class="sortable" data-key="level">Nivel <span class="arrow"></span></th>
+        <th class="sortable" data-key="provider">Origem <span class="arrow"></span></th>
+        <th class="sortable" data-key="id">ID <span class="arrow"></span></th>
+        <th class="sortable" data-key="count">Qtd <span class="arrow"></span></th>
+        <th class="sortable" data-key="last">Ultima <span class="arrow"></span></th>
+        <th>Mensagem</th>
+      </tr></thead>
+      <tbody>
+        {% for e in rows %}
+        <tr class="orow" data-server="{{ e.server }}" data-level="{{ e.level }}" data-provider="{{ e.provider }}"
+            data-id="{{ e.id }}" data-count="{{ e.count }}" data-last="{{ e.last }}"
+            data-text="{{ (e.server ~ ' ' ~ e.provider ~ ' ' ~ e.message ~ ' ' ~ (e.level or '')) | lower }}">
+          <td class="muted"><a class="linkish" href="/server/{{ e.server }}">{{ e.server }}</a></td>
+          <td><span class="pill red">{{ e.level or 'Erro' }}</span></td>
+          <td><b>{{ e.provider }}</b></td>
+          <td class="mono">{{ e.id }}</td>
+          <td class="mono">{{ e.count }}</td>
+          <td class="muted small">{{ e.last }}</td>
+          <td class="muted small">{{ e.message }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
 
 <script>
 (function () {
+  var qh = document.getElementById('q-hist');
+  if (qh) {
+    var hrows = Array.prototype.slice.call(document.querySelectorAll('li.hrow'));
+    var hc = document.getElementById('hist-count');
+    function applyHist() {
+      var t = qh.value.trim().toLowerCase(), n = 0;
+      hrows.forEach(function (r) {
+        var ok = !t || r.getAttribute('data-text').indexOf(t) >= 0;
+        r.style.display = ok ? '' : 'none'; if (ok) n++;
+      });
+      hc.textContent = n + ' registro(s)';
+    }
+    qh.addEventListener('input', applyHist);
+    applyHist();
+  }
+
   var q = document.getElementById('q'), fS = document.getElementById('f-server'), fL = document.getElementById('f-level');
+  if (!q) return;
   var tbody = document.querySelector('#occ-table tbody');
   var rows = Array.prototype.slice.call(document.querySelectorAll('tr.orow'));
   var vis = document.getElementById('vis-count');

@@ -51,7 +51,29 @@ def _fmt_dur(sec: float | None) -> str:
     return f"{d}d {h}h {m}m" if d else f"{h}h {m}m"
 
 
+def _fmt_idle(minutos) -> str:
+    """Tempo ocioso do quser em texto. O proprio quser escreve "." para "sem
+    tempo ocioso" (sessao em uso agora) e um numero solto para minutos - jogar
+    isso na tela e o que produzia a coluna com pontos e numeros perdidos."""
+    if minutos is None:
+        return "-"
+    try:
+        m = int(minutos)
+    except (TypeError, ValueError):
+        return str(minutos)
+    if m <= 0:
+        return "em uso"
+    if m < 60:
+        return f"{m} min"
+    h, mm = divmod(m, 60)
+    if h < 24:
+        return f"{h}h{mm:02d}"
+    d, hh = divmod(h, 24)
+    return f"{d}d {hh}h"
+
+
 templates.env.filters["dt"] = _fmt_dt
+templates.env.filters["ocioso"] = _fmt_idle
 templates.env.filters["dur"] = _fmt_dur
 templates.env.globals["ui_refresh"] = 60
 templates.env.globals["default_theme"] = "dark"
@@ -237,10 +259,9 @@ def logout(request: Request):
 
 
 # ---------- painel de TV (mural / perfil viewer) ----------
-# Problemas que pintam o cartao de vermelho; o resto e apenas aviso (ambar).
-# JOBS fica de fora de proposito: job que termina com erro costuma ser validacao
-# ou regra de negocio da aplicacao, nao falha do servidor.
-_TV_CRIT_KEYS = ("DOWN", "APP")
+# Quem pinta o cartao de vermelho e scheduler.critico(): JOBS fica de fora de
+# proposito (validacao/regra de negocio), mas fila travada e falha em bloco sao
+# vermelhos como qualquer servico parado.
 _TV_CACHE_TTL = 3.0
 _TV_CACHE: dict = {"ts": 0.0, "data": None}
 
@@ -280,7 +301,7 @@ def _tv_payload() -> dict:
         streak = db.fail_streak(cfg.name) if (d and not up) else None
         probs = scheduler.problems(
             d or {"reachable": False, "error": "aguardando a primeira coleta"}, th, streak)
-        crit = any(k.startswith("svc:") or k in _TV_CRIT_KEYS for k in probs)
+        crit = any(scheduler.critico(k) for k in probs)
         sev = 2 if crit else (1 if (probs or not up) else 0)
         ts = d["ts"] if d else None
         svcs = (d["services"] or []) if d else []
@@ -299,7 +320,7 @@ def _tv_payload() -> dict:
 
         for key, text in probs.items():
             issues.append({"server": cfg.name, "text": text,
-                           "sev": 2 if (key.startswith("svc:") or key in _TV_CRIT_KEYS) else 1})
+                           "sev": 2 if scheduler.critico(key) else 1})
         if not up and "DOWN" not in probs:
             issues.append({"server": cfg.name, "sev": 1,
                            "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
@@ -322,7 +343,10 @@ def _tv_payload() -> dict:
             "app": (d.get("app_ok") if d else None),
             "app_ms": (d.get("app_ms") if d else None),
             "jobs": ({"ok": jobs.get("ok"), "failed": jobs.get("failed"),
-                      "win": jobs.get("window_min"), "err": bool(jobs.get("error"))}
+                      "win": jobs.get("window_min"), "err": bool(jobs.get("error")),
+                      # fila: o numero que realmente denuncia RM parado
+                      "qp": (jobs.get("queue") or {}).get("pending"),
+                      "qmin": (jobs.get("queue") or {}).get("oldest_min")}
                      if jobs else None),
             "events": len(events),
             "err": (d["error"] if d else "aguardando a primeira coleta") if not up else None,
@@ -374,13 +398,15 @@ def dashboard(request: Request):
     latest = {r["server"]: r for r in db.latest_per_server()}
     rows = [{"cfg": srv, "data": latest.get(srv.name)} for srv in inv.servers]
 
-    summary = {"total": len(rows), "online": 0, "offline": 0, "services_down": 0, "alerts": 0}
+    summary = {"total": len(rows), "online": 0, "offline": 0, "services_down": 0,
+               "alerts": 0, "sessions": 0}
     for r in rows:
         d = r["data"]
         if d and d["reachable"]:
             summary["online"] += 1
             summary["services_down"] += sum(1 for s in (d["services"] or []) if scheduler.service_down(s))
             summary["alerts"] += sum(int(e.get("count", 1)) for e in (d["events"] or []))
+            summary["sessions"] += int(d.get("users_count") or 0)
         else:
             summary["offline"] += 1
     # Veredito do broker calculado aqui (uma vez, com os limiares lidos uma vez)
@@ -467,23 +493,82 @@ def jobs_page(request: Request):
         window = 60
     pool = jobstats.pool_summary(window)
     inv = STATE["inv"]
-    hostmap = {s.jobs["servidor"].upper(): f"{s.name} ({s.host})"
+    hostmap = {s.jobs["servidor"].upper(): (s.name, f"{s.name} ({s.host})")
                for s in inv.servers if s.jobs and s.jobs.get("servidor")}
     if pool and pool.get("by_server"):
         for r in pool["by_server"]:
-            r["label"] = hostmap.get((r["host"] or "").upper())
-    return templates.TemplateResponse("jobs.html", {"request": request, "pool": pool, "window": window, "version": __version__})
+            nome, rotulo = hostmap.get((r["host"] or "").upper(), (None, None))
+            r["server"], r["label"] = nome, rotulo
+    # Fila do pool inteiro: e ela, e nao a contagem de erros, que diz se o RM
+    # parou de processar. Job que termina com erro nao trava fila nenhuma.
+    fila = jobstats.queue()
+    return templates.TemplateResponse(
+        "jobs.html", {"request": request, "pool": pool, "fila": fila,
+                      "window": window, "version": __version__})
+
+
+# Rotulo humano de cada chave de problema, para a tela nao mostrar "svc:RM.Host"
+# nem "JOBQUEUE" cru.
+PROBLEMA_LABEL = {
+    "DOWN": "Sem contato", "APP": "App fora do ar", "APPSLOW": "App lento",
+    "MEM": "Memoria", "DISK": "Disco", "COMMIT": "Commit charge",
+    "JOBS": "Jobs com erro", "JOBSQL": "Leitura dos jobs",
+    "JOBQUEUE": "Fila de jobs", "JOBFAIL": "Jobs falhando em bloco",
+}
+
+
+def _problema_label(chave: str) -> str:
+    if chave.startswith("svc:"):
+        return "Servico " + chave[4:]
+    if chave.startswith("broker:"):
+        return "Broker " + chave[7:]
+    return PROBLEMA_LABEL.get(chave, chave)
 
 
 @app.get("/ocorrencias", response_class=HTMLResponse)
 def ocorrencias_page(request: Request):
+    """Central de ocorrencias: o que esta aberto agora, o que ja aconteceu e os
+    eventos do Windows por tras.
+
+    A tela era so um despejo do log de eventos do Windows - informacao que o
+    proprio servidor ja mostra e que ninguem consulta de proposito. O que falta
+    responder e "o que esta quebrado agora" e "isso ja tinha acontecido?", e as
+    duas respostas estao no alerts_log somado aos problemas da ultima coleta.
+    """
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
-    rows = []
+    try:
+        horas = min(max(int(request.query_params.get("h", 48)), 1), 720)
+    except ValueError:
+        horas = 48
+    alvo = request.query_params.get("server") or ""
+
+    th = _thresholds()
+    ref = scheduler.broker_reference(th.get("broker_history_days"))
+    estado = db.broker_estado()
+    abertos: list[dict] = []
+    eventos: list[dict] = []
     for r in db.latest_per_server():
+        nome = r["server"]
+        streak = None if r.get("reachable") else db.fail_streak(nome)
+        for chave, texto in scheduler.problems(r, th, streak, ref.get(nome),
+                                               estado.get(nome)).items():
+            abertos.append({"server": nome, "key": chave, "label": _problema_label(chave),
+                            "text": texto, "crit": scheduler.critico(chave),
+                            "notifica": scheduler.notifica(chave), "ts": r.get("ts")})
         for e in (r.get("events") or []):
-            rows.append({"server": r["server"], **e})
-    return templates.TemplateResponse("ocorrencias.html", {"request": request, "rows": rows, "version": __version__})
+            eventos.append({"server": nome, **e})
+    abertos.sort(key=lambda a: (not a["crit"], a["server"]))
+
+    hist = []
+    for a in db.recent_alerts(horas, 500, alvo or None):
+        hist.append({**a, "label": _problema_label(a["problem"]),
+                     "crit": scheduler.critico(a["problem"])})
+    return templates.TemplateResponse(
+        "ocorrencias.html",
+        {"request": request, "abertos": abertos, "rows": eventos, "hist": hist,
+         "horas": horas, "alvo": alvo, "version": __version__},
+    )
 
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -523,15 +608,14 @@ def admin_page(request: Request):
     if _role(request) != "admin":
         return HTMLResponse("Acesso restrito a administradores.", status_code=403)
     ui = db.get_config("ui", {}) or {}
-    alerts = db.get_config("alerts", {}) or {}
     return templates.TemplateResponse(
         "admin.html",
         {"request": request, "users": db.list_users(), "ok": request.query_params.get("ok"),
          "ui": {"refresh": ui.get("refresh", 60), "theme": ui.get("theme", "dark"),
                 "tv_refresh": ui.get("tv_refresh", 15)},
-         "alerts": {"disk_pct": alerts.get("disk_pct", 90), "mem_pct": alerts.get("mem_pct", 90),
-                    "app_ms": alerts.get("app_ms", 3000),
-                    "down_after": alerts.get("down_after", scheduler.DEFAULT_ALERTS["down_after"])},
+         # o formulario mostra o valor EFETIVO (default < YAML < painel), senao
+         # salvar sem mexer no campo apagaria o que veio do inventario
+         "alerts": _thresholds(),
          "version": __version__},
     )
 
@@ -553,7 +637,10 @@ async def admin_config(request: Request):
                          "tv_refresh": _int("tv_refresh", 15, 5, 600)})
     db.set_config("alerts", {"disk_pct": _int("disk_pct", 90, 1, 100), "mem_pct": _int("mem_pct", 90, 1, 100),
                              "app_ms": _int("app_ms", 3000, 100, 60000),
-                             "down_after": _int("down_after", 3, 1, 10)})
+                             "down_after": _int("down_after", 3, 1, 10),
+                             "jobs_failed": _int("jobs_failed", 3, 1, 1000),
+                             "jobs_stuck_min": _int("jobs_stuck_min", 30, 5, 1440),
+                             "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)
@@ -710,8 +797,39 @@ def sessions_page(request: Request):
     flash = request.session.pop("flash", None)
     return templates.TemplateResponse(
         "sessions.html",
-        {"request": request, "rows": rows, "total": total, "flash": flash, "version": __version__},
+        # ?server= e ?user= chegam de links de outras telas (cartao do servidor,
+        # ranking de solicitantes de job): a tela abre ja filtrada.
+        {"request": request, "rows": rows, "total": total, "flash": flash,
+         "f_server": request.query_params.get("server") or "",
+         "f_user": request.query_params.get("user") or "",
+         "pode_encerrar": _role(request) == "admin", "version": __version__},
     )
+
+
+@app.post("/api/sessions/logoff")
+async def api_sessions_logoff(request: Request):
+    """Encerra UMA sessao e responde em JSON.
+
+    Uma chamada por sessao (e nao um POST com a lista inteira) porque encerrar
+    sessao e lento e pode falhar host a host: assim a tela mostra a barra
+    andando e diz exatamente qual falhou, em vez de recarregar em silencio no
+    fim de tudo.
+    """
+    if not _is_authed(request):
+        return JSONResponse({"ok": False, "msg": "sessao expirada"}, status_code=401)
+    if _role(request) != "admin":
+        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+    form = await request.form()
+    server_name, _, sid = str(form.get("target") or "").partition("|")
+    srv = {s.name: s for s in STATE["inv"].servers}.get(server_name)
+    if not srv:
+        return JSONResponse({"ok": False, "msg": "servidor desconhecido"}, status_code=404)
+    ok, msg = logoff_session(srv, STATE["inv"].winrm, sid)
+    db.audit(request.session.get("user"), "logoff",
+             f"{server_name}#{sid} -> {'ok' if ok else 'falhou'}: {msg}", _ip(request))
+    log.info("logoff %s sessao %s por %s -> %s (%s)", server_name, sid,
+             request.session.get("user"), ok, msg)
+    return JSONResponse({"ok": ok, "msg": msg, "server": server_name, "id": sid})
 
 
 @app.post("/sessions/logoff")

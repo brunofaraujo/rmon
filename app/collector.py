@@ -350,6 +350,11 @@ def _check_app_health(app_health: dict[str, Any] | None) -> tuple[bool | None, i
 
 
 # --- Sessoes RDP: listar e encerrar (quser / logoff) ---
+# O quser devolve TEMPO OCIOSO e TEMPO DE LOGON grudados numa unica sobra de
+# linha. Mandar essa sobra crua para a tela e o que produzia a coluna com "."
+# e numeros soltos antes da data: o "." e o proprio quser dizendo "sem ocioso"
+# e o numero e o ocioso em minutos. Aqui a linha e separada no host, e o ocioso
+# vira minuto (idle_min) para a tela poder formatar e ordenar.
 _PS_SESSIONS = r"""
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'SilentlyContinue'
@@ -360,10 +365,26 @@ $result = New-Object System.Collections.ArrayList
 if ($raw -and $raw.Count -gt 1) {
     foreach ($ln in $raw[1..($raw.Count - 1)]) {
         if ($ln -match '^>?\s*(\S+)\s+(?:(\S+)\s+)?(\d+)\s+(\S+)\s+(.*)$') {
-            $sid = [int]$matches[3]
+            # copiar antes de qualquer outro -match: $matches e sobrescrito
+            $u = $matches[1]; $sess = $matches[2]; $sid = [int]$matches[3]
+            $st = $matches[4]; $info = $matches[5].Trim()
+            $idle = ''; $logon = $info
+            if ($info -match '^(\S+)\s+(\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}.*)$') {
+                $idle = $matches[1]; $logon = $matches[2].Trim()
+            }
+            $idleMin = $null
+            if ($idle -eq '.' -or $idle -match '^(?i)(none|nenhum)') {
+                $idleMin = 0
+            } elseif ($idle -match '^(\d+)\+(\d+):(\d+)$') {
+                $idleMin = ([int]$matches[1] * 1440) + ([int]$matches[2] * 60) + [int]$matches[3]
+            } elseif ($idle -match '^(\d+):(\d+)$') {
+                $idleMin = ([int]$matches[1] * 60) + [int]$matches[2]
+            } elseif ($idle -match '^(\d+)$') {
+                $idleMin = [int]$matches[1]
+            }
             [void]$result.Add([pscustomobject]@{
-                user = $matches[1]; session = $matches[2]; id = $sid
-                state = $matches[4]; info = $matches[5].Trim()
+                user = $u; session = $sess; id = $sid
+                state = $st; info = $info; idle = $idle; idle_min = $idleMin; logon = $logon
                 mem_mb = [math]::Round(($mem[$sid]) / 1MB, 0)
             })
         }
