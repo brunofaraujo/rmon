@@ -17,6 +17,13 @@ log = logging.getLogger("rmon.jobstats")
 # vez de chutada - chutar errado derrubaria a consulta inteira da fila.
 _COLS_INICIO = ("DATAINIEXEC", "DATAINICIOEXEC", "DATAINICIO", "RECCREATEDON")
 
+# STATUS que o RM ja considera encerrados (2 = sucesso, 4 = abortada, 5 = erro,
+# 6 = concluida com ressalva, 7 = falha critica). A pergunta e feita pelo
+# negativo de proposito: um codigo desconhecido, de outra versao do RM, conta
+# como execucao viva - errar para o lado de "ainda rodando" so adia um alerta,
+# enquanto errar para o lado de "terminou" esconderia fila travada de verdade.
+_STATUS_TERMINAIS = (2, 4, 5, 6, 7)
+
 
 def _connect(timeout: int = 10):
     """Conexao com a base do RM, ou None se o SQL nao estiver configurado."""
@@ -63,12 +70,21 @@ def _tem(cur, *cols: str) -> bool:
     return bool(_colunas) and all(c in _colunas for c in cols)
 
 
+def _minutos(v: Any, dflt: int) -> int:
+    """Limiar em minutos vindo do YAML/painel, sem deixar valor torto derrubar a
+    coleta inteira - a fila e so um dos itens do ciclo."""
+    try:
+        return max(1, int(v))
+    except (TypeError, ValueError):
+        return dflt
+
+
 def _fila_vazia(parada_min: int, residuo_min: int, erro: str | None) -> dict[str, Any]:
     """Payload de fila indisponivel: nenhum numero, so o motivo."""
     return {"pending": None, "running": None, "stuck": None, "waiting": None,
             "orphans": None, "oldest_min": None, "waiting_min": None,
             "done_recent": None, "since_last_min": None,
-            "window_min": int(parada_min), "residue_min": int(residuo_min),
+            "window_min": _minutos(parada_min, 30), "residue_min": _minutos(residuo_min, 360),
             "col": None, "error": erro}
 
 
@@ -114,8 +130,8 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         if limpo:
             srv_filter = " AND SERVIDOR LIKE %s"
             params.append(limpo + ":%")
-    w = max(1, int(parada_min))
-    z = max(w + 1, int(residuo_min))
+    w = _minutos(parada_min, 30)
+    z = max(w + 1, _minutos(residuo_min, 360))
     try:
         cur = conn.cursor()
         col = _coluna_inicio(cur)
@@ -124,7 +140,11 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         # DATAFIMEXEC dos ultimos 90 dias, 76 estao em status 4 ou 7 (abortada,
         # falha critica) - o RM marca assim quando o servico volta, mas nunca
         # preenche a data de fim. Contar isso como fila era contar defunto.
-        viva = "EMCANCELAMENTO IS NULL AND (STATUS IS NULL OR STATUS = 1)"
+        # Sem as colunas (outra versao do RM), tudo conta como vivo e o veredito
+        # fica so com a idade.
+        terminais = ", ".join(str(s) for s in _STATUS_TERMINAIS)
+        viva = ("EMCANCELAMENTO IS NULL "
+                f"AND (STATUS IS NULL OR STATUS NOT IN ({terminais}))")
         if not _tem(cur, "EMCANCELAMENTO", "STATUS"):
             viva = "1 = 1"
 
