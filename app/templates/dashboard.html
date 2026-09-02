@@ -86,7 +86,11 @@
             {# Job com erro e validacao/regra de negocio: ambar, nao vermelho.
                Vermelho fica para a fila travada, que e problema do servidor. #}
             <span class="pill {{ 'amber' if d.jobs.failed else 'green' }} chip-link" data-href="/jobs?min={{ d.jobs.window_min }}" title="Sucesso x erro na janela. Job que termina em erro costuma ser validacao da aplicacao.">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} erro{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>
-            {% if fila.pending %}<span class="pill {{ 'red' if fila.oldest_min and fila.oldest_min >= 30 else '' }} chip-link" data-href="/jobs" title="Execucoes sem DATAFIMEXEC: o que entrou na fila e ainda nao saiu">&#9203; Fila: {{ fila.pending }} pendente(s){% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</span>{% endif %}
+            {# Fila cheia nao e fila travada: so vira pilula vermelha o que esta
+               preso (em andamento ha tempo demais) ou esperando alguem comecar. #}
+            {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
+            {% if presas %}<span class="pill red chip-link" data-href="/jobs" title="Execucoes presas ha mais de {{ fila.window_min }}min ou com a hora programada vencida sem ninguem iniciar">&#9203; Fila: {{ presas }} parada(s){% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</span>
+            {% elif fila.running %}<span class="pill chip-link" data-href="/jobs" title="Execucoes em andamento dentro do tempo normal">&#9203; Fila: {{ fila.running }} em curso</span>{% endif %}
           {% endif %}
         {% endif %}
         {% set bp = row.broker %}

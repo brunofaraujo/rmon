@@ -286,6 +286,7 @@ def _tv_payload() -> dict:
     inv = STATE["inv"]
     th = _tv_thresholds()
     latest = {r["server"]: r for r in db.latest_per_server()}
+    filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
     stale_after = max(180, inv.poll_interval_seconds * 3)
 
     servers: list[dict] = []
@@ -300,7 +301,8 @@ def _tv_payload() -> dict:
         # Antes disso o card fica ambar (instavel), nao vermelho.
         streak = db.fail_streak(cfg.name) if (d and not up) else None
         probs = scheduler.problems(
-            d or {"reachable": False, "error": "aguardando a primeira coleta"}, th, streak)
+            d or {"reachable": False, "error": "aguardando a primeira coleta"}, th, streak,
+            fila_hist=filas.get(cfg.name))
         crit = any(scheduler.critico(k) for k in probs)
         sev = 2 if crit else (1 if (probs or not up) else 0)
         ts = d["ts"] if d else None
@@ -344,8 +346,12 @@ def _tv_payload() -> dict:
             "app_ms": (d.get("app_ms") if d else None),
             "jobs": ({"ok": jobs.get("ok"), "failed": jobs.get("failed"),
                       "win": jobs.get("window_min"), "err": bool(jobs.get("error")),
-                      # fila: o numero que realmente denuncia RM parado
+                      # fila: `qp` e a fila viva (em curso + presa + esperando);
+                      # `qs` e so o que denuncia RM parado - execucao presa ou
+                      # esperando pickup, ja sem o residuo de host reiniciado.
                       "qp": (jobs.get("queue") or {}).get("pending"),
+                      "qs": ((jobs.get("queue") or {}).get("stuck") or 0)
+                            + ((jobs.get("queue") or {}).get("waiting") or 0),
                       "qmin": (jobs.get("queue") or {}).get("oldest_min")}
                      if jobs else None),
             "events": len(events),
@@ -501,7 +507,8 @@ def jobs_page(request: Request):
             r["server"], r["label"] = nome, rotulo
     # Fila do pool inteiro: e ela, e nao a contagem de erros, que diz se o RM
     # parou de processar. Job que termina com erro nao trava fila nenhuma.
-    fila = jobstats.queue()
+    th = _thresholds()
+    fila = jobstats.queue(None, th.get("jobs_stuck_min", 30), th.get("jobs_orphan_min", 360))
     return templates.TemplateResponse(
         "jobs.html", {"request": request, "pool": pool, "fila": fila,
                       "window": window, "version": __version__})
@@ -546,6 +553,7 @@ def ocorrencias_page(request: Request):
     th = _thresholds()
     ref = scheduler.broker_reference(th.get("broker_history_days"))
     estado = db.broker_estado()
+    filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
     abertos: list[dict] = []
     eventos: list[dict] = []
     for r in db.latest_per_server():
@@ -554,7 +562,7 @@ def ocorrencias_page(request: Request):
             continue
         streak = None if r.get("reachable") else db.fail_streak(nome)
         for chave, texto in scheduler.problems(r, th, streak, ref.get(nome),
-                                               estado.get(nome)).items():
+                                               estado.get(nome), filas.get(nome)).items():
             abertos.append({"server": nome, "key": chave, "label": _problema_label(chave),
                             "text": texto, "crit": scheduler.critico(chave),
                             "notifica": scheduler.notifica(chave), "ts": r.get("ts")})
@@ -642,6 +650,9 @@ async def admin_config(request: Request):
                              "down_after": _int("down_after", 3, 1, 10),
                              "jobs_failed": _int("jobs_failed", 3, 1, 1000),
                              "jobs_stuck_min": _int("jobs_stuck_min", 30, 5, 1440),
+                             "jobs_stuck_jobs": _int("jobs_stuck_jobs", 2, 1, 1000),
+                             "jobs_stuck_checks": _int("jobs_stuck_checks", 3, 1, 20),
+                             "jobs_orphan_min": _int("jobs_orphan_min", 360, 30, 10080),
                              "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))

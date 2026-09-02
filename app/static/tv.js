@@ -175,10 +175,13 @@
         t.push('<span class="jb' + (falhou ? " warn" : "") + '">jobs ' + s.jobs.win + "min: " +
           s.jobs.ok + " ok" + (falhou ? " &middot; " + s.jobs.failed + " com erro" : "") + "</span>");
       }
-      // Fila parada e outra historia: o que entrou e nao saiu significa RM sem
-      // processar - esse sim pinta o cartao (a severidade vem do servidor).
-      if (s.jobs.qp && s.jobs.qmin >= 30) {
-        t.push('<span class="jb warn">fila: ' + s.jobs.qp + " parada(s) ha " + s.jobs.qmin + "min</span>");
+      // Fila parada e outra historia: execucao presa ha tempo demais, ou com a
+      // hora programada vencida sem ninguem comecar, significa RM sem processar.
+      // Fila apenas cheia (jobs em curso) nao entra - nem execucao orfa de host
+      // reiniciado, que o backend ja separa e nao manda em `qs`.
+      if (s.jobs.qs) {
+        t.push('<span class="jb warn">fila: ' + s.jobs.qs + " parada(s)" +
+          (s.jobs.qmin ? " ha " + s.jobs.qmin + "min" : "") + "</span>");
       }
     }
     if (s.users !== null && s.users !== undefined) {
