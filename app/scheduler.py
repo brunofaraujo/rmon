@@ -25,8 +25,16 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   "down_after": 3, "commit_pct": 90, "broker_min_pct": 60,
                   "broker_min_kb": 0, "broker_settle_min": 10,
                   "broker_history_days": 30,
-                  # fila de jobs: minutos sem a fila andar para virar alerta
+                  # fila de jobs: janela sem nenhuma conclusao E idade a partir da
+                  # qual uma execucao em andamento passa a contar como presa
                   "jobs_stuck_min": 30,
+                  # quantas execucoes presas (ou esperando pickup) para alertar
+                  "jobs_stuck_jobs": 2,
+                  # coletas seguidas vendo a fila parada antes de alertar
+                  "jobs_stuck_checks": 3,
+                  # acima disso a execucao sem conclusao e residuo (host reiniciado
+                  # no meio), nao fila: nao conta para alerta nenhum
+                  "jobs_orphan_min": 360,
                   # falhas na janela SEM nenhum sucesso = falha em bloco
                   "jobs_all_failed": 10}
 
@@ -204,12 +212,17 @@ def service_groups(services: list[dict] | None) -> list[dict]:
 
 def problems(r: dict, th: dict, fail_streak: int | None = None,
              broker_ref: dict[str, int] | None = None,
-             broker_estavel: dict[str, bool] | None = None) -> dict[str, str]:
+             broker_estavel: dict[str, bool] | None = None,
+             fila_hist: list[dict] | None = None) -> dict[str, str]:
     """Problemas ativos de uma coleta. `fail_streak` = coletas consecutivas sem
     contato (db.fail_streak); enquanto ficar abaixo de `down_after`, a falha e
     tratada como instabilidade e nao vira DOWN - e o que evita a enxurrada de
     alertas quando o WinRM do host demora mais que o timeout de vez em quando.
     Sem esse argumento, mantem o comportamento antigo (alerta na primeira falha).
+
+    `fila_hist` = as ultimas leituras da fila deste host (db.fila_hist), da mais
+    nova para a mais velha, para que a fila travada precise se confirmar em
+    coletas seguidas antes de virar alerta.
     """
     p: dict[str, str] = {}
     if not r.get("reachable"):
@@ -238,11 +251,56 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
                        "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
     p.update(broker_problems(r, th, broker_ref, broker_estavel))
-    p.update(job_problems(r.get("jobs"), th))
+    p.update(job_problems(r.get("jobs"), th, fila_hist, p))
     return p
 
 
-def job_problems(jb: dict | None, th: dict) -> dict[str, str]:
+def fila_parada(fila: dict | None, th: dict) -> tuple[bool, str]:
+    """Esta leitura da fila mostra a fila TRAVADA? (veredito instantaneo)
+
+    Duas perguntas, nesta ordem:
+
+    1. a fila andou? `done_recent` > 0 e o fim da conversa - executor que
+       concluiu alguma coisa na janela nao esta travado, por mais velha que seja
+       a execucao mais antiga que ele carrega. Foi por nao perguntar isso que a
+       versao anterior alertava a noite inteira: "nada concluido ha 30min" e o
+       normal de um executor fora do horario comercial (nos ultimos 7 dias houve
+       de 24 a 71 intervalos assim por executor, o maior com 2,4 dias);
+    2. tem trabalho preso? ou execucao em andamento ha mais de `jobs_stuck_min`
+       (`stuck` - ja sem o residuo de host reiniciado, que a consulta separa em
+       `orphans`), ou execucao cuja hora programada venceu e ninguem comecou
+       (`waiting`). Sem uma coisa nem outra, a fila esta vazia, nao travada.
+
+    O minimo de execucoes (`jobs_stuck_jobs`) existe porque uma sozinha e ruido
+    conhecido: aparecem cerca de 11 execucoes assim a cada 90 dias no parque,
+    quase sempre isoladas. No incidente real de 18/08 foram 8 de uma vez, no
+    mesmo executor, com zero conclusoes - e isso o criterio pega 55min antes de
+    o servico cair e virar alerta de servico parado.
+    """
+    if not isinstance(fila, dict) or fila.get("error"):
+        return False, ""
+    minimo = max(1, int(th.get("jobs_stuck_jobs", 2) or 1))
+    concluidas = fila.get("done_recent")
+    if concluidas is None or concluidas > 0:
+        return False, ""
+    janela = fila.get("window_min") or th.get("jobs_stuck_min", 30)
+    presas = fila.get("stuck") or 0
+    aguardando = fila.get("waiting") or 0
+    if presas >= minimo:
+        idade = fila.get("oldest_min")
+        return True, (f"{presas} execucao(oes) em andamento ha mais de {janela}min"
+                      + (f" (a mais antiga ha {idade}min)" if idade is not None else "")
+                      + f" e nenhuma conclusao nesses {janela}min")
+    if aguardando >= minimo:
+        espera = fila.get("waiting_min")
+        return True, (f"{aguardando} execucao(oes) com a hora programada vencida sem ninguem "
+                      "iniciar" + (f" (a mais velha ha {espera}min)" if espera is not None else "")
+                      + f" e nenhuma conclusao em {janela}min")
+    return False, ""
+
+
+def job_problems(jb: dict | None, th: dict, fila_hist: list[dict] | None = None,
+                 ja_detectado: dict[str, str] | None = None) -> dict[str, str]:
     """Problemas vindos dos jobs do RM, separados por natureza.
 
     JOBS e aviso: execucao que termina em erro quase sempre e validacao ou regra
@@ -265,17 +323,21 @@ def job_problems(jb: dict | None, th: dict) -> dict[str, str]:
         p["JOBFAIL"] = (f"{falhas} execucoes de job em {janela}min e NENHUMA concluida com "
                         "sucesso: falha em bloco, nao validacao pontual")
 
-    fila = jb.get("queue") or {}
-    parado = int(th.get("jobs_stuck_min", 30) or 0)
-    pendentes = fila.get("pending")
-    mais_antiga = fila.get("oldest_min")
-    sem_concluir = fila.get("since_last_min")
-    if (parado and pendentes and mais_antiga is not None and mais_antiga >= parado
-            and (sem_concluir is None or sem_concluir >= parado)):
-        quando = ("nenhuma conclusao registrada" if sem_concluir is None
-                  else f"nada concluido ha {sem_concluir}min")
-        p["JOBQUEUE"] = (f"fila de jobs travada: {pendentes} execucao(oes) sem terminar, "
-                         f"a mais antiga ha {mais_antiga}min, {quando}")
+    travada, motivo = fila_parada(jb.get("queue"), th)
+    # Uma coleta so nao decide: a fila tem de aparecer travada em `jobs_stuck_checks`
+    # leituras seguidas. Sem o historico (chamada solta, coleta antiga sem o
+    # campo), vale o instantaneo - o mesmo criterio de `fail_streak` no DOWN.
+    if travada and fila_hist is not None:
+        precisa = max(1, int(th.get("jobs_stuck_checks", 3) or 1))
+        travada = (len(fila_hist) >= precisa
+                   and all(fila_parada(f, th)[0] for f in fila_hist[:precisa]))
+    # RM.Host parado ou host sem contato ja e alerta por si: repetir o mesmo
+    # incidente como "fila travada" so duplica a mensagem no celular.
+    if travada and any(k == "DOWN" or k.startswith("svc:RM.Host")
+                       for k in (ja_detectado or {})):
+        travada = False
+    if travada:
+        p["JOBQUEUE"] = f"fila de jobs travada: {motivo}"
     return p
 
 
@@ -300,7 +362,9 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 # A fila fica no mesmo bloco `jobs` de proposito: e a mesma
                 # coluna jsonb do banco, sem migracao de schema so para isso.
                 if isinstance(result.get("jobs"), dict):
-                    result["jobs"]["queue"] = jobstats.queue(jb.get("servidor"))
+                    result["jobs"]["queue"] = jobstats.queue(
+                        jb.get("servidor"), th.get("jobs_stuck_min", 30),
+                        th.get("jobs_orphan_min", 360))
             coletas.append((server, result))
 
         for server, result in coletas:
@@ -313,10 +377,11 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         # perguntas sao para o banco, uma vez por ciclo, nao por servidor.
         ref = broker_reference(th.get("broker_history_days"))
         estado = db.broker_estado()
+        filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
         for server, result in coletas:
             streak = 0 if result.get("reachable") else db.fail_streak(server.name)
             probs = problems(result, th, streak, ref.get(server.name),
-                             estado.get(server.name))
+                             estado.get(server.name), filas.get(server.name))
             prev = _last.get(server.name, {})
             new_keys = [k for k in probs if k not in prev]
             gone_keys = [k for k in prev if k not in probs]

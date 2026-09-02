@@ -42,7 +42,16 @@ defaults:
     # (jobs_all_failed) - esses sim sao problema de servidor.
     jobs_failed: 3
     jobs_all_failed: 10
+    # Fila travada != fila quieta. Para alertar, precisam valer as tres coisas:
+    # nenhuma conclusao em `jobs_stuck_min`, pelo menos `jobs_stuck_jobs`
+    # execucoes presas (em andamento ha mais de `jobs_stuck_min`) ou com a hora
+    # programada vencida sem ninguem iniciar, e a mesma leitura em
+    # `jobs_stuck_checks` coletas seguidas. Execucao sem conclusao ha mais de
+    # `jobs_orphan_min` e residuo de host reiniciado no meio, nao fila.
     jobs_stuck_min: 30
+    jobs_stuck_jobs: 2
+    jobs_stuck_checks: 3
+    jobs_orphan_min: 360
     # Commit charge (RAM + arquivo de paginacao ja reservados). E esse limite,
     # nao a RAM livre, que estoura com 0x800705AF e derruba a geracao do broker.
     commit_pct: 90

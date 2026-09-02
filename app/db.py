@@ -231,6 +231,32 @@ def broker_estado(days: int = 1) -> dict[str, dict[str, bool]]:
     return estado
 
 
+def fila_hist(n: int = 3) -> dict[str, list[dict]]:
+    """As ultimas `n` leituras da fila de jobs de cada host, da mais nova para a
+    mais velha.
+
+    Existe para o alerta de fila travada exigir confirmacao: uma unica leitura
+    dizendo "nada concluiu" pode ser a borda de uma janela ociosa, e era isso que
+    fazia o alerta abrir e fechar de tres em tres minutos. Uma consulta so para o
+    parque inteiro - a mesma ideia de broker_estado().
+    """
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT server, fila FROM (
+                   SELECT server, jobs->'queue' AS fila,
+                          row_number() OVER (PARTITION BY server ORDER BY ts DESC) AS rn
+                     FROM checks
+                    WHERE ts > now() - interval '6 hours'
+                      AND jsonb_typeof(jobs->'queue') = 'object'
+               ) x WHERE rn <= %s ORDER BY server, rn""",
+            (max(1, int(n)),),
+        ).fetchall()
+    hist: dict[str, list[dict]] = {}
+    for r in rows:
+        hist.setdefault(r["server"], []).append(r["fila"])
+    return hist
+
+
 def latest_per_server() -> list[dict]:
     with _conn() as c:
         rows = c.execute(

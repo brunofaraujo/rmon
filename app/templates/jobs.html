@@ -21,21 +21,29 @@
     <div class="kpi {{ 'warn' if pool.failed else 'ok' }}"><div class="val {{ 'txt-amber' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Terminaram com erro</div></div>
     <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total processado</div></div>
     {% if fila and fila.get('pending') is not none %}
-    <div class="kpi {{ 'bad' if fila.oldest_min and fila.oldest_min >= 30 else 'ok' }}">
-      <div class="val {{ 'txt-red' if fila.oldest_min and fila.oldest_min >= 30 else '' }}">{{ fila.pending }}</div>
-      <div class="lbl">Na fila{% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</div></div>
+    {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
+    <div class="kpi {{ 'bad' if presas else 'ok' }}">
+      <div class="val {{ 'txt-red' if presas else '' }}">{{ fila.pending }}</div>
+      <div class="lbl">Na fila{% if presas %} &middot; {{ presas }} parada(s){% endif %}</div></div>
     {% endif %}
     <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Solicitantes</div></div>
   </div>
 
-  <div class="alert {{ 'info' if not (fila and fila.oldest_min and fila.oldest_min >= 30) else '' }} small">
+  {% set presas = fila and ((fila.stuck or 0) + (fila.waiting or 0)) %}
+  <div class="alert {{ '' if presas else 'info' }} small">
     {% if fila and fila.error %}
       Nao deu para ler a fila: {{ fila.error }}
+    {% elif presas %}
+      <b>{{ fila.stuck or 0 }} execucao(oes) em andamento ha mais de {{ fila.window_min }}min</b>{% if fila.waiting %} e <b>{{ fila.waiting }}</b> com a hora programada vencida sem ninguem iniciar{% endif %}{% if fila.oldest_min is not none %}, a mais antiga ha <b>{{ fila.oldest_min }}min</b>{% endif %}.
+      Concluiram {{ fila.done_recent }} nesses {{ fila.window_min }}min{% if fila.since_last_min is not none %} (ultima ha {{ fila.since_last_min }}min){% endif %}.
+      Fila que nao anda e o que dispara alerta &mdash; job que <i>termina</i> com erro, nao.
     {% elif fila and fila.pending %}
-      <b>{{ fila.pending }} execucao(oes)</b> ainda sem conclusao (sem DATAFIMEXEC){% if fila.oldest_min is not none %}, a mais antiga ha <b>{{ fila.oldest_min }}min</b>{% endif %}{% if fila.since_last_min is not none %}; a ultima conclusao no pool foi ha {{ fila.since_last_min }}min{% endif %}.
-      Fila parada e o que dispara alerta &mdash; job que <i>termina</i> com erro, nao.
+      Fila andando: <b>{{ fila.running }} em andamento</b> dentro do tempo normal e {{ fila.done_recent }} conclusao(oes) nos ultimos {{ fila.window_min }}min.
     {% else %}
-      Fila vazia: tudo que entrou ja terminou. Job que termina com erro fica registrado aqui, mas nao dispara alerta &mdash; e validacao/regra de negocio da aplicacao.
+      Fila vazia: tudo que entrou ja terminou{% if fila and fila.done_recent %} ({{ fila.done_recent }} conclusao(oes) nos ultimos {{ fila.window_min }}min){% endif %}. Job que termina com erro fica registrado aqui, mas nao dispara alerta &mdash; e validacao/regra de negocio da aplicacao.
+    {% endif %}
+    {% if fila and fila.orphans %}
+      <span class="muted">&middot; {{ fila.orphans }} execucao(oes) orfa(s) (sem conclusao ha mais de {{ fila.residue_min }}min ou ja abortadas pelo RM): residuo de host reiniciado no meio, fora da conta de fila.</span>
     {% endif %}
   </div>
 

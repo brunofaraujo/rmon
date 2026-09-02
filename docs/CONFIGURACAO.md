@@ -29,7 +29,11 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     app_ms: 3000                   # app_health respondendo, porém > 3000ms = "lento"
     jobs_failed: 3                 # AVISO (só na tela) se >= N jobs terminaram com erro na janela
     jobs_all_failed: 10            # ALERTA: N+ execuções na janela e nenhuma com sucesso
-    jobs_stuck_min: 30             # ALERTA: fila parada há N minutos (nada concluído)
+    jobs_stuck_min: 30             # janela da fila: minutos sem NENHUMA conclusão e idade
+                                   # a partir da qual a execução em andamento conta como presa
+    jobs_stuck_jobs: 2             # quantas execuções presas (ou esperando pickup) para alertar
+    jobs_stuck_checks: 3           # coletas seguidas vendo a fila parada antes de alertar
+    jobs_orphan_min: 360           # acima disso a execução sem conclusão é resíduo, não fila
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
   service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
@@ -429,15 +433,27 @@ falha por job server e por solicitante, além das falhas recentes.
 - Use um login **somente-leitura** dedicado.
 - `servidor:` filtra pelo executor (coluna `SERVIDOR`, formato `NOME:porta`) — assim cada host contabiliza só os jobs que ele processou.
 - `success_status` / `failed_status` mapeiam os códigos de `STATUS` (padrão: `2` = sucesso; `5`/`7` = falha).
-- Além do placar sucesso × erro, o RMon lê a **fila**: execuções sem `DATAFIMEXEC`
-  (entraram e não saíram), a idade da mais antiga e há quanto tempo o pool não conclui
-  nada. A coluna de início varia entre versões do RM, então ela é descoberta no
-  `INFORMATION_SCHEMA` — não há nome de coluna chutado na consulta.
-- A fila conta só o que entrou nas **últimas 24h**, dos dois lados. Execução antiga que
-  ficou com `DATAFIMEXEC` nulo para sempre (job abortado, restart do `RM.Host` no meio)
-  é lixo histórico: contada, abriria um "fila travada" que nunca fecharia — e alerta que
-  nunca fecha mascara o próximo. O recorte também evita varrer anos de histórico a cada
-  ciclo de coleta.
+- Além do placar sucesso × erro, o RMon lê a **fila** e a separa em quatro números, em vez
+  de somar tudo em "pendentes":
+
+  | Campo | O que é |
+  |---|---|
+  | `running` | em andamento há menos de `jobs_stuck_min` — fila normal |
+  | `stuck` | em andamento há **mais** de `jobs_stuck_min` — candidata real a travamento |
+  | `waiting` | hora programada já venceu e **ninguém começou** — pool que parou de puxar |
+  | `orphans` | sem conclusão há mais de `jobs_orphan_min`, ou já abortada pelo RM — resíduo |
+
+  Mais `done_recent` (quantas concluíram na janela) e `since_last_min` (há quanto tempo foi
+  a última conclusão). A coluna de início varia entre versões do RM, então ela é descoberta
+  no `INFORMATION_SCHEMA` — não há nome de coluna chutado na consulta; o mesmo vale para
+  `EMCANCELAMENTO`/`STATUS`, cuja ausência apenas desliga o filtro de execução viva.
+- A separação existe porque somar tudo produzia alerta falso. Execução que ficou com
+  `DATAFIMEXEC` nulo para sempre (job abortado, restart do `RM.Host` no meio) aparece ~1,5
+  vez por dia no parque e, contada como fila, garantia a primeira metade da condição 24h
+  por dia; a outra metade ("nada concluído há 30min") é o normal de um executor fora do
+  horário comercial. Resultado: 50 alertas de fila travada em 14 dias, nenhum real. Hoje o
+  resíduo é classificado como `orphans` e fica fora de qualquer alerta — continua visível
+  na tela **Jobs**, que é onde ele interessa.
 
 ---
 
@@ -461,13 +477,36 @@ time a ignorar o canal.
 |---|---|---|---|
 | `JOBS` | jobs terminaram com erro na janela | **não** | âmbar |
 | `JOBSQL` | o RMon não conseguiu ler os jobs no SQL | **não** | âmbar |
-| `JOBQUEUE` | fila travada: entrou e não saiu, nada concluído | sim | vermelho |
+| `JOBQUEUE` | fila travada: trabalho preso **e** nada concluindo (ver abaixo) | sim | vermelho |
 | `JOBFAIL` | a janela inteira falhou, nenhum sucesso | sim | vermelho |
 | `DOWN`, `APP`, `svc:*` | servidor/serviço/aplicação fora | sim | vermelho |
 | demais (`MEM`, `DISK`, `COMMIT`, `broker:*`, `APPSLOW`) | capacidade e integridade | sim | âmbar |
 
 Os avisos continuam **registrados** no `alerts_log` e visíveis em `/ocorrencias` — o que
 muda é só o empurrão no celular. A lista está em `scheduler.AVISOS`/`scheduler.CRITICOS`.
+
+### Fila travada (`JOBQUEUE`) — o que precisa ser verdade
+
+Fila **quieta** não é fila **travada**. O alerta só sai quando as três condições valem ao
+mesmo tempo (`scheduler.fila_parada`):
+
+1. **nenhuma conclusão na janela** (`done_recent == 0` em `jobs_stuck_min`). Se o executor
+   concluiu qualquer coisa, ele não está travado — por mais velha que seja a execução mais
+   antiga que ele carrega;
+2. **trabalho preso**: pelo menos `jobs_stuck_jobs` execuções ou em andamento há mais de
+   `jobs_stuck_min` (`stuck`), ou com a hora programada vencida sem ninguém iniciar
+   (`waiting`). O resíduo (`orphans`) não conta;
+3. **confirmação**: a mesma leitura em `jobs_stuck_checks` coletas seguidas — o
+   antiflapping equivalente ao `down_after` do `DOWN`.
+
+E o alerta é **suprimido** quando o host já está `DOWN` ou com `RM.Host*` parado: é o mesmo
+incidente, e a mensagem de serviço já saiu.
+
+Os padrões vêm do comportamento medido no parque: em 7 dias, 17.723 execuções com média de
+4s de duração e **nenhuma** esperando mais de 5min entre a hora programada e o início; em 90
+dias, no máximo 2 execuções vencidas sem iniciar num mesmo dia. Já o incidente real de
+18/08 (executor que travou com 8 execuções em andamento e zero conclusões) é detectado
+55min antes de o serviço cair e virar alerta de serviço parado.
 
 ### Broker do RM (`defaults.broker`)
 
