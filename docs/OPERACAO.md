@@ -67,7 +67,8 @@ faixa 5–600). Não adianta ficar abaixo do `poll_interval_seconds` do inventá
 muda a cada coleta. O tema (escuro/claro) do mural segue o tema padrão do painel.
 
 Para pendurar na TV: crie um usuário `viewer` (ex.: `tv`) em **Usuários**, abra o navegador
-da TV em `http://<host>:8080/`, faça o login uma vez (a sessão é um cookie assinado) e
+da TV em `https://<host>/` (ver [HTTPS](INSTALACAO.md#71-https-nginx--certificado-próprio);
+instale a CA `http://<host>/rmon-ca.crt` na TV para não ter aviso), faça o login uma vez (a sessão é um cookie assinado) e
 clique em **Tela cheia**. Um admin vê o mesmo mural em `/tv` sem perder o painel completo.
 
 ## Usuários do painel
