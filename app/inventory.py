@@ -117,6 +117,7 @@ foreach ($entry in $paths) {
 
 # --- 2. Pasta de instalacao do RM (descoberta pelo caminho dos servicos) ---
 $svcPatterns = @(__PATTERNS__)
+$svcExclude = @(__EXCLUDE__)
 $watch = @(__WATCH__)
 $subpastas = @(__CUSTOM_FOLDERS__)
 $prefixoCustom = '__CUSTOM_PREFIX__'
@@ -126,6 +127,10 @@ if ($svcPatterns.Count -gt 0) {
         $casa = $false
         foreach ($p in $svcPatterns) {
             if ($s.Name -like $p -or $s.DisplayName -like $p) { $casa = $true; break }
+        }
+        # Excluido do monitor (defaults.service_exclude) nao indica pasta do RM
+        foreach ($x in $svcExclude) {
+            if ($s.Name -like $x -or $s.DisplayName -like $x) { $casa = $false; break }
         }
         if (-not $casa) { continue }
         $cmd = "$($s.PathName)".Trim()
@@ -229,6 +234,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         _PS_HELPER
         + _PS_TEMPLATE
         .replace("__PATTERNS__", ",".join(_ps_str(p) for p in patterns))
+        .replace("__EXCLUDE__", ",".join(_ps_str(x) for x in server.service_exclude or []))
         .replace("__WATCH__", ",".join(_ps_str(w) for w in _lista(cfg, "watch")))
         .replace("__PATHS__", ",".join(_ps_str(p) for p in _lista(cfg, "paths")))
         .replace("__CUSTOM_FOLDERS__", ",".join(_ps_str(c) for c in _lista(cfg, "custom_folders")))

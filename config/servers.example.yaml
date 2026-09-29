@@ -30,6 +30,12 @@ defaults:
   # Manual/Disabled aparece em ambar (parada de proposito).
   service_patterns:
     - "RM.Host*"
+  # Casam no curinga mas ficam fora do monitor: nao aparecem no painel, nao
+  # alertam e nao contam para o broker. O RM.Host.Cleanner e ferramenta de
+  # limpeza dispensavel - parado ou no ar, nao diz nada sobre o RM. Omitido,
+  # vale ["RM.Host.Clean*"]; [] desliga a exclusao. Servico fixo nao e afetado.
+  service_exclude:
+    - "RM.Host.Clean*"
   # Limiares dos alertas
   alerts:
     disk_pct: 90
@@ -67,8 +73,8 @@ defaults:
   broker:
     enabled: true
     files: ["_BrokerCustom.dat", "_Broker.dat"]
-    # Quem gera o broker ao subir. Cobrar o arquivo de uma pasta onde so o
-    # RM.Host.Cleanner esta no ar seria alarme falso: ele nao gera nada.
+    # Quem gera o broker ao subir. Cobrar o arquivo de uma pasta onde so um
+    # servico auxiliar esta no ar seria alarme falso: ele nao gera nada.
     # Pasta sem nenhum servico casando aqui usa qualquer servico dela.
     generators: ["RM.Host.Service*"]
   eventlog:
@@ -131,6 +137,7 @@ servers:
     role: app                # app | jobs | web | db | homolog
     # services: [...]          # opcional: sobrescreve defaults.services
     # service_patterns: [...]  # opcional: sobrescreve defaults.service_patterns
+    # service_exclude: [...]   # opcional: sobrescreve defaults.service_exclude
     app_health:
       url: "http://10.10.10.50:8051/"   # endpoint HTTP do RM para checar
       expect_status: 200

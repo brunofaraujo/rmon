@@ -68,6 +68,9 @@ class ServerConfig:
     # Padroes (curinga) expandidos no proprio host a cada coleta: o que casar
     # esta instalado, o que sumiu foi desinstalado e simplesmente nao aparece.
     service_patterns: list[str] = field(default_factory=list)
+    # Curingas que a descoberta deixa de fora, ainda que casem em
+    # service_patterns: servico que nao interessa ao monitor nem aparece.
+    service_exclude: list[str] = field(default_factory=list)
     app_health: dict[str, Any] | None = None
     cred: str = "default"
     jobs: dict[str, Any] | None = None
@@ -161,6 +164,25 @@ class Inventory:
         return [s for s in self.servers if not env or s.env == env]
 
 
+# O que `RM.Host*` traz junto e nao e o RM rodando: o RM.Host.Cleanner e uma
+# ferramenta de limpeza, dispensavel, que nem precisaria estar ativa - parado ou
+# no ar, nao diz nada sobre a saude da instalacao. As duas grafias (o servico
+# vem com "Cleanner" no parque) ficam cobertas pelo curinga.
+SERVICE_EXCLUDE_DEFAULT = ["RM.Host.Clean*"]
+
+
+def _exclude(raw: dict, defaults: dict) -> list[str]:
+    """Exclusoes efetivas: do servidor, senao de defaults, senao as nossas.
+
+    Lista vazia declarada e respeitada ([] = nao excluir nada), por isso a
+    presenca da chave conta, e nao a lista ser vazia.
+    """
+    for fonte in (raw, defaults):
+        if "service_exclude" in fonte:
+            return [str(x) for x in (fonte.get("service_exclude") or [])]
+    return list(SERVICE_EXCLUDE_DEFAULT)
+
+
 def load_inventory(path: str) -> Inventory:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     winrm = WinRMConfig(**(data.get("winrm") or {}))
@@ -177,6 +199,7 @@ def load_inventory(path: str) -> Inventory:
                 role=str(raw.get("role") or "").strip(),
                 services=list(raw.get("services") or default_services),
                 service_patterns=list(raw.get("service_patterns") or default_patterns),
+                service_exclude=_exclude(raw, defaults),
                 app_health=raw.get("app_health"),
                 cred=raw.get("cred", "default"),
                 jobs=raw.get("jobs"),
