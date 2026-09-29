@@ -41,6 +41,15 @@ $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Objec
 # (ex.: quantos RM.Host existem hoje) em vez de uma lista que envelhece.
 $svcNames = @(__SERVICES__)
 $svcPatterns = @(__PATTERNS__)
+# Exclusoes (__EXCLUDE__): casam no curinga mas nao interessam ao monitor
+# (ex.: RM.Host.Cleanner). Somem da descoberta e do broker; fixo nao e afetado.
+$svcExclude = @(__EXCLUDE__)
+function Test-Excluido($s) {
+    foreach ($x in $svcExclude) {
+        if ($s.Name -like $x -or $s.DisplayName -like $x) { return $true }
+    }
+    return $false
+}
 $allSvc = @(Get-CimInstance Win32_Service | Select-Object Name, DisplayName, State, StartMode, PathName)
 $services = New-Object System.Collections.ArrayList
 $seen = @{}
@@ -59,6 +68,7 @@ foreach ($n in $svcNames) {
 foreach ($p in $svcPatterns) {
     foreach ($s in @($allSvc | Where-Object { $_.Name -like $p -or $_.DisplayName -like $p } | Sort-Object Name)) {
         if ($seen[$s.Name]) { continue }
+        if (Test-Excluido $s) { continue }
         $seen[$s.Name] = $true
         [void]$services.Add([pscustomobject]@{
             name = $s.Name; status = $s.State; start = $s.StartMode
@@ -71,9 +81,9 @@ $services = @($services)
 # no lugar - e o RM passa a reusar esse cache truncado para sempre, subindo
 # "com sucesso" e sem as customizacoes. Aqui so medimos: tamanho e idade.
 $brokerFiles = @(__BROKER_FILES__)
-# Quem, dentro da pasta, realmente gera o broker. O Cleanner mora na mesma
-# instalacao do RM.Host.Service e nao gera nada: se ele estiver no ar sozinho,
-# a ausencia do arquivo e esperada, nao anomalia. Pasta onde nenhum servico
+# Quem, dentro da pasta, realmente gera o broker. Um servico auxiliar que more
+# na mesma instalacao do RM.Host.Service e nao gere nada, no ar sozinho, nao
+# torna a ausencia do arquivo uma anomalia. Pasta onde nenhum servico
 # casa com a lista cai no criterio antigo (qualquer servico dela vale) - assim
 # uma instalacao com nome fora do padrao nao fica sem vigilancia.
 $brokerGen = @(__BROKER_GENERATORS__)
@@ -88,7 +98,7 @@ if ($brokerFiles.Count -gt 0) {
         foreach ($p in $svcPatterns) {
             if ($s.Name -like $p -or $s.DisplayName -like $p) { $casa = $true; break }
         }
-        if (-not $casa) { continue }
+        if (-not $casa -or (Test-Excluido $s)) { continue }
         $cmd = "$($s.PathName)".Trim()
         if ($cmd -match '^\s*"([^"]+)"') { $exe = $matches[1] } else { $exe = ($cmd -split '\s+')[0] }
         if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { continue }
@@ -201,7 +211,7 @@ BROKER_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "files": ["_BrokerCustom.dat", "_Broker.dat"],
     # Servicos que geram o broker ao subir. Serve para nao cobrar o arquivo de
-    # uma pasta onde so o Cleanner (que nao gera broker) esta no ar.
+    # uma pasta onde so um servico auxiliar (que nao gera broker) esta no ar.
     "generators": ["RM.Host.Service*"],
 }
 
@@ -214,6 +224,7 @@ def broker_settings(defaults: dict[str, Any] | None) -> dict[str, Any]:
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     services = server.services or list(defaults.get("services") or [])
     patterns = server.service_patterns or list(defaults.get("service_patterns") or [])
+    exclude = list(server.service_exclude or [])
     el = defaults.get("eventlog") or {}
     logs = list(el.get("logs") or ["System", "Application"])
     lookback = int(el.get("lookback_hours", 24))
@@ -229,6 +240,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         _PS_TEMPLATE
         .replace("__SERVICES__", ",".join(_ps_str(s) for s in services))
         .replace("__PATTERNS__", ",".join(_ps_str(p) for p in patterns))
+        .replace("__EXCLUDE__", ",".join(_ps_str(x) for x in exclude))
         .replace("__LOGS__", ",".join(f"'{l}'" for l in logs))
         .replace("__LOOKBACK_H__", str(lookback))
         .replace("__NOISE_IDS__", ",".join(str(int(n)) for n in noise))

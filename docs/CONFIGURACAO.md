@@ -37,6 +37,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
   service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
+  service_exclude: ["RM.Host.Clean*"]   # casam no curinga, mas ficam fora do monitor
   eventlog:
     logs: [System, Application]
     lookback_hours: 24             # janela de ocorrências do Event Log
@@ -62,6 +63,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 | `cred` | — | Perfil de credencial (mapeia para `RMON_CRED_<PERFIL>_*` no `.env`). Padrão `default` |
 | `services` | — | Serviços Windows fixos a checar. Se omitido, usa `defaults.services` |
 | `service_patterns` | — | Curingas descobertos no próprio host a cada coleta. Se omitido, usa `defaults.service_patterns` |
+| `service_exclude` | — | Curingas que a descoberta deixa de fora. Se omitido, usa `defaults.service_exclude` (padrão `["RM.Host.Clean*"]`) |
 | `app_health` | — | `url`, `expect_status`, `timeout_sec` — checagem HTTP independente do WinRM |
 | `jobs` | — | `window_min`, `servidor`, `success_status`, `failed_status` — requer login SQL configurado |
 
@@ -77,12 +79,21 @@ quais serviços casam com o curinga (compara **nome** e **nome de exibição**,
 ex.: `RM.Host*`). O que sobra vira a lista real de RM.Hosts instalados, cada um
 com sua própria pílula no painel.
 
-O curinga serve para **descobrir**, não para agrupar: `RM.Host.Service` e
-`RM.Host.Cleanner` casam no mesmo padrão, mas são serviços diferentes, com
-funções diferentes, e o painel nunca os soma numa contagem só. O resumo
+O curinga serve para **descobrir**, não para agrupar: dois serviços que casam
+no mesmo padrão com nomes diferentes são serviços diferentes, com funções
+diferentes, e o painel nunca os soma numa contagem só. O resumo
 `RM.Host.Service · 3/4 instâncias em execução` só aparece para instâncias da
 **mesma** aplicação — nomes que diferem apenas pelo número no fim
 (`RM.Host.Service`, `RM.Host.Service02`).
+
+Nem tudo que casa no curinga interessa. `service_exclude` lista curingas
+(nome **ou** nome de exibição, como na descoberta) que ficam de fora: o serviço
+não aparece no painel, não alerta, não entra nas ações e não conta como dono da
+pasta para o broker nem para o inventário. O padrão, quando a chave é omitida, é
+`["RM.Host.Clean*"]` — o `RM.Host.Cleanner` é uma ferramenta de limpeza
+dispensável, que nem precisaria estar ativa; parado ou no ar, não diz nada sobre a
+saúde do RM. Declarar `service_exclude: []` desliga a exclusão. Serviço fixo
+(`services`) nunca é excluído: se foi nomeado, é para ser vigiado.
 
 A diferença de tratamento entre os dois:
 
@@ -522,7 +533,7 @@ julgado, e um incidente curto não escapa: esperar um tempo fixo deixou passar o
 rede para host sem coleta anterior.
 
 A **ausência** do arquivo só vira alerta se um serviço **daquela pasta** que gera broker
-estiver no ar — quem teria de tê-lo criado. `RM.Host.Cleanner` rodando ao lado não conta
+estiver no ar — quem teria de tê-lo criado. Um serviço auxiliar rodando ao lado não conta
 (não gera broker), nem um `RM.Host` de outra instalação. Quem gera sai de
 `defaults.broker.generators` (curingas, padrão `RM.Host.Service*`); pasta em que nenhum
 serviço casa com a lista volta ao critério antigo — qualquer serviço dela no ar vale —,

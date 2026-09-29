@@ -108,7 +108,7 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
     min_kb = float(th.get("broker_min_kb", 0) or 0)
     # Ausencia so e anomalia se um servico DAQUELA pasta subiu: e ele que teria
     # de ter gerado o arquivo. Com a instalacao parada, ninguem tinha mesmo de
-    # gerar - e o vizinho de outra pasta (ou o Cleanner, que nem gera broker)
+    # gerar - e o vizinho de outra pasta (ou um auxiliar, que nem gera broker)
     # nao serve de prova. Coleta antiga, sem os donos da pasta, cai no
     # comportamento anterior: qualquer servico descoberto no ar vale.
     legado_no_ar = any(
