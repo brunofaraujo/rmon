@@ -95,7 +95,44 @@ sudo ufw allow from 10.0.0.0/24 to any port 22 proto tcp
 sudo ufw default deny incoming && sudo ufw enable
 ```
 
-Para expor com TLS, coloque um reverse-proxy (nginx/caddy) na frente do `:8080`.
+## 7.1 HTTPS (nginx + certificado próprio)
+
+Navegadores com política *somente HTTPS* não abrem `http://...:8080`. O helper abaixo põe
+um **nginx** na 443 terminando o TLS e repassando ao uvicorn — a 8080 continua em HTTP,
+porque é por ela que os hosts Windows baixam os pacotes (`execution.base_url`):
+
+```bash
+sudo bash deploy/definir-https.sh                # libera 80/443 para as mesmas origens da 8080
+sudo bash deploy/definir-https.sh 10.0.0.0/24    # ou informe as origens explicitamente
+```
+
+O que ele faz (idempotente):
+
+- cria uma **CA local** (`/etc/rmon/tls/ca/`, 10 anos) e assina com ela o certificado do
+  servidor (825 dias) com SAN para o hostname e os IPs da VM (extras em `RMON_TLS_SAN`,
+  ex.: `RMON_TLS_SAN="DNS:rmon.empresa.local"`);
+- instala o site `deploy/nginx-rmon.conf` — 443 com TLS, 80 redireciona para a 443;
+- publica a CA em `http://<host>/rmon-ca.crt` para instalar nos clientes;
+- liga o timer `rmon-tls-renovar.timer`, que reemite o certificado do servidor 60 dias
+  antes de vencer **com a mesma CA** (quem já confia nela não percebe a troca).
+
+Sem instalar a CA o navegador mostra o aviso de certificado. Para sumir com ele, instale
+`rmon-ca.crt` como **raiz confiável** nas máquinas que abrem o painel:
+
+- **Windows (uma máquina)**: `certutil -addstore -f Root rmon-ca.crt` (prompt como admin).
+- **Windows (domínio)**: GPO → *Configuração do Computador → Políticas → Configurações do
+  Windows → Configurações de Segurança → Políticas de Chave Pública → Autoridades de
+  Certificação Raiz Confiáveis* → Importar.
+- **TV / Android**: *Configurações → Segurança → Criptografia e credenciais → Instalar
+  certificado → Certificado de CA*.
+
+Confira a impressão digital SHA-256 que o script imprime antes de confiar na CA. Se a
+empresa tiver uma CA interna (AD CS), prefira um certificado emitido por ela: sobrescreva
+`/etc/rmon/tls/rmon.crt`/`rmon.key`, rode `sudo systemctl reload nginx` e desligue o timer,
+que reemitiria com a CA local: `sudo systemctl disable --now rmon-tls-renovar.timer`.
+
+O nginx **não** envia HSTS de propósito: com CA própria, o HSTS impediria contornar o aviso
+em quem ainda não instalou a CA.
 
 ## 8. Verificar
 

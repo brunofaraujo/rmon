@@ -1,0 +1,10 @@
+[Unit]
+Description=RMonitor - checagem mensal do certificado HTTPS
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

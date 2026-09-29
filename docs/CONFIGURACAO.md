@@ -601,7 +601,8 @@ echo "$TOKEN"
 Na central, aponte o iframe para:
 
 ```
-http://<host-do-rmon>:8080/tv?token=<TOKEN>
+https://<host-do-rmon>/tv?token=<TOKEN>     # com HTTPS (deploy/definir-https.sh)
+http://<host-do-rmon>:8080/tv?token=<TOKEN>  # sem HTTPS
 ```
 
 O token vale **apenas** para `/tv` e `/api/tv` (leitura). Todo o resto continua
@@ -612,7 +613,7 @@ exigindo login. Ele também é aceito no cabeçalho `X-RMon-Token`. Sem
 > (novo valor no `.env` + `systemctl restart rmon`) se ela vazar.
 
 **Alternativa (exige HTTPS): cookie cross-site.** Se o RMonitor estiver atrás de
-um reverse-proxy TLS, dá para manter o login normal dentro do iframe:
+um reverse-proxy TLS (`deploy/definir-https.sh`), dá para manter o login normal dentro do iframe:
 
 ```
 RMON_COOKIE_SAMESITE=none

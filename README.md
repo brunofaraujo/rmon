@@ -55,7 +55,8 @@ servidores monitorados.
 ```mermaid
 flowchart LR
     subgraph VM["VM Linux (Ubuntu + systemd)"]
-        UV["uvicorn :8080"] --> APP["FastAPI (app.main)"]
+        NGX["nginx :443 (TLS)"] --> UV["uvicorn :8080"]
+        UV --> APP["FastAPI (app.main)"]
         APP --> SCH["APScheduler<br/>poll periódico"]
         APP --> PG[("PostgreSQL<br/>histórico / usuários / auditoria")]
         SCH --> COL["collector<br/>(pywinrm + httpx)"]
@@ -66,7 +67,7 @@ flowchart LR
     COL -- "TDS 1433 (pymssql)" --> SQL[("SQL Server<br/>GJOBXEXECUCAO")]
     COL -- "HTTP health" --> APPRM["Endpoint RM"]
     SCH -- "alertas" --> TG["Telegram / Slack"]
-    USER["Operador (navegador)"] -- "HTTP :8080" --> UV
+    USER["Operador (navegador)"] -- "HTTPS :443" --> NGX
 ```
 
 **Stack:** FastAPI · pywinrm · APScheduler · psycopg (PostgreSQL) · pymssql (SQL Server) · Jinja2 · uvicorn.
@@ -153,7 +154,7 @@ Referência completa dos campos em **[docs/CONFIGURACAO.md](docs/CONFIGURACAO.md
 - Papéis `admin`/`viewer`; toda ação sensível é **auditada** (tabela `audit_log`, tela *Logs*).
 - Segredos ficam **apenas** em `/opt/rmon/.env` (perm `600`) — **nunca** no repositório.
 - Serviço roda como usuário dedicado **não-privilegiado**, com sandbox `systemd` (`ProtectSystem=strict`, `NoNewPrivileges`, etc.).
-- Recomenda-se restringir a porta 8080 por firewall e pôr um **reverse-proxy TLS** na frente.
+- **HTTPS** na 443 via nginx com CA local: `sudo bash deploy/definir-https.sh` ([detalhes](docs/INSTALACAO.md#71-https-nginx--certificado-próprio)). Restrinja 8080/443 por firewall.
 - `.gitignore` já exclui `.env`, `config/servers.yaml`, `data/` e notas internas de infraestrutura.
 
 > ⚠️ **WinRM sobre HTTP (5985)** cifra a mensagem via NTLM, mas para segurança de transporte

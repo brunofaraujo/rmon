@@ -481,9 +481,9 @@
     }, 300000);   // a cada 5 min
   }
 
-  /* Wake lock so existe em contexto seguro (https ou localhost). Em producao o
-     painel roda em http, entao aqui e sempre inerte - por isso o "voltou a
-     aparecer, atualiza ja" mora fora desta funcao, senao se perderia junto. */
+  /* Wake lock so existe em contexto seguro (https ou localhost). Pela 443 (nginx)
+     funciona; quem ainda abre pela 8080 em http fica sem ele - por isso o "voltou
+     a aparecer, atualiza ja" mora fora desta funcao, senao se perderia junto. */
   function mantemAcesa() {
     if (!navigator.wakeLock || !navigator.wakeLock.request) { return null; }
     var trava = null;

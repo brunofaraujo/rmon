@@ -1,0 +1,7 @@
+[Unit]
+Description=RMonitor - reemite o certificado HTTPS se estiver perto de vencer
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/rmon/deploy/definir-https.sh --renovar
