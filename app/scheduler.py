@@ -369,8 +369,12 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
 
         for server, result in coletas:
             db.insert_check(server.name, result)
-            state = "OK" if result.get("reachable") else f"FALHA ({result.get('error')})"
-            log.info("coleta %s -> %s", server.name, state)
+            if result.get("reachable"):
+                # O caso comum: uma linha por servidor por ciclo, ~11 mil por
+                # dia so de sucesso. Em DEBUG, para nao afogar o resto.
+                log.debug("coleta %s -> OK", server.name)
+            else:
+                log.warning("coleta %s -> FALHA (%s)", server.name, result.get("error"))
 
         # Veredito do broker depois de gravar: a referencia e o historico de cada
         # host e a estabilidade compara esta coleta com a anterior - as duas

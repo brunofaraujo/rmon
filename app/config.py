@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 
-def _load_dotenv(path: str = ".env") -> None:
+def load_dotenv(path: str = ".env") -> None:
     """Carrega um .env simples para os.environ (para dev; em prod usa-se o systemd).
 
     Nao sobrescreve variaveis ja definidas no ambiente.
@@ -110,7 +110,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    _load_dotenv(os.environ.get("RMON_DOTENV", ".env"))
+    load_dotenv(os.environ.get("RMON_DOTENV", ".env"))
     return Settings(
         secret_key=os.environ.get("RMON_SECRET_KEY", ""),
         admin_user=os.environ.get("RMON_ADMIN_USER", "admin"),

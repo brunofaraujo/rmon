@@ -381,6 +381,7 @@ parser Python próprio (o `systemd` **não** usa `EnvironmentFile` — ver
 | `RMON_TV_TOKEN` | Token do mural em quiosque: libera `/tv?token=...` sem login (ver abaixo) |
 | `RMON_COOKIE_SAMESITE` | `lax` (padrão), `strict` ou `none`. Use `none` só com HTTPS |
 | `RMON_COOKIE_SECURE` | `1` marca o cookie de sessão como `Secure` (exige HTTPS) |
+| `RMON_LOG_LEVEL` | Verbosidade do log (padrão `INFO`). `DEBUG` devolve o que é calado por padrão — ver [OPERACAO.md](OPERACAO.md#logs) |
 
 Prefira sempre os **helpers** de `deploy/` para gravar segredos — eles preservam a
 permissão `600` e não deixam a senha no histórico:
