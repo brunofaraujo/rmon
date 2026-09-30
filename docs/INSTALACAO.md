@@ -95,6 +95,42 @@ sudo ufw allow from 10.0.0.0/24 to any port 22 proto tcp
 sudo ufw default deny incoming && sudo ufw enable
 ```
 
+A 8080 tem **dois públicos**, e o comentário da regra é o que os distingue:
+
+- **quem abre o painel** — sua rede de gestão e as estações/TVs do mural;
+- **quem baixa pacote** — cada host Windows monitorado busca o pacote de execução na 8080
+  (`execution.base_url`), então precisa de uma liberação própria, host a host.
+
+> **O comentário da regra de entrega precisa conter a palavra `pacote`.** É por esse
+> substring que o `definir-https.sh` (passo 7.1) reconhece o host de entrega e **não** lhe abre
+> 80/443. Uma regra de entrega comentada de outro jeito — ou sem comentário — é tratada como
+> cliente do painel e ganha acesso HTTPS, sem aviso nenhum.
+
+```bash
+# quem abre o painel
+sudo ufw allow from 10.0.0.9 to any port 8080 proto tcp comment "RMon painel - 10.0.0.9"
+# quem baixa pacote
+sudo ufw allow from 10.0.0.34 to any port 8080 proto tcp comment "RMon - entrega de pacote 10.0.0.34"
+```
+
+Depois do passo 7.1 o conjunto fica assim (`sudo ufw status`) — as linhas `80,443/tcp` são
+criadas pelo `definir-https.sh`, uma por origem de painel; a entrega de pacote continua só na
+8080 em HTTP, por causa do comentário:
+
+```
+To                 Action      From
+--                 ------      ----
+22/tcp             ALLOW IN    10.0.0.0/24
+8080/tcp           ALLOW IN    10.0.0.0/24
+8080/tcp           ALLOW IN    10.0.0.9      # RMon painel - 10.0.0.9
+8080/tcp           ALLOW IN    10.0.0.34     # RMon - entrega de pacote 10.0.0.34
+80,443/tcp         ALLOW IN    10.0.0.0/24   # RMon HTTPS - 10.0.0.0/24
+80,443/tcp         ALLOW IN    10.0.0.9      # RMon HTTPS - 10.0.0.9
+```
+
+Ao desativar um host do inventário, remova a regra de entrega dele
+(`sudo ufw status numbered` e `sudo ufw delete <n>`) — o RMon não mexe no firewall por conta.
+
 ## 7.1 HTTPS (nginx + certificado próprio)
 
 Navegadores com política *somente HTTPS* não abrem `http://...:8080`. O helper abaixo põe
@@ -114,7 +150,15 @@ O que ele faz (idempotente):
 - instala o site `deploy/nginx-rmon.conf` — 443 com TLS, 80 redireciona para a 443;
 - publica a CA em `http://<host>/rmon-ca.crt` para instalar nos clientes;
 - liga o timer `rmon-tls-renovar.timer`, que reemite o certificado do servidor 60 dias
-  antes de vencer **com a mesma CA** (quem já confia nela não percebe a troca).
+  antes de vencer **com a mesma CA** (quem já confia nela não percebe a troca);
+- **libera 80/443 no ufw**: sem argumentos, lê as origens já liberadas na 8080 — **menos as
+  regras cujo comentário contém `pacote`** (ver passo 7) e as IPv6 — e replica cada uma como
+  `80,443/tcp ALLOW` com comentário `RMon HTTPS - <origem>`; com argumentos, usa só as
+  origens informadas, sem consultar a 8080. Só emite `ufw allow` — nunca apaga nem altera
+  regra existente, e não toca na política default. Com ufw inativo, apenas avisa e segue.
+
+> A 80 é liberada junto da 443 porque é por ela que a CA é publicada
+> (`http://<host>/rmon-ca.crt`); fora disso ela só redireciona para a 443.
 
 Sem instalar a CA o navegador mostra o aviso de certificado. Para sumir com ele, instale
 `rmon-ca.crt` como **raiz confiável** nas máquinas que abrem o painel:
