@@ -20,6 +20,24 @@ Health check:
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
+### Logs
+
+O log é calibrado para que **sucesso seja silencioso e problema seja barulhento**:
+em `INFO` (o padrão) o processo escreve ~1.500 linhas por dia, contra ~30 mil se
+tudo falasse. O que fica de fora:
+
+| O que é calado | Por quê |
+|---|---|
+| `apscheduler`, `httpx` e `httpcore` abaixo de `WARNING` | Anunciavam cada disparo e cada requisição HTTP bem-sucedida — ~14 mil linhas/dia que a aplicação já registra por conta própria |
+| `coleta <host> -> OK` | Uma linha por servidor por ciclo (~11 mil/dia). A **falha** continua em `WARNING` |
+| Acessos 2xx/3xx a `/api/tv`, `/healthz`, `/favicon.ico` e `/static/` | Polling das TVs (~3,5 mil/dia). As navegações de página continuam no log, e **erro em rota de polling também** (só 2xx/3xx são filtrados) |
+
+Nada disso se perde de verdade: `RMON_LOG_LEVEL=DEBUG` no `.env` (seguido de
+`sudo systemctl restart rmon`) desliga o corte inteiro e devolve tudo, inclusive
+o `coleta -> OK`. Use ao depurar uma coleta específica e volte a `INFO` depois.
+
+A lista de silenciados vive em [`app/logconf.py`](../app/logconf.py).
+
 ## Telas do painel
 
 | Rota | Descrição | Acesso |

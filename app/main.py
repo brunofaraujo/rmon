@@ -21,11 +21,12 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import __version__, db, execution, inventory, jobstats, packages, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import PAPEIS, load_inventory, load_settings
+from .logconf import setup_logging
 from .scheduler import build_scheduler, poll_all, poll_inventory, scan_packages
 from .security import hash_password, verify_password
 
 log = logging.getLogger("rmon")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+setup_logging()
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
