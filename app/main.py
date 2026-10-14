@@ -15,10 +15,11 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, execution, inventory, jobstats, packages, scheduler
+from . import __version__, db, execution, inventory, jobstats, nlb, packages, scheduler
 from .collector import list_sessions, logoff_session, service_action
 from .config import PAPEIS, load_inventory, load_settings
 from .logconf import setup_logging
@@ -524,6 +525,12 @@ PROBLEMA_LABEL = {
     "MEM": "Memoria", "DISK": "Disco", "COMMIT": "Commit charge",
     "JOBS": "Jobs com erro", "JOBSQL": "Leitura dos jobs",
     "JOBQUEUE": "Fila de jobs", "JOBFAIL": "Jobs falhando em bloco",
+    # decisoes do NLB (alerts_log.kind = "nlb")
+    "drain": "NLB: drenado", "rejoin": "NLB: reingressado",
+    "would_drain": "NLB: drenaria", "would_rejoin": "NLB: reingressaria",
+    "blocked": "NLB: drenagem bloqueada", "unreachable_sick": "NLB: doente sem WinRM",
+    "out_unowned": "NLB: fora do cluster", "recovered": "NLB: recuperado",
+    "nlb_error": "NLB: leitura", "failed": "NLB: acao falhou",
 }
 
 
@@ -586,6 +593,68 @@ def ocorrencias_page(request: Request):
         {"request": request, "abertos": abertos, "rows": eventos, "hist": hist,
          "horas": horas, "alvo": alvo, "version": __version__},
     )
+
+
+def _nlb_redirect(request: Request, msg: str) -> RedirectResponse:
+    request.session["nflash"] = msg
+    return RedirectResponse("/nlb", status_code=303)
+
+
+@app.get("/nlb", response_class=HTMLResponse)
+def nlb_page(request: Request):
+    """Estado de cada no do NLB, o que a automacao enxerga e o que faria."""
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    inv = STATE["inv"]
+    cfg = nlb.settings_for(inv.defaults)
+    agora = time.time()
+    coletas = {r["server"]: r for r in db.latest_per_server()}
+    vistas = nlb.views_from(inv, coletas, agora)
+    estado = (nlb.load_state() or {}).get("nodes", {})
+    nos = []
+    for v in vistas:
+        st = estado.get(v["name"], {})
+        nos.append({
+            **v, "st": st,
+            "status_label": nlb.status_label(v.get("status")),
+            "ativo": v.get("status") in nlb.ATIVOS,
+            "fora": v.get("status") in nlb.FORA,
+            "sinais": nlb.sick_reasons(v, vistas, cfg, st, agora),
+            "hold": bool(st.get("hold")) or v["name"] in cfg["hold"],
+            "ts": (coletas.get(v["name"]) or {}).get("ts"),
+        })
+    hist = [a for a in db.recent_alerts(24 * 7, 300) if a.get("kind") == "nlb"]
+    for a in hist:
+        a["label"] = _problema_label(a["problem"])
+    return templates.TemplateResponse(
+        "nlb.html",
+        {"request": request, "nos": nos, "cfg": cfg, "hist": hist[:80],
+         "flash": request.session.pop("nflash", None), "version": __version__})
+
+
+@app.post("/nlb/acao")
+async def nlb_acao(request: Request):
+    """Acao manual num no do NLB (admin, auditada).
+
+    drain/rejoin executam no host e exigem o nome do servidor digitado, como as
+    instalacoes; hold/release so ligam e desligam a manutencao no RMon.
+    """
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    nome = form.get("server") or ""
+    acao = form.get("action") or ""
+    if acao in ("drain", "rejoin") and (form.get("confirm") or "").strip() != nome:
+        return _nlb_redirect(request, "Para drenar ou reingressar, digite o nome do servidor "
+                                      "exatamente como aparece na tela. Nada foi feito.")
+    coletas = {r["server"]: r for r in db.latest_per_server()}
+    ok, msg = await run_in_threadpool(nlb.manual, STATE["inv"], coletas, nome, acao,
+                                      request.session.get("user") or "?")
+    log.warning("NLB manual %s %s por %s -> %s (%s)", acao, nome,
+                request.session.get("user"), ok, msg)
+    return _nlb_redirect(request, f"{nome}: {acao} -> {'ok' if ok else 'NAO FEITO'}: {msg}")
 
 
 @app.get("/profile", response_class=HTMLResponse)

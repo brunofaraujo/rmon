@@ -187,10 +187,34 @@ if ($jrName) {
         count = $jrAll.Count; total_mb = [math]::Round([double]$jrSum / 1MB, 0)
         top = $jrTop; computer = $env:COMPUTERNAME }
 }
+# NLB + RDP (so nos nos declarados com `nlb: true`): estado do proprio no no
+# cluster e quantos logons RDP autenticaram (1149) x viraram sessao (21/25)
+# na janela. E a diferenca entre os dois que denuncia o no que aceita o
+# usuario mas nao consegue abrir a sessao - coisa que o NLB nao enxerga.
+$nlb = $null
+if (__NLB__) {
+    $nlb = [ordered]@{ status = $null; cluster = $null; host_id = $null; auth = $null; sess = $null
+                       window_min = __RDP_WIN__; error = $null }
+    try {
+        $me = @(Get-CimInstance -Namespace root/MicrosoftNLB -ClassName MicrosoftNLB_Node -ErrorAction Stop |
+            Where-Object { $_.ComputerName -eq $env:COMPUTERNAME -or $_.ComputerName -like "$($env:COMPUTERNAME).*" })
+        if ($me.Count -gt 0) {
+            $nlb.status = [int]$me[0].StatusCode
+            $partes = "$($me[0].Name)".Split(':')
+            $nlb.cluster = $partes[0]
+            if ($partes.Count -gt 1) { $nlb.host_id = [int]$partes[1] }
+        } else { $nlb.error = 'no local nao encontrado em MicrosoftNLB_Node' }
+    } catch { $nlb.error = "$($_.Exception.Message)".Trim() }
+    $rdpSince = (Get-Date).AddMinutes(-__RDP_WIN__)
+    $nlb.auth = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; Id = 1149; StartTime = $rdpSince } -ErrorAction SilentlyContinue).Count
+    $nlb.sess = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'; Id = 21, 25; StartTime = $rdpSince } -ErrorAction SilentlyContinue).Count
+    $nlb = [pscustomobject]$nlb
+}
 [pscustomobject]@{
     cpu = $cpu; mem_pct = $memPct; mem_total_mb = [math]::Round($memTotal / 1024, 0)
     uptime_sec = [math]::Round($uptime, 0); disks = $disks; services = $services; events = $events
     users_count = $ucount; broker = $broker; commit_pct = $commitPct; jobrunners = $jobrunners
+    nlb = $nlb
 } | ConvertTo-Json -Depth 5 -Compress
 """
 
@@ -289,7 +313,17 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__BROKER_GENERATORS__", ",".join(_ps_str(g) for g in broker_gen))
         .replace("__JR_NAME__", jr_name)
         .replace("__JR_TOP__", str(jr_top))
+        .replace("__NLB__", "$true" if getattr(server, "nlb", False) else "$false")
+        .replace("__RDP_WIN__", str(_nlb_window(defaults)))
     )
+
+
+def _nlb_window(defaults: dict[str, Any] | None) -> int:
+    """Janela (min) da contagem de eventos RDP - a mesma que o nlb.py julga."""
+    try:
+        return max(1, int(((defaults or {}).get("nlb") or {}).get("window_min", 15)))
+    except (TypeError, ValueError):
+        return 15
 
 
 def _winrm_session(host: str, wc: WinRMConfig, user: str, pw: str) -> winrm.Session:
@@ -550,6 +584,59 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
         return False, f"{type(exc).__name__}: {exc}"[:200]
 
 
+# --- NLB: drenar / reingressar o proprio no ---
+# Comandos FIXOS (nada vindo de formulario entra no script). nlb.exe atua no no
+# local pelo driver, sem WMI remoto nem "controle remoto" do NLB - por isso roda
+# pela mesma sessao WinRM da coleta. O estado antes/depois vem do WMI local.
+_PS_NLB_TEMPLATE = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+function Get-NlbLocalStatus {
+    $me = @(Get-CimInstance -Namespace root/MicrosoftNLB -ClassName MicrosoftNLB_Node -ErrorAction Stop |
+        Where-Object { $_.ComputerName -eq $env:COMPUTERNAME -or $_.ComputerName -like "$($env:COMPUTERNAME).*" })
+    if ($me.Count -gt 0) { [int]$me[0].StatusCode } else { $null }
+}
+$antes = Get-NlbLocalStatus
+$out = @()
+__ACTION__
+Start-Sleep -Seconds 5
+$depois = Get-NlbLocalStatus
+[pscustomobject]@{ before = $antes; after = $depois; output = (($out -join ' ') -replace '\s+', ' ').Trim() } | ConvertTo-Json -Compress
+"""
+_PS_NLB_ACTION = {
+    "drain": "$out += (& nlb.exe drainstop 2>&1 | Out-String)",
+    # suspenso precisa de resume antes do start
+    "rejoin": ("if ($antes -eq 1013) { $out += (& nlb.exe resume 2>&1 | Out-String) }\n"
+               "$out += (& nlb.exe start 2>&1 | Out-String)"),
+}
+NLB_OK_AFTER = {"drain": {1005, 1009}, "rejoin": {1006, 1007, 1008}}
+
+
+def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool, str]:
+    """drainstop (action="drain") ou start (action="rejoin") do NLB no proprio host.
+
+    Sucesso e o estado DEPOIS do comando, lido do WMI: drenando/parado para
+    drain, convergindo/convergido para rejoin. A saida do nlb.exe vem junto so
+    para a auditoria.
+    """
+    if action not in _PS_NLB_ACTION:
+        return False, "acao invalida"
+    user, pw = credential_for(server.cred)
+    if not user or not pw:
+        return False, f"sem credencial (perfil '{server.cred}')"
+    script = _PS_NLB_TEMPLATE.replace("__ACTION__", _PS_NLB_ACTION[action])
+    try:
+        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=90)
+        if r.status_code != 0:
+            return False, _decode(r.std_err)[:300] or "WinRM status != 0"
+        data = json.loads(_decode(r.std_out) or "{}")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    depois = data.get("after")
+    ok = depois in NLB_OK_AFTER[action]
+    return ok, f"estado {data.get('before')} -> {depois}; nlb.exe: {str(data.get('output') or '')[:200]}"
+
+
 def collect_server(
     server: ServerConfig, wc: WinRMConfig, defaults: dict[str, Any]
 ) -> dict[str, Any]:
@@ -586,6 +673,7 @@ def collect_server(
             "users_count": data.get("users_count"),
             "broker": _as_list(data.get("broker")),
             "commit_pct": data.get("commit_pct"),
+            "nlb": data.get("nlb") if isinstance(data.get("nlb"), dict) else None,
         })
         jr = data.get("jobrunners")
         if isinstance(jr, dict):

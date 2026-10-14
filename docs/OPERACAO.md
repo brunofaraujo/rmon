@@ -51,6 +51,7 @@ A lista de silenciados vive em [`app/logconf.py`](../app/logconf.py).
 | `/pacotes/catalogo` | Versões disponíveis: repositório de pacotes baixados do TDN, vínculos e registro manual | admin |
 | `/pacotes/tarefas` | Instalações: pré-voo (somente leitura) e, se armada, execução de pacotes nos hosts | admin |
 | `/sessions` | Sessões RDP ao vivo (ocioso e logon em colunas separadas); encerrar sessões selecionadas, com barra de progresso host a host. Aceita `?server=` e `?user=` para abrir já filtrada | admin p/ logoff |
+| `/nlb` | NLB dos terminal servers: estado de cada nó, sinais de saúde, o que a automação faria/fez; drenar, reingressar, manutenção ([NLB.md](NLB.md)) | admin |
 | `/logs` | Auditoria de ações | admin |
 | `/admin` | Limiares de alerta, tema/refresh da UI e resumo de usuários | admin |
 | `/admin/usuarios` | Cadastro de usuários: criar, editar, papel, ativar/desativar, senha, excluir | admin |

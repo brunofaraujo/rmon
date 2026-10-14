@@ -10,7 +10,7 @@ from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, execution, inventory, jobstats, notify, packages
+from . import db, execution, inventory, jobstats, nlb, notify, packages
 from .collector import collect_server
 from .config import Inventory, Settings
 from .inventory import collect_inventory
@@ -496,6 +496,13 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {server.name} ({server.host})\n" + "\n".join(msgs))
             _last[server.name] = probs
+
+        # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
+        # ciclo. Nunca derruba a coleta - erro aqui vira log.
+        try:
+            nlb.run_cycle(inv, {s.name: r for s, r in coletas})
+        except Exception:  # noqa: BLE001
+            log.exception("NLB: falha no ciclo de avaliacao")
 
 
 def poll_inventory(inv: Inventory, settings: Settings) -> None:
