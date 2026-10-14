@@ -66,6 +66,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 | `service_exclude` | — | Curingas que a descoberta deixa de fora. Se omitido, usa `defaults.service_exclude` (padrão `["RM.Host.Clean*"]`) |
 | `app_health` | — | `url`, `expect_status`, `timeout_sec` — checagem HTTP independente do WinRM |
 | `jobs` | — | `window_min`, `servidor`, `success_status`, `failed_status` — requer login SQL configurado |
+| `nlb` | — | `true` = nó de cluster NLB de terminal server: coleta o estado do NLB e os logons RDP e entra na drenagem/reingresso automático (ver [NLB.md](NLB.md)) |
 
 ### Serviços fixos x descobertos (`service_patterns`)
 
@@ -492,6 +493,7 @@ time a ignorar o canal.
 | `JOBQUEUE` | fila travada: trabalho preso **e** nada concluindo (ver abaixo) | sim | vermelho |
 | `JOBFAIL` | a janela inteira falhou, nenhum sucesso | sim | vermelho |
 | `DOWN`, `APP`, `svc:*` | servidor/serviço/aplicação fora | sim | vermelho |
+| `JOBRUNNER` | um `RM.Host.JobRunner` passou de `jobrunner_gb` (8 GB): job descontrolado a caminho de esgotar o commit | sim | âmbar |
 | demais (`MEM`, `DISK`, `COMMIT`, `broker:*`, `APPSLOW`) | capacidade e integridade | sim | âmbar |
 
 Os avisos continuam **registrados** no `alerts_log` e visíveis em `/ocorrencias` — o que
@@ -577,6 +579,12 @@ segundos, e a tentativa seguinte responde em menos de um segundo. Por isso:
 Para voltar ao comportamento antigo (alertar na primeira falha), use `down_after: 1`.
 
 ---
+
+## NLB dos terminal servers (`defaults.nlb`)
+
+Drenagem e reingresso automáticos dos nós do cluster NLB pela saúde de aplicação.
+**Modo `alert` por padrão** (avisa e audita o que faria, sem tocar no NLB). Desenho,
+sinais, travas de segurança e como ativar o modo `auto`: [NLB.md](NLB.md).
 
 ## Embutir o mural (`/tv`) em outro painel via iframe
 

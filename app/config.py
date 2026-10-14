@@ -74,6 +74,9 @@ class ServerConfig:
     app_health: dict[str, Any] | None = None
     cred: str = "default"
     jobs: dict[str, Any] | None = None
+    # No de cluster NLB de terminal server: coleta o estado do NLB e os logons
+    # RDP, e entra na drenagem/reingresso automatico (ver app/nlb.py).
+    nlb: bool = False
 
 
 def credential_for(profile: str) -> tuple[str, str]:
@@ -203,6 +206,7 @@ def load_inventory(path: str) -> Inventory:
                 app_health=raw.get("app_health"),
                 cred=raw.get("cred", "default"),
                 jobs=raw.get("jobs"),
+                nlb=bool(raw.get("nlb", False)),
             )
         )
     ambientes = {str(k): str(v) for k, v in (data.get("environments") or {}).items()}

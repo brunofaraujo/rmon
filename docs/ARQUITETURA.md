@@ -41,7 +41,9 @@ flowchart TD
 5. `scheduler._problems` avalia o resultado contra os limiares; problemas **novos** e
    **resolvidos** viram registros em `alerts_log` e, se houver canal, notificação
    (comparando com o estado anterior em memória — só transições).
-6. A cada 6h, `db.prune` remove histórico antigo.
+6. Com as coletas do ciclo, `nlb.run_cycle` avalia os nós com `nlb: true` e decide
+   drenar/reingressar no NLB (só executa no modo `auto`) — ver [NLB.md](NLB.md).
+7. A cada 6h, `db.prune` remove histórico antigo.
 
 O primeiro ciclo é disparado imediatamente no start (thread única) para popular o
 painel sem esperar o primeiro intervalo.
@@ -122,6 +124,7 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/pacotes/catalogo/varrer` | POST | Relê o repositório de pacotes (admin) |
 | `/pacotes/catalogo/vincular` | POST | Liga um pacote baixado a um item do inventário (admin) |
 | `/pacotes/tarefas` | POST | Enfileira um pré-voo ou (se armado) uma instalação (admin) |
+| `/nlb/acao` | POST | Drenar/reingressar um nó do NLB ou ligar/desligar a manutenção (admin, auditado) |
 | `/pacotes/stage/{id}` | GET | Entrega o pacote ao host durante a instalação — sem sessão, com HMAC e prazo, só com a execução habilitada |
 
 ## Perfil `viewer` (quiosque)

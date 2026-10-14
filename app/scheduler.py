@@ -10,7 +10,7 @@ from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, execution, inventory, jobstats, notify, packages
+from . import db, execution, inventory, jobstats, nlb, notify, packages
 from .collector import collect_server
 from .config import Inventory, Settings
 from .inventory import collect_inventory
@@ -36,7 +36,12 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # no meio), nao fila: nao conta para alerta nenhum
                   "jobs_orphan_min": 360,
                   # falhas na janela SEM nenhum sucesso = falha em bloco
-                  "jobs_all_failed": 10}
+                  "jobs_all_failed": 10,
+                  # RM.Host.JobRunner com mais que isso (GB de memoria privada):
+                  # job descontrolado a caminho de esgotar o commit do host
+                  # (13/10/2026: 5 a 8 h crescendo devagar e depois 7,5 -> 60 GB
+                  # em 20 min). 0 desliga.
+                  "jobrunner_gb": 8}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -246,6 +251,12 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         p["DISK"] = f"disco {main.get('drive')} em {main.get('used_pct')}%"
     if r.get("app_ok") is True and r.get("app_ms") is not None and r["app_ms"] > th["app_ms"]:
         p["APPSLOW"] = f"app_health lento: {r['app_ms']}ms"
+    jr = r.get("jobrunner") if isinstance(r.get("jobrunner"), dict) else None
+    limite_jr = float(th.get("jobrunner_gb", 8) or 0)
+    if jr and limite_jr and (jr.get("top_gb") or 0) >= limite_jr:
+        p["JOBRUNNER"] = (f"RM.Host.JobRunner PID {jr.get('top_pid')} com {jr.get('top_gb')} GB "
+                          f"(limite {limite_jr:g} GB): job descontrolado pode esgotar o commit "
+                          "e derrubar o terminal server")
     commit = r.get("commit_pct")
     if commit is not None and commit >= th.get("commit_pct", 90):
         p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
@@ -401,6 +412,13 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {server.name} ({server.host})\n" + "\n".join(msgs))
             _last[server.name] = probs
+
+        # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
+        # ciclo. Nunca derruba a coleta - erro aqui vira log.
+        try:
+            nlb.run_cycle(inv, {s.name: r for s, r in coletas})
+        except Exception:  # noqa: BLE001
+            log.exception("NLB: falha no ciclo de avaliacao")
 
 
 def poll_inventory(inv: Inventory, settings: Settings) -> None:
