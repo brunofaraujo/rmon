@@ -35,6 +35,12 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     jobs_stuck_checks: 3           # coletas seguidas vendo a fila parada antes de alertar
     jobs_orphan_min: 360           # acima disso a execução sem conclusão é resíduo, não fila
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
+    jobrunner_warn_gb: 4           # ALERTA (âmbar): um RM.Host.JobRunner com 4+ GB de memória privada
+    jobrunner_gb: 8                # ALERTA (vermelho): 8+ GB — o commit do host esgota em minutos
+  jobrunner:                       # medição dos processos que executam os jobs do RM
+    enabled: true
+    process: RM.Host.JobRunner     # nome do processo (sem .exe)
+    top: 5                         # quantos dos maiores vão para o payload
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
   service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
   service_exclude: ["RM.Host.Clean*"]   # casam no curinga, mas ficam fora do monitor
@@ -493,7 +499,6 @@ time a ignorar o canal.
 | `JOBQUEUE` | fila travada: trabalho preso **e** nada concluindo (ver abaixo) | sim | vermelho |
 | `JOBFAIL` | a janela inteira falhou, nenhum sucesso | sim | vermelho |
 | `DOWN`, `APP`, `svc:*` | servidor/serviço/aplicação fora | sim | vermelho |
-| `JOBRUNNER` | um `RM.Host.JobRunner` passou de `jobrunner_gb` (8 GB): job descontrolado a caminho de esgotar o commit | sim | âmbar |
 | demais (`MEM`, `DISK`, `COMMIT`, `broker:*`, `APPSLOW`) | capacidade e integridade | sim | âmbar |
 
 Os avisos continuam **registrados** no `alerts_log` e visíveis em `/ocorrencias` — o que
@@ -563,6 +568,29 @@ grande e voltou pequeno, e assim fica.
 O `commit_pct` é a causa raiz, não um extra: é o limite de *commit* — e não a RAM livre —
 que estoura com `ERROR_COMMITMENT_LIMIT (0x800705AF)` e derruba a geração do broker.
 Procedimento de recuperação em [OPERACAO.md](OPERACAO.md#broker-truncado-customizações-não-carregam).
+
+### JobRunner estourando a memória
+
+Cada job do RM roda num processo `RM.Host.JobRunner` próprio. O coletor mede a memória
+**privada** (é ela que conta no *commit*) dos maiores, e o alerta é por processo, em dois
+níveis com chaves separadas — a escalada notifica de novo e o aviso não "resolve" quando o
+crítico acende:
+
+| Chave | Padrão | Problema | Cor |
+|---|---|---|---|
+| `alerts.jobrunner_warn_gb` | `4` | `jobrunner:<pid>` | âmbar, notifica |
+| `alerts.jobrunner_gb` | `8` | `jobrunner-crit:<pid>` | vermelho, notifica |
+
+`0` desliga o nível. Quando algum processo passa do limiar, a coleta consulta a
+`GJOBXEXECUCAO` pelo `PROCESSID` + `SERVIDOR` do host e o alerta já sai com **job,
+usuário, início, progresso e o filtro** usado (recortado do `VALORPARAMETROS`).
+
+Por que dois níveis: nos quatro estouros conhecidos (06/10 no srv11 e no .188, 13/10 no
+.34 e no .190 — todos o mesmo relatório gerado só com `STURMADISC.CODCOLIGADA = '3'`, sem
+turma), o processo cresceu devagar por horas até ~7 GB e explodiu para 25–80 GB em
+minutos. O cruzamento de **8 GB** aconteceu a 1 minuto da explosão (o host caiu 10–30 min
+depois); o de **4 GB**, de 3,5 a 6 h antes — tempo de cancelar o job. Nenhum JobRunner
+passou de 1 GB fora desses incidentes nos 14 dias medidos.
 
 ### Antiflapping do alerta DOWN
 

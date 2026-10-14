@@ -7,7 +7,6 @@ ele, e dois nos doentes no mesmo dia.
 from __future__ import annotations
 
 from app import nlb
-from app.scheduler import problems, DEFAULT_ALERTS
 
 T0 = 1_760_000_000.0
 MIN = 60
@@ -23,7 +22,8 @@ def no(nome, status=1007, users=10, auth=6, sess=6, commit=30.0, reach=True,
         "services": [{"name": "RM.Host.Service", "status": "Running" if rm else "Stopped", "src": "auto"},
                      {"name": "RM.Host.Service1", "status": "Running", "src": "auto"}],
         "nlb": {"status": status, "cluster": cluster, "host_id": 1, "auth": auth, "sess": sess},
-        "jobrunner": {"top_gb": jr, "top_pid": 4242} if jr is not None else None,
+        "jobrunners": ({"count": 30, "top": [{"pid": 4242, "private_mb": jr * 1024}, {"pid": 7, "private_mb": 70}]}
+                       if jr is not None else None),
         "error": None if reach else "WinRMOperationTimeoutError",
     }
     return nlb.view(nome, "10.0.0." + nome[-1], r, now)
@@ -343,11 +343,12 @@ def test_drenagem_manual_respeita_o_piso():
     assert ok
 
 
-# ------------------------------------------------------------- aviso precoce no painel
+# ------------------------------------------------------------- medicao do JobRunner (main #32)
 
-def test_alerta_de_jobrunner_inchado():
-    r = {"reachable": True, "services": [], "disks": [], "jobrunner": {"top_gb": 9.3, "top_pid": 12936}}
-    p = problems(r, dict(DEFAULT_ALERTS))
-    assert "JOBRUNNER" in p and "12936" in p["JOBRUNNER"]
-    r["jobrunner"]["top_gb"] = 2.1
-    assert "JOBRUNNER" not in problems(r, dict(DEFAULT_ALERTS))
+def test_view_le_o_maior_jobrunner_da_medicao_jobrunners():
+    v = no("n1", jr=30.0)
+    assert v["jobrunner_gb"] == 30.0 and v["jobrunner_pid"] == 4242
+    # PowerShell 5.1 manda colecao unitaria como objeto, nao lista
+    um = nlb.view("n1", "h", {"reachable": True, "jobrunners": {"top": {"pid": 9, "private_mb": 512}}}, T0)
+    assert um["jobrunner_gb"] == 0.5 and um["jobrunner_pid"] == 9
+    assert nlb.view("n1", "h", {"reachable": True}, T0)["jobrunner_gb"] is None

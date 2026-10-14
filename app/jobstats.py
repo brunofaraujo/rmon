@@ -213,6 +213,81 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         return _fila_vazia(parada_min, residuo_min, f"{type(exc).__name__}: {exc}"[:150])
 
 
+_FILTRO_RE = re.compile(r"\(\((.{1,400}?)\)\)", re.S)
+
+
+def executions_by_pid(computador: str | None, pids) -> dict[str, dict[str, Any]] | None:
+    """Que job esta rodando em cada JobRunner deste host: {pid: execucao}.
+
+    A GJOBXEXECUCAO guarda o PID do processo que executa o job (PROCESSID) e o
+    executor (SERVIDOR = "host:porta"), entao o processo que o coletor ve
+    crescendo no Windows aponta direto para o job, o usuario que o pediu e o
+    filtro usado. Foi assim que os estouros de 06/10 e 13/10 foram explicados:
+    o mesmo relatorio gerado so com `STURMADISC.CODCOLIGADA = '3'`, sem turma.
+
+    O filtro sai do VALORPARAMETROS (objeto .NET serializado) recortado no
+    proprio SQL: o trecho fica alem dos primeiros 4 KB, que e o que o TEXTSIZE
+    padrao devolveria. PID e reaproveitado pelo Windows, por isso a busca fica
+    nas execucoes sem fim dos ultimos 3 dias e a mais recente de cada PID vence.
+    """
+    alvo = sorted({str(int(p)) for p in (pids or []) if str(p).strip().isdigit()})
+    if not alvo:
+        return {}
+    try:
+        conn = _connect()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.executions_by_pid: %s", exc)
+        return None
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor()
+        col = _coluna_inicio(cur) or "RECCREATEDON"
+        if not _tem(cur, "PROCESSID", "SERVIDOR"):
+            conn.close()
+            return None
+        params: list[Any] = list(alvo)
+        srv_filter = ""
+        limpo = re.sub(r"[^A-Za-z0-9_.-]", "", computador or "")
+        if limpo:
+            srv_filter = " AND E.SERVIDOR LIKE %s"
+            params.append(limpo + ":%")
+        marcas = ", ".join(["%s"] * len(alvo))
+        texto = "CAST(CAST(J.VALORPARAMETROS AS varbinary(max)) AS varchar(max))"
+        cur.execute(
+            f"""SELECT E.PROCESSID, E.IDJOB, E.SERVIDOR,
+                       CONVERT(varchar(16), E.{col}, 120), E.PERCPROGRESSO, E.STATUS,
+                       J.CODUSUARIO, J.NOME, J.CLASSEPROCESSO,
+                       CASE WHEN CHARINDEX('((', {texto}) > 0
+                            THEN SUBSTRING({texto}, CHARINDEX('((', {texto}), 420) END
+                  FROM dbo.GJOBXEXECUCAO E JOIN dbo.GJOBX J ON J.IDJOB = E.IDJOB
+                 WHERE E.PROCESSID IN ({marcas}) AND E.DATAFIMEXEC IS NULL
+                   AND E.{col} >= DATEADD(day, -3, GETDATE()){srv_filter}
+                 ORDER BY E.{col} DESC""",
+            tuple(params))
+        saida: dict[str, dict[str, Any]] = {}
+        for r in cur.fetchall():
+            pid = str(r[0]).strip()
+            if pid in saida:
+                continue
+            filtro = None
+            if r[9]:
+                m = _FILTRO_RE.search(str(r[9]))
+                filtro = m.group(1).strip() if m else None
+            saida[pid] = {"idjob": r[1], "servidor": r[2], "inicio": r[3],
+                          "progresso": r[4], "status": r[5], "usuario": r[6],
+                          "nome": (r[7] or "").strip(), "classe": r[8], "filtro": filtro}
+        conn.close()
+        return saida
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.executions_by_pid: %s", exc)
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
 def query(window_min: int = 15, success_status=(2,), failed_status=(5, 7), servidor: str | None = None) -> dict[str, Any] | None:
     host = os.environ.get("RMON_SQL_HOST")
     user = os.environ.get("RMON_SQL_USER")

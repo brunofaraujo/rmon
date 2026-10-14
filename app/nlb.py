@@ -129,11 +129,28 @@ def _rm_ok(services: Iterable[dict] | None, generators: Iterable[str]) -> tuple[
     return (bool(alvo) and not parados), parados
 
 
+def _maior_jobrunner(jr: Any) -> dict[str, Any]:
+    """Maior JobRunner da medicao `jobrunners` da coleta ({"gb", "pid"} ou {})."""
+    top = jr.get("top") if isinstance(jr, dict) else None
+    procs = top if isinstance(top, list) else [top] if isinstance(top, dict) else []
+    melhor: dict[str, Any] = {}
+    for p in procs:
+        if not isinstance(p, dict) or p.get("private_mb") is None:
+            continue
+        try:
+            gb = round(float(p["private_mb"]) / 1024, 2)
+        except (TypeError, ValueError):
+            continue
+        if gb > melhor.get("gb", -1):
+            melhor = {"gb": gb, "pid": p.get("pid")}
+    return melhor
+
+
 def view(name: str, host: str, r: dict, now: float,
          generators: Iterable[str] = ("RM.Host.Service*",)) -> dict[str, Any]:
     """O que uma coleta diz sobre o no, do ponto de vista do NLB."""
     n = r.get("nlb") if isinstance(r.get("nlb"), dict) else {}
-    jr = r.get("jobrunner") if isinstance(r.get("jobrunner"), dict) else {}
+    maior = _maior_jobrunner(r.get("jobrunners"))
     ok, parados = _rm_ok(r.get("services"), generators)
     uptime = r.get("uptime_sec")
     return {
@@ -153,8 +170,8 @@ def view(name: str, host: str, r: dict, now: float,
         "rm_down": parados,
         "uptime_min": (float(uptime) / 60) if uptime is not None else None,
         "boot_ts": (now - float(uptime)) if uptime is not None else None,
-        "jobrunner_gb": jr.get("top_gb"),
-        "jobrunner_pid": jr.get("top_pid"),
+        "jobrunner_gb": maior.get("gb"),
+        "jobrunner_pid": maior.get("pid"),
     }
 
 

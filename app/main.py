@@ -451,7 +451,9 @@ def server_detail(request: Request, name: str):
         "server.html",
         {"request": request, "name": name, "current": hist[0], "hist": hist,
          "broker_ref": ref,
-         "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel)},
+         "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel),
+         "jr_alerta": scheduler.jobrunner_problems(hist[0].get("jobrunners"), th),
+         "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb")},
     )
 
 
@@ -523,7 +525,6 @@ PROBLEMA_LABEL = {
     "MEM": "Memoria", "DISK": "Disco", "COMMIT": "Commit charge",
     "JOBS": "Jobs com erro", "JOBSQL": "Leitura dos jobs",
     "JOBQUEUE": "Fila de jobs", "JOBFAIL": "Jobs falhando em bloco",
-    "JOBRUNNER": "JobRunner inchado",
     # decisoes do NLB (alerts_log.kind = "nlb")
     "drain": "NLB: drenado", "rejoin": "NLB: reingressado",
     "would_drain": "NLB: drenaria", "would_rejoin": "NLB: reingressaria",
@@ -538,6 +539,10 @@ def _problema_label(chave: str) -> str:
         return "Servico " + chave[4:]
     if chave.startswith("broker:"):
         return "Broker " + chave[7:]
+    if chave.startswith("jobrunner-crit:"):
+        return "JobRunner estourando (PID " + chave[15:] + ")"
+    if chave.startswith("jobrunner:"):
+        return "JobRunner crescendo (PID " + chave[10:] + ")"
     return PROBLEMA_LABEL.get(chave, chave)
 
 
@@ -724,7 +729,9 @@ async def admin_config(request: Request):
                              "jobs_stuck_jobs": _int("jobs_stuck_jobs", 2, 1, 1000),
                              "jobs_stuck_checks": _int("jobs_stuck_checks", 3, 1, 20),
                              "jobs_orphan_min": _int("jobs_orphan_min", 360, 30, 10080),
-                             "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000)})
+                             "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000),
+                             "jobrunner_warn_gb": _int("jobrunner_warn_gb", 4, 0, 512),
+                             "jobrunner_gb": _int("jobrunner_gb", 8, 0, 512)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)

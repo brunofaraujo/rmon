@@ -22,7 +22,8 @@ Duas lições moldaram o desenho:
 
 1. **Na fase aguda o WinRM do nó doente não responde** — nada consegue drená-lo
    remotamente. O que chega a tempo ali é o **aviso precoce** (o JobRunner cresce devagar
-   por horas antes de explodir: alerta `JOBRUNNER`).
+   por horas antes de explodir: alertas `jobrunner:<pid>` e `jobrunner-crit:<pid>`, ver
+   CONFIGURACAO.md).
 2. **A falha longa é a que dá para automatizar**: o nó "vivo" que não cria sessão.
    Com a regra abaixo ele teria sido drenado ~30 min depois de os usuários começarem a
    chegar, em vez de 2 h e um reboot depois.
@@ -41,7 +42,8 @@ marcados com `nlb: true` no inventário:
   `TerminalServices-LocalSessionManager/Operational` (sessão criada/reconectada).
 - **usuários** (`quser`), **commit charge**, **serviços RM.Host.Service\*** e **uptime**
   — já coletados.
-- **maior RM.Host.JobRunner** (memória privada) — para o aviso precoce.
+- **maior RM.Host.JobRunner** (memória privada, a mesma medição `jobrunners` dos
+  alertas `jobrunner:*`) — só para a drenagem preventiva opcional.
 
 O ELK foi considerado e **não** é usado como gatilho: nesses hosts o agente é justamente o
 que morre sob pressão de memória, e há nó que não envia o 1149. Ler direto do host é a
@@ -145,7 +147,7 @@ defaults:
     peer_users_min: 3
     peer_sess_min: 8
     commit_drain_pct: 95
-    drain_jobrunner_gb: 0  # 0 = nao drena por JobRunner (so o alerta JOBRUNNER)
+    drain_jobrunner_gb: 0  # 0 = nao drena por JobRunner (ficam so os alertas jobrunner:*)
     bad_after_min: 15
     rejoin_after_min: 10
     grace_min: 30
@@ -158,8 +160,6 @@ defaults:
     retry_min: 5
     rejoin_unowned: false
     hold: []
-  alerts:
-    jobrunner_gb: 8        # aviso precoce: RM.Host.JobRunner acima disso (0 desliga)
 
 servers:
   - name: rm-app-01
