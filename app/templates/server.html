@@ -84,6 +84,27 @@
   </div>
   {% endif %}
 
+  {% if d.jobrunners and d.jobrunners.count %}
+  {% set jr = d.jobrunners %}
+  <div class="panel">
+    <h2>JobRunner do RM <span class="muted small">({{ jr.count }} processo(s), {{ ((jr.total_mb or 0) / 1024) | round(1) }} GB de memoria privada no total)</span></h2>
+    <div class="pills">
+      {% for p in jr.top %}
+      {% set gb = (p.private_mb or 0) / 1024 %}
+      {% set ex = (jr.jobs or {}).get(p.pid | string) %}
+      <span class="pill {{ 'red' if (jr_limite_gb and gb >= jr_limite_gb) else ('amber' if (jr_aviso_gb and gb >= jr_aviso_gb) else '') }}"
+            title="PID {{ p.pid }}{% if p.start %} &middot; iniciado {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB</span>
+      {% endfor %}
+    </div>
+    {% if jr_alerta %}
+    <div class="alert small" style="margin-top:.6rem">
+      {% for msg in jr_alerta.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
+      <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se nao der, encerre o PID no host: o RM marca a execucao como falha e o host recupera a memoria.</div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="panel">
     <h2>Servicos monitorados</h2>
     <div class="pills">

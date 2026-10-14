@@ -167,10 +167,30 @@ $events = @($evAll | Where-Object { $noise -notcontains $_.Id -and $_.ProviderNa
     } | Sort-Object last -Descending | Select-Object -First 12)
 $ucount = 0
 try { $qu = @(quser 2>$null); if ($qu.Count -gt 1) { $ucount = $qu.Count - 1 } } catch { }
+# JobRunner do RM: cada job roda num processo proprio. Relatorio sem filtro cresce
+# devagar por horas e depois explode para dezenas de GB (13/10: 80 GB no .34),
+# esgotando o commit do host inteiro. Mede-se a memoria PRIVADA - e ela que conta
+# no commit - e so dos maiores: o host tem dezenas de JobRunners ociosos.
+$jrName = __JR_NAME__
+$jobrunners = $null
+if ($jrName) {
+    $jrAll = @(Get-Process -Name $jrName -ErrorAction SilentlyContinue)
+    $jrTop = @($jrAll | Sort-Object PrivateMemorySize64 -Descending | Select-Object -First __JR_TOP__ | ForEach-Object {
+        $ini = $null
+        try { $ini = $_.StartTime.ToString('yyyy-MM-dd HH:mm:ss') } catch { }
+        [pscustomobject]@{
+            pid = $_.Id; private_mb = [math]::Round($_.PrivateMemorySize64 / 1MB, 0)
+            ws_mb = [math]::Round($_.WorkingSet64 / 1MB, 0); start = $ini }
+    })
+    $jrSum = ($jrAll | Measure-Object -Property PrivateMemorySize64 -Sum).Sum
+    $jobrunners = [pscustomobject]@{
+        count = $jrAll.Count; total_mb = [math]::Round([double]$jrSum / 1MB, 0)
+        top = $jrTop; computer = $env:COMPUTERNAME }
+}
 [pscustomobject]@{
     cpu = $cpu; mem_pct = $memPct; mem_total_mb = [math]::Round($memTotal / 1024, 0)
     uptime_sec = [math]::Round($uptime, 0); disks = $disks; services = $services; events = $events
-    users_count = $ucount; broker = $broker; commit_pct = $commitPct
+    users_count = $ucount; broker = $broker; commit_pct = $commitPct; jobrunners = $jobrunners
 } | ConvertTo-Json -Depth 5 -Compress
 """
 
@@ -221,6 +241,20 @@ def broker_settings(defaults: dict[str, Any] | None) -> dict[str, Any]:
     return {**BROKER_DEFAULTS, **((defaults or {}).get("broker") or {})}
 
 
+# Medicao dos processos que executam os jobs do RM. `top` limita quantos vao no
+# payload: o veredito so precisa dos maiores, e o host tem dezenas ociosos.
+JOBRUNNER_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "process": "RM.Host.JobRunner",
+    "top": 5,
+}
+
+
+def jobrunner_settings(defaults: dict[str, Any] | None) -> dict[str, Any]:
+    """Config efetiva da medicao do JobRunner (defaults.jobrunner sobre os nossos)."""
+    return {**JOBRUNNER_DEFAULTS, **((defaults or {}).get("jobrunner") or {})}
+
+
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     services = server.services or list(defaults.get("services") or [])
     patterns = server.service_patterns or list(defaults.get("service_patterns") or [])
@@ -232,6 +266,12 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     bk = broker_settings(defaults)
     broker_files = list(bk.get("files") or []) if bk.get("enabled", True) else []
     broker_gen = list(bk.get("generators") or [])
+    jr = jobrunner_settings(defaults)
+    jr_name = _ps_str(jr["process"]) if jr.get("enabled", True) and jr.get("process") else "$null"
+    try:
+        jr_top = max(1, int(jr.get("top") or 5))
+    except (TypeError, ValueError):
+        jr_top = 5
     prov_re = el.get("providers_regex") or (
         r"\b(RM|TOTVS|SGE|MSSQL|SQL|IIS|W3SVC|WAS|DBAccess|WER)"
         r"|\.NET Runtime|ASP\.NET|Application Error|Application Hang|Windows Error Reporting"
@@ -247,6 +287,8 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__PROV_RE__", prov_re)
         .replace("__BROKER_FILES__", ",".join(_ps_str(f) for f in broker_files))
         .replace("__BROKER_GENERATORS__", ",".join(_ps_str(g) for g in broker_gen))
+        .replace("__JR_NAME__", jr_name)
+        .replace("__JR_TOP__", str(jr_top))
     )
 
 
@@ -515,7 +557,7 @@ def collect_server(
     result: dict[str, Any] = {
         "reachable": False, "cpu": None, "mem_pct": None, "uptime_sec": None,
         "disks": [], "services": [], "events": [], "app_ok": None, "app_ms": None,
-        "broker": [], "commit_pct": None, "error": None,
+        "broker": [], "commit_pct": None, "jobrunners": None, "error": None,
     }
     # Saude HTTP (independe do WinRM)
     result["app_ok"], result["app_ms"] = _check_app_health(server.app_health)
@@ -545,6 +587,10 @@ def collect_server(
             "broker": _as_list(data.get("broker")),
             "commit_pct": data.get("commit_pct"),
         })
+        jr = data.get("jobrunners")
+        if isinstance(jr, dict):
+            jr["top"] = _as_list(jr.get("top"))
+            result["jobrunners"] = jr
     except Exception as exc:  # noqa: BLE001 - queremos registrar qualquer falha
         result["error"] = f"{type(exc).__name__}: {exc}"[:500]
     return result
