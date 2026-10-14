@@ -36,7 +36,10 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # no meio), nao fila: nao conta para alerta nenhum
                   "jobs_orphan_min": 360,
                   # falhas na janela SEM nenhum sucesso = falha em bloco
-                  "jobs_all_failed": 10}
+                  "jobs_all_failed": 10,
+                  # memoria privada de UM RM.Host.JobRunner, em GB: aviso
+                  # precoce e critico (ver jobrunner_problems)
+                  "jobrunner_warn_gb": 4, "jobrunner_gb": 8}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -57,7 +60,7 @@ def notifica(chave: str) -> bool:
 
 def critico(chave: str) -> bool:
     """Este problema e vermelho (vs. ambar/aviso)?"""
-    return chave.startswith("svc:") or chave in CRITICOS
+    return chave.startswith(("svc:", "jobrunner-crit:")) or chave in CRITICOS
 
 
 def broker_reference(dias: int | None = None) -> dict[str, dict[str, int]]:
@@ -251,7 +254,79 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
                        "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
     p.update(broker_problems(r, th, broker_ref, broker_estavel))
+    p.update(jobrunner_problems(r.get("jobrunners"), th))
     p.update(job_problems(r.get("jobs"), th, fila_hist, p))
+    return p
+
+
+def _gb_limiar(th: dict, chave: str) -> float:
+    try:
+        return max(0.0, float(th.get(chave) or 0))
+    except (TypeError, ValueError):
+        return float(DEFAULT_ALERTS[chave])
+
+
+def jobrunner_limiar_minimo(th: dict) -> float:
+    """Menor limiar ligado: a partir dele vale perguntar ao SQL qual e o job."""
+    ligados = [g for g in (_gb_limiar(th, "jobrunner_warn_gb"), _gb_limiar(th, "jobrunner_gb")) if g > 0]
+    return min(ligados) if ligados else 0.0
+
+
+def jobrunner_problems(jr: dict | None, th: dict) -> dict[str, str]:
+    """RM.Host.JobRunner com memoria privada fora do normal.
+
+    Cada job do RM roda num JobRunner proprio, e no parque nenhum passou de 1 GB
+    fora de incidente nos 14 dias medidos. Os quatro estouros conhecidos (06/10
+    no srv11 e no .188, 13/10 no .34 e no .190) foram todos o mesmo relatorio
+    gerado sem filtro de turma: horas crescendo devagar ate ~7 GB e, de repente,
+    dezenas de GB em minutos - o host esgota o commit, os RM.Host caem e o RDP
+    para de criar sessao.
+
+    Por isso dois niveis, cada um com sua chave (a escalada notifica de novo, e o
+    aviso nao "resolve" quando o critico acende):
+
+    * `jobrunner:<pid>` (aviso, `jobrunner_warn_gb`, 4 GB) - cruzado de 3,5 a 6h
+      ANTES da queda nos quatro casos: da tempo de cancelar o job;
+    * `jobrunner-crit:<pid>` (vermelho, `jobrunner_gb`, 8 GB) - nos quatro casos
+      cruzado a 1min da explosao final: o host cai em 10-30min.
+
+    Zero desliga o nivel. O texto traz o job, quem pediu e o filtro quando o SQL
+    do RM responde (scheduler.poll_all grava isso em `jr["jobs"]`).
+    """
+    p: dict[str, str] = {}
+    if not isinstance(jr, dict):
+        return p
+    aviso = _gb_limiar(th, "jobrunner_warn_gb")
+    limite = _gb_limiar(th, "jobrunner_gb")
+    jobs = jr.get("jobs") if isinstance(jr.get("jobs"), dict) else {}
+    top = jr.get("top")
+    for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
+        if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
+            continue
+        try:
+            gb = float(proc["private_mb"]) / 1024
+        except (TypeError, ValueError):
+            continue
+        pid = proc["pid"]
+        alto = bool(aviso) and gb >= aviso
+        estouro = bool(limite) and gb >= limite
+        if not (alto or estouro):
+            continue
+        texto = f"RM.Host.JobRunner PID {pid} com {gb:.1f} GB de memoria privada"
+        ex = jobs.get(str(pid))
+        if isinstance(ex, dict):
+            texto += (f": job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}'"
+                      f" de {ex.get('usuario') or '?'}, desde {ex.get('inicio') or '?'}")
+            if ex.get("progresso") is not None:
+                texto += f" ({ex['progresso']}%)"
+            if ex.get("filtro"):
+                texto += f", filtro {ex['filtro'][:160]}"
+        if alto:
+            p[f"jobrunner:{pid}"] = (texto + f" - acima de {aviso:g} GB; cancelar o job "
+                                     "antes que ele exploda e derrube o host")
+        if estouro:
+            p[f"jobrunner-crit:{pid}"] = (texto + f" - acima de {limite:g} GB: o commit do "
+                                          "host esgota em minutos, cancelar o job AGORA")
     return p
 
 
@@ -341,6 +416,25 @@ def job_problems(jb: dict | None, th: dict, fila_hist: list[dict] | None = None,
     return p
 
 
+def _identificar_jobrunners(jr: dict | None, th: dict) -> None:
+    """Anota em `jr["jobs"]` qual job roda em cada JobRunner acima do limiar.
+
+    So pergunta ao SQL quando ha processo grande - o caso raro -, entao o ciclo
+    normal de coleta nao ganha consulta nenhuma. O resultado fica gravado com a
+    coleta, para o painel mostrar o mesmo texto que foi notificado.
+    """
+    if not isinstance(jr, dict):
+        return
+    minimo = jobrunner_limiar_minimo(th)
+    if not minimo:
+        return
+    grandes = [p.get("pid") for p in (jr.get("top") or [])
+               if isinstance(p, dict) and p.get("pid") is not None
+               and (p.get("private_mb") or 0) / 1024 >= minimo]
+    if grandes:
+        jr["jobs"] = jobstats.executions_by_pid(jr.get("computer"), grandes) or {}
+
+
 def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
@@ -365,6 +459,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                     result["jobs"]["queue"] = jobstats.queue(
                         jb.get("servidor"), th.get("jobs_stuck_min", 30),
                         th.get("jobs_orphan_min", 360))
+            _identificar_jobrunners(result.get("jobrunners"), th)
             coletas.append((server, result))
 
         for server, result in coletas:

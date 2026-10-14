@@ -67,6 +67,11 @@ defaults:
     broker_min_kb: 0          # piso absoluto em KB (0 = so a regra relativa)
     broker_settle_min: 10     # ignora arquivo gerado ha menos que isso (pode estar sendo escrito)
     broker_history_days: 30   # janela do historico que serve de referencia
+    # Memoria privada de UM RM.Host.JobRunner (GB). O aviso pega o relatorio
+    # sem filtro horas antes de ele explodir; o critico, minutos antes de o
+    # commit do host esgotar. 0 desliga o nivel.
+    jobrunner_warn_gb: 4
+    jobrunner_gb: 8
   # Broker do RM: cache que o RM.Host so gera quando o arquivo NAO existe. Se a
   # geracao aborta no meio, sobra um arquivo curto e o RM sobe "com sucesso"
   # sem as customizacoes - por isso o tamanho e comparado entre os hosts.
