@@ -19,6 +19,9 @@ log = logging.getLogger("rmon.scheduler")
 
 # Estado do ultimo alerta por servidor (chave-problema -> texto), para notificar so em transicoes.
 _last: dict[str, dict] = {}
+# _last nasce vazio a cada start; antes da primeira avaliacao ele e recarregado
+# do alerts_log (ver _restaurar_estado).
+_restaurado = False
 
 
 DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
@@ -435,9 +438,75 @@ def _identificar_jobrunners(jr: dict | None, th: dict) -> None:
         jr["jobs"] = jobstats.executions_by_pid(jr.get("computer"), grandes) or {}
 
 
+def transicoes(prev: dict[str, str], probs: dict[str, str],
+               r: dict) -> tuple[dict[str, str], list[str], list[str]]:
+    """Compara o estado anterior com os problemas desta coleta.
+
+    Devolve (novo estado, chaves que abriram, chaves que resolveram).
+
+    Coleta sem contato nao ve nada alem do proprio DOWN: o servico parado, a
+    memoria alta e o broker curto continuam desconhecidos, nao resolvidos. Por
+    isso eles seguem abertos ate uma coleta que enxergue o host de novo. Antes,
+    cada engasgo do WinRM dava "resolvido" para tudo e, um ciclo depois,
+    levantava tudo outra vez.
+    """
+    atual = dict(probs)
+    if not r.get("reachable"):
+        for k, texto in prev.items():
+            if k != "DOWN":
+                atual.setdefault(k, texto)
+    novas = [k for k in atual if k not in prev]
+    resolvidas = [k for k in prev if k not in atual]
+    return atual, novas, resolvidas
+
+
+def fora_do_monitoramento(chave: str, r: dict) -> bool:
+    """O problema sumiu porque o servico saiu da coleta, nao porque voltou?
+
+    Servico tirado do servers.yaml (ou desinstalado, quando era descoberto)
+    nao aparece mais na coleta. O alerta dele tem de fechar, mas "resolvido"
+    no celular seria mentira: ninguem consertou nada.
+    """
+    if not chave.startswith("svc:") or not r.get("reachable"):
+        return False
+    return chave[4:] not in {s.get("name") for s in (r.get("services") or [])}
+
+
+def _restaurar_estado(servidores: Iterable[str]) -> None:
+    """Recarrega do banco os problemas que estavam abertos antes do start.
+
+    Sem isso, o primeiro ciclo depois de um restart comparava contra um estado
+    vazio: tudo o que seguia quebrado virava "novo" (notificado de novo, e um
+    segundo 'raised' sem 'resolved' na linha do tempo), e o que se resolveu com
+    o RMon parado nunca era dado por resolvido. Com o estado restaurado, o
+    restart e invisivel: so transicao de verdade notifica.
+
+    Servidor que saiu do inventario nunca mais e avaliado: os problemas dele
+    fecham aqui, calados como o servico que sai da coleta.
+
+    Se o banco nao responder, a excecao sobe como a do insert_check e o ciclo
+    seguinte tenta de novo - nunca avalia com o estado vazio.
+    """
+    global _restaurado
+    if _restaurado:
+        return
+    abertos = db.open_alerts()
+    ativos = set(servidores)
+    for nome, probs in abertos.items():
+        if nome not in ativos:
+            for k, texto in probs.items():
+                db.record_alert(nome, "resolved", k, texto + " (saiu do monitoramento)")
+            continue
+        _last.setdefault(nome, dict(probs))
+    _restaurado = True
+    log.info("estado dos alertas restaurado: %d problema(s) aberto(s) em %d servidor(es)",
+             sum(len(p) for p in abertos.values()), len(abertos))
+
+
 def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
+    _restaurar_estado(s.name for s in inv.servers)
     th = {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
     with ThreadPoolExecutor(max_workers=min(8, len(inv.servers))) as pool:
         futures = {
@@ -482,20 +551,22 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             probs = problems(result, th, streak, ref.get(server.name),
                              estado.get(server.name), filas.get(server.name))
             prev = _last.get(server.name, {})
-            new_keys = [k for k in probs if k not in prev]
-            gone_keys = [k for k in prev if k not in probs]
+            atual, new_keys, gone_keys = transicoes(prev, probs, result)
+            calados = {k for k in gone_keys if fora_do_monitoramento(k, result)}
             for k in new_keys:
-                db.record_alert(server.name, "raised", k, probs[k])
+                db.record_alert(server.name, "raised", k, atual[k])
             for k in gone_keys:
-                db.record_alert(server.name, "resolved", k, prev[k])
+                db.record_alert(server.name, "resolved", k,
+                                prev[k] + (" (saiu do monitoramento)" if k in calados else ""))
             # Aviso (job com erro, SQL fora do ar) fica registrado e aparece na
             # tela, mas nao vira mensagem: alerta que nao exige acao imediata
             # so ensina o time a ignorar o canal.
-            msgs = ["\U0001F534 " + probs[k] for k in new_keys if notifica(k)]
-            msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys if notifica(k)]
+            msgs = ["\U0001F534 " + atual[k] for k in new_keys if notifica(k)]
+            msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys
+                     if notifica(k) and k not in calados]
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {server.name} ({server.host})\n" + "\n".join(msgs))
-            _last[server.name] = probs
+            _last[server.name] = atual
 
         # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
         # ciclo. Nunca derruba a coleta - erro aqui vira log.

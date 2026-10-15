@@ -38,9 +38,13 @@ flowchart TD
    - **nunca levanta exceção** — erros são encapsulados no resultado.
 3. Se o servidor tem bloco `jobs`, `jobstats.query` consulta o SQL Server.
 4. `db.insert_check` grava o snapshot em `checks`.
-5. `scheduler._problems` avalia o resultado contra os limiares; problemas **novos** e
+5. `scheduler.problems` avalia o resultado contra os limiares; problemas **novos** e
    **resolvidos** viram registros em `alerts_log` e, se houver canal, notificação
-   (comparando com o estado anterior em memória — só transições).
+   (comparando com o estado anterior em memória — só transições). Esse estado é
+   **recarregado do `alerts_log` no primeiro ciclo após o start** (`db.open_alerts`),
+   então um restart não renotifica o que já estava aberto. Coleta sem contato não
+   resolve nada além do próprio `DOWN` (o resto fica desconhecido, não consertado), e
+   serviço ou servidor que saiu do inventário fecha o alerta sem mandar "resolvido".
 6. Com as coletas do ciclo, `nlb.run_cycle` avalia os nós com `nlb: true` e decide
    drenar/reingressar no NLB (só executa no modo `auto`) — ver [NLB.md](NLB.md).
 7. A cada 6h, `db.prune` remove histórico antigo.
