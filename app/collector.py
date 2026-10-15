@@ -314,11 +314,11 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__JR_NAME__", jr_name)
         .replace("__JR_TOP__", str(jr_top))
         .replace("__NLB__", "$true" if getattr(server, "nlb", False) else "$false")
-        .replace("__RDP_WIN__", str(_nlb_window(defaults)))
+        .replace("__RDP_WIN__", str(nlb_window(defaults)))
     )
 
 
-def _nlb_window(defaults: dict[str, Any] | None) -> int:
+def nlb_window(defaults: dict[str, Any] | None) -> int:
     """Janela (min) da contagem de eventos RDP - a mesma que o nlb.py julga."""
     try:
         return max(1, int(((defaults or {}).get("nlb") or {}).get("window_min", 15)))

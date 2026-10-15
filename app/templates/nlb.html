@@ -61,7 +61,9 @@
           {% if n.st.bad_since %}<div class="muted">doente desde {{ n.st.bad_since | dt }}</div>{% endif %}
           {% if n.st.good_since %}<div class="muted">apto desde {{ n.st.good_since | dt }}</div>{% endif %}
         </td>
-        <td class="mono small">{{ n.auth if n.auth is not none else '-' }} aut. / {{ n.sess if n.sess is not none else '-' }} sess.</td>
+        <td class="mono small">{{ n.auth if n.auth is not none else '-' }} aut. / {{ n.sess if n.sess is not none else '-' }} sess.
+          {% set fontes = (n.fonte or {}).values() | list %}
+          {% if fontes %}<br><span class="faint" title="Elastic: {{ n.auth_elastic if n.auth_elastic is not none else '-' }} aut. / {{ n.sess_elastic if n.sess_elastic is not none else '-' }} sess. &middot; WinRM: {{ n.auth_winrm if n.auth_winrm is not none else '-' }} aut. / {{ n.sess_winrm if n.sess_winrm is not none else '-' }} sess. &middot; com as duas, vale a leitura mais saudavel (menos autenticacoes, mais sessoes)">{{ 'Elastic' if fontes | unique | list == ['elastic'] else ('WinRM' if fontes | unique | list == ['winrm'] else 'Elastic + WinRM') }}</span>{% endif %}</td>
         <td class="mono">{{ n.users if n.users is not none else '-' }}</td>
         <td class="mono">{{ n.commit if n.commit is not none else '-' }}{% if n.commit is not none %}%{% endif %}</td>
         <td class="mono small">{% if n.jobrunner_gb is not none %}{{ n.jobrunner_gb }} GB<div class="muted">PID {{ n.jobrunner_pid }}</div>{% else %}-{% endif %}</td>

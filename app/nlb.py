@@ -164,6 +164,13 @@ def view(name: str, host: str, r: dict, now: float,
         "nlb_error": n.get("error"),
         "auth": n.get("auth"),
         "sess": n.get("sess"),
+        # de onde veio cada contagem e as duas leituras, quando o Elastic
+        # esta ligado (scheduler.aplicar_rdp)
+        "fonte": n.get("fonte") if isinstance(n.get("fonte"), dict) else {},
+        "auth_winrm": n.get("auth_winrm"),
+        "sess_winrm": n.get("sess_winrm"),
+        "auth_elastic": n.get("auth_elastic"),
+        "sess_elastic": n.get("sess_elastic"),
         "users": r.get("users_count"),
         "commit": r.get("commit_pct"),
         "rm_ok": ok,

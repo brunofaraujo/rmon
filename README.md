@@ -46,6 +46,7 @@ servidores monitorados.
 - 🛠️ **Ações remotas** (perfil admin): `start`/`stop`/`restart` de serviços monitorados e logoff de sessões RDP.
 - 👥 **Multiusuário** com papéis `admin` / `viewer`, auditoria de ações e login por sessão assinada.
 - 📺 **Mural de TV** (`/tv`): painel em tela cheia, sem rolagem, que se ajusta sozinho ao número de servidores e à resolução da tela. É a **única** tela do perfil `viewer` — ideal para deixar numa TV do NOC.
+- 🔎 **Elasticsearch (opcional, só leitura)**: série histórica da memória dos JobRunners, contagens de RDP do NLB e leitura do JobRunner quando o WinRM do host não responde — com o WinRM cobrindo o que o Elastic não souber.
 - 🌐 **Multidomínio**: credenciais WinRM por *perfil* (ex.: `fin`, `rh`), cada servidor referencia o seu.
 
 > 📸 *Dica: adicione aqui uma captura de tela do dashboard (`docs/img/dashboard.png`).*

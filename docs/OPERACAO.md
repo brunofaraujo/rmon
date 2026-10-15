@@ -223,6 +223,27 @@ para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job n
 
 ---
 
+## Elasticsearch: série do JobRunner e RDP do NLB
+
+Com o Elasticsearch ligado (ver [CONFIGURACAO.md](CONFIGURACAO.md#elasticsearch-opcional-só-leitura)):
+
+- a tela de cada servidor do RM ganha o gráfico **Memória do maior JobRunner** (24h, 7 ou
+  30 dias), com as linhas de aviso e crítico. É onde se vê se o estouro de hoje já tinha
+  acontecido antes, e quanto tempo o processo levou crescendo;
+- host sem WinRM ainda mostra (e alerta) o JobRunner, lido do Elastic. Encerrar exige WinRM:
+  nesse caso o ✕ some e o caminho é cancelar o job no RM;
+- a tela **NLB** diz de onde veio cada contagem (Elastic, WinRM ou as duas). Passe o mouse
+  para ver as duas leituras. Com as duas, vale a mais saudável: o Elastic nunca drena um nó
+  que a leitura local não drenaria;
+- o **resumo diário** lista os servidores cujo agente do Elastic parou. Agente parado passa
+  despercebido, e com ele somem a série e as contagens do Elastic. Reinicie o serviço
+  `Elastic Agent` no host.
+
+Se o Elastic sair do ar, o RMon segue pelo WinRM sem perder coleta; o journal registra uma
+linha a cada 5 minutos e a tela do servidor mostra o erro.
+
+---
+
 ## Coleta instável (alertas DOWN intermitentes)
 
 Sintoma: um servidor alterna "sem contato" e "resolvido" várias vezes por hora,

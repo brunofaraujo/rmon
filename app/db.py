@@ -269,6 +269,15 @@ def latest_per_server() -> list[dict]:
     return _epoch(rows)
 
 
+def computadores() -> dict[str, str]:
+    """COMPUTERNAME de cada servidor, como o inventario o coletou: e por ele que
+    o servidor e achado no Elasticsearch (host.name), mesmo com o WinRM fora."""
+    with _conn() as c:
+        rows = c.execute("SELECT server, computer FROM inventory_runs "
+                         "WHERE computer IS NOT NULL AND computer <> ''").fetchall()
+    return {r["server"]: r["computer"] for r in rows}
+
+
 def fail_streak(server: str, limit: int = 20) -> int:
     """Quantas coletas consecutivas (a partir da mais recente) falharam.
 
