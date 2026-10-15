@@ -10,7 +10,7 @@ from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, elastic, execution, inventory, jobstats, manutencao, nlb, notify, packages
+from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
 from .collector import collect_server
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
@@ -498,7 +498,7 @@ def aplicar_rdp(r: dict, es: dict | None) -> None:
     n["fonte"] = fonte
 
 
-def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> None:
+def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> tuple[dict, dict]:
     """Completa as coletas do ciclo com o Elasticsearch (so leitura, opcional).
 
     * contagens de RDP dos nos do NLB: Elastic primeiro, WinRM no que faltar;
@@ -507,10 +507,14 @@ def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> None:
 
     Elastic desligado, fora do ar ou sem dado fresco do host: nada muda, a
     coleta segue so com o WinRM. Nunca levanta excecao.
+
+    Devolve ({servidor: host.name no Elastic}, {host.name: ultima metrica}),
+    para o registro de fontes (app/fontes.py) mostrar na tela de onde veio cada
+    dado - uma consulta de batimento por ciclo cobre todos os servidores.
     """
     cfg = elastic.settings_for(inv.defaults)
     if not elastic.ativo(cfg):
-        return
+        return {}, {}
     try:
         comp = db.computadores()
     except Exception:  # noqa: BLE001
@@ -519,14 +523,14 @@ def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> None:
     for server, r in coletas:
         jr = r.get("jobrunners") if isinstance(r.get("jobrunners"), dict) else {}
         nomes[server.name] = elastic.nome_es(server, comp.get(server.name) or jr.get("computer"))
+    vistos = elastic.vivos(cfg, sorted({n for n in nomes.values() if n}))
+    limite = float(cfg.get("max_age_sec") or 180)
+    agora = time.time()
+    vivos = {n for n, ts in vistos.items() if agora - ts <= limite}
     rdp_de = [s for s, _ in coletas if cfg.get("rdp") and getattr(s, "nlb", False)
               and nomes.get(s.name)]
     jr_de = [(s, r) for s, r in coletas if cfg.get("jobrunner") and not r.get("reachable")
              and nomes.get(s.name)]
-    if not (rdp_de or jr_de):
-        return
-    vivos = elastic.frescos(cfg, sorted({nomes[s.name] for s in rdp_de}
-                                        | {nomes[s.name] for s, _ in jr_de}))
     if rdp_de:
         contagens = elastic.rdp(cfg, [nomes[s.name] for s in rdp_de if nomes[s.name] in vivos],
                                 collector_nlb_window(inv.defaults))
@@ -540,6 +544,7 @@ def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> None:
         jr = elastic.jobrunners_agora(cfg, nomes[server.name], processo, comp.get(server.name))
         if jr:
             r["jobrunners"] = jr
+    return nomes, vistos
 
 
 def transicoes(prev: dict[str, str], probs: dict[str, str],
@@ -685,10 +690,14 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
 
         # Elasticsearch (opcional): contagens de RDP do NLB e JobRunner de host
         # sem WinRM. Antes de gravar, para o painel e o alerta verem o mesmo dado.
+        nomes_es, vistos_es = {}, {}
         try:
-            _enriquecer_elastic(inv, coletas)
+            nomes_es, vistos_es = _enriquecer_elastic(inv, coletas)
         except Exception:  # noqa: BLE001
             log.exception("Elasticsearch: falha ao completar a coleta (seguindo pelo WinRM)")
+        # De onde veio cada dado deste ciclo, para a tela dizer (app/fontes.py)
+        fontes.registrar(coletas, nomes_es, vistos_es,
+                         elastic.ativo(elastic.settings_for(inv.defaults)))
         for server, result in coletas:
             _identificar_jobrunners(result.get("jobrunners"), th)
 

@@ -473,6 +473,30 @@ a.stat { display: block; transition: .15s; }
 a.stat:hover { border-color: var(--line-2); background: var(--surface-3); transform: translateY(-1px); }
 a.kpi:hover .val { color: var(--accent); }
 
+/* ---------- Fontes de dados (WinRM x Elastic) ---------- */
+.src-tag { display: inline-block; font-size: .68rem; font-weight: 800; letter-spacing: .04em;
+  padding: .08rem .42rem; border-radius: 999px; border: 1px solid; vertical-align: middle;
+  text-transform: uppercase; }
+.src-tag.winrm { color: #9cc3ff; background: rgba(110,168,254,.14); border-color: rgba(110,168,254,.5); }
+.src-tag.elastic { color: #4fe0d2; background: rgba(0,191,179,.14); border-color: rgba(0,191,179,.55); }
+html[data-theme="light"] .src-tag.winrm { color: #1b4ea8; }
+html[data-theme="light"] .src-tag.elastic { color: #00756d; }
+.src-strip { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; padding: .4rem 1.4rem;
+  font-size: .8rem; color: var(--text); text-decoration: none; background: var(--surface);
+  border-bottom: 1px solid var(--line); }
+.src-strip:hover { background: var(--surface-2); }
+.src-strip .src-ver { margin-left: auto; color: var(--accent); }
+.src-part { display: inline-flex; align-items: center; gap: .3rem; }
+.src-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); display: inline-block; }
+.src-dot.ok, .src-dot.es-ok { background: var(--green); }
+.src-dot.parcial, .src-dot.espera, .src-dot.es-espera { background: var(--amber); }
+.src-dot.erro, .src-dot.es-erro { background: var(--red); }
+.src-dot.es-off { background: var(--faint); }
+.src-faixa { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; margin: -.2rem 0 .8rem;
+  padding: .45rem .7rem; border: 1px dashed var(--line-2); border-radius: var(--radius-sm); }
+.src-linha { white-space: nowrap; }
+@media (max-width: 700px) { .src-strip .src-ver { display: none; } }
+
 /* ---------- Serie do JobRunner (Elasticsearch) ---------- */
 .es-graf { display: block; width: 100%; height: 150px; margin: .4rem 0 .3rem;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }

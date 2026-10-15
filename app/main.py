@@ -19,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, elastic, execution, inventory, jobstats, manutencao, nlb, notify,
-               packages, scheduler)
+from . import (__version__, db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb,
+               notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -111,6 +111,20 @@ def _assets_tag() -> str:
 
 
 templates.env.globals["assets"] = _assets_tag()
+
+
+def _fontes_topo() -> dict:
+    """Indicador do cabecalho: quantos hosts o WinRM alcancou no ultimo ciclo
+    e se o Elasticsearch esta respondendo - lido na hora, sem ir ao banco."""
+    inv = STATE.get("inv")
+    cfg = elastic.settings_for(inv.defaults if inv else {})
+    return fontes.resumo({"ativo": elastic.ativo(cfg), "ok_ts": elastic.saude().get("ok_ts"),
+                          "erro": elastic.erro_atual()})
+
+
+templates.env.globals["fontes_topo"] = _fontes_topo
+templates.env.globals["fonte_do_servidor"] = fontes.do_servidor
+templates.env.globals["rotulo_fonte"] = fontes.ROTULO
 
 
 def _apply_ui_globals() -> None:
@@ -756,6 +770,31 @@ def ocorrencias_page(request: Request):
 def _nlb_redirect(request: Request, msg: str) -> RedirectResponse:
     request.session["nflash"] = msg
     return RedirectResponse("/nlb", status_code=303)
+
+
+@app.get("/fontes", response_class=HTMLResponse)
+def fontes_page(request: Request):
+    """De onde veio cada dado de cada servidor no ultimo ciclo: WinRM ou Elastic."""
+    if not _is_authed(request):
+        return RedirectResponse("/login", status_code=302)
+    if _role(request) != "admin":
+        return HTMLResponse("Acesso restrito a administradores.", status_code=403)
+    inv = STATE["inv"]
+    cfg = elastic.settings_for(inv.defaults)
+    est = fontes.estado()
+    agora = time.time()
+    linhas = []
+    for srv in inv.servers:
+        f = est.get("servidores", {}).get(srv.name) or {}
+        visto = f.get("elastic_visto")
+        linhas.append({"nome": srv.name, "host": srv.host, "f": f,
+                       "es_idade": (agora - visto) if visto else None,
+                       "es_fresco": bool(visto and agora - visto <= float(cfg.get("max_age_sec") or 180))})
+    return templates.TemplateResponse(
+        "fontes.html",
+        {"request": request, "linhas": linhas, "ts": est.get("ts"), "topo": _fontes_topo(),
+         "es_ativo": elastic.ativo(cfg), "es_url": cfg.get("url"), "es_erro": elastic.erro_atual(),
+         "es_ok_ts": elastic.saude().get("ok_ts"), "es_cfg": cfg, "version": __version__})
 
 
 @app.get("/nlb", response_class=HTMLResponse)

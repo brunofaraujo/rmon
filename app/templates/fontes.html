@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Fontes de dados - RMonitor{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Fontes de dados</h1>
+    <div class="sub">de onde veio cada dado do painel no ultimo ciclo de coleta{% if ts %} ({{ ts | dt }}){% endif %}</div>
+  </div>
+</div>
+
+<div class="kpis">
+  <div class="kpi {{ 'ok' if topo.winrm_estado == 'ok' else ('bad' if topo.winrm_estado == 'erro' else 'warn') }}">
+    <div class="val">{{ topo.winrm_ok }}/{{ topo.total }}</div>
+    <div class="lbl"><span class="src-tag winrm">WinRM</span> hosts que responderam</div></div>
+  <div class="kpi {{ 'ok' if topo.es_estado == 'ok' else ('bad' if topo.es_estado == 'erro' else '') }}">
+    <div class="val" style="font-size:1.3rem">{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[topo.es_estado] }}</div>
+    <div class="lbl"><span class="src-tag elastic">Elastic</span> {% if es_ok_ts %}ultima consulta ok {{ es_ok_ts | dt }}{% else %}{{ es_url or 'sem RMON_ES_URL no .env' }}{% endif %}</div></div>
+</div>
+{% if es_erro %}<div class="alert">Elasticsearch com erro agora: {{ es_erro }}. Tudo segue pelo WinRM.</div>{% endif %}
+
+<div class="panel">
+  <h2>Quem fornece o que</h2>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Dado</th><th>Fonte</th><th>Quando o outro lado assume</th></tr></thead>
+      <tbody>
+        <tr><td>CPU, memoria, discos, servicos, sessoes RDP, broker, eventos do Windows</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small">nunca: so o WinRM le isso</td></tr>
+        <tr><td>JobRunner agora (lista de PIDs, alerta de 4/8 GB, botao encerrar)</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small"><span class="src-tag elastic">Elastic</span> quando o WinRM do host nao responde (sem o botao encerrar)</td></tr>
+        <tr><td>Historico de memoria do JobRunner (grafico de 24h/7/30 dias)</td><td><span class="src-tag elastic">Elastic</span></td><td class="muted small">so o Elastic guarda historico; sem ele, o grafico some</td></tr>
+        <tr><td>Contagens de RDP do NLB (1149 autenticou x 21/25 abriu sessao)</td><td><span class="src-tag elastic">Elastic</span> + <span class="src-tag winrm">WinRM</span></td><td class="muted small">o que so um lado sabe, vale ele; com os dois, vale a leitura mais saudavel (menos autenticacoes, mais sessoes)</td></tr>
+        <tr><td>Jobs e fila do RM</td><td class="small">SQL Server</td><td class="muted small">-</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Por servidor <span class="muted small">(ultimo ciclo)</span></h2>
+  {% if not ts %}
+  <div class="alert info small">Aguardando a primeira coleta depois do start (ate {{ 60 }}s).</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Servidor</th><th>WinRM</th><th>Agente do Elastic</th><th>JobRunner agora</th><th>RDP do NLB</th></tr></thead>
+      <tbody>
+        {% for l in linhas %}
+        {% set f = l.f %}
+        <tr>
+          <td><a class="linkish" href="/server/{{ l.nome }}"><b>{{ l.nome }}</b></a><br><span class="faint small mono">{{ l.host }}</span></td>
+          <td>{% if f.winrm_ok %}<span class="txt-green">&#9679;</span> respondeu{% elif f %}<span class="txt-red">&#9679;</span> <span class="small" title="{{ f.winrm_erro }}">sem resposta</span>{% else %}<span class="faint">-</span>{% endif %}</td>
+          <td>{% if not es_ativo %}<span class="faint small">Elastic desligado</span>
+              {% elif not f.elastic_host %}<span class="faint small">sem nome no Elastic</span>
+              {% elif l.es_fresco %}<span class="txt-green">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="faint small">ha {{ [l.es_idade, 0] | max | int }}s</span>
+              {% elif f.elastic_visto %}<span class="txt-amber">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="small txt-amber">parado desde {{ f.elastic_visto | dt }}</span>
+              {% else %}<span class="txt-amber">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="small txt-amber">nada nos ultimos 15 min</span>{% endif %}</td>
+          <td>{% if f.jobrunner %}<span class="src-tag {{ f.jobrunner }}">{{ rotulo_fonte[f.jobrunner] }}</span>{% else %}<span class="faint">-</span>{% endif %}</td>
+          <td>{% if f.nlb %}
+              aut. {% if f.nlb_auth %}<span class="src-tag {{ f.nlb_auth }}">{{ rotulo_fonte[f.nlb_auth] }}</span>{% else %}<span class="faint">-</span>{% endif %}
+              &middot; sess. {% if f.nlb_sess %}<span class="src-tag {{ f.nlb_sess }}">{{ rotulo_fonte[f.nlb_sess] }}</span>{% else %}<span class="faint">-</span>{% endif %}
+              {% else %}<span class="faint small">nao e no do NLB</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
