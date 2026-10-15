@@ -8,7 +8,9 @@
     (function () { try { var t = localStorage.getItem('rmon-theme') || '{{ default_theme }}'; if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {} })();
   </script>
   {% block head %}{% endblock %}
-  <link rel="stylesheet" href="/static/style.css">
+  <!-- selo por deploy (ver main._assets_tag): sem ele o navegador segue com o CSS
+       antigo em cache e a tela nova aparece sem estilo -->
+  <link rel="stylesheet" href="/static/style.css?v={{ assets }}">
 </head>
 <body>
   {% set path = request.url.path %}
