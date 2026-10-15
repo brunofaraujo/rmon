@@ -431,7 +431,7 @@ def record_alert(server: str, kind: str, problem: str, message: str) -> None:
 
 # O registro mais recente de cada (servidor, problema) entre os levantados e
 # resolvidos. Quando ele e um 'raised', o problema segue aberto.
-_ULTIMO_REGISTRO = """SELECT DISTINCT ON (server, problem) id, server, problem, kind, message
+_ULTIMO_REGISTRO = """SELECT DISTINCT ON (server, problem) id, ts, server, problem, kind, message
     FROM alerts_log WHERE kind IN ('raised', 'resolved')
     ORDER BY server, problem, ts DESC, id DESC"""
 
@@ -452,6 +452,26 @@ def open_alerts() -> dict[str, dict[str, str]]:
     for r in rows:
         abertos.setdefault(r["server"], {})[r["problem"]] = r["message"] or ""
     return abertos
+
+
+def open_alerts_tempos() -> dict[str, dict[str, dict[str, float]]]:
+    """Para cada problema aberto: desde quando (`desde`, o 'raised') e quando
+    foi avisado pela ultima vez (`aviso`: o lembrete mais recente, ou o proprio
+    'raised'). E o que faz o lembrete de critico sobreviver a um restart sem
+    disparar de novo logo no primeiro ciclo."""
+    with _conn() as c:
+        rows = c.execute(
+            f"""SELECT a.server, a.problem, extract(epoch FROM a.ts) AS desde,
+                       extract(epoch FROM coalesce(
+                         (SELECT max(r.ts) FROM alerts_log r
+                           WHERE r.server = a.server AND r.problem = a.problem
+                             AND r.kind = 'reminder' AND r.ts >= a.ts), a.ts)) AS aviso
+                  FROM ({_ULTIMO_REGISTRO}) a WHERE a.kind = 'raised'""").fetchall()
+    tempos: dict[str, dict[str, dict[str, float]]] = {}
+    for r in rows:
+        tempos.setdefault(r["server"], {})[r["problem"]] = {
+            "desde": float(r["desde"]), "aviso": float(r["aviso"])}
+    return tempos
 
 
 def recent_alerts(hours: int = 48, limit: int = 500, server: str | None = None) -> list[dict]:

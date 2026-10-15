@@ -27,8 +27,8 @@ def banco():
 def gravar(server, kind, problem, msg="", dias=0):
     with db._conn() as c:
         c.execute("INSERT INTO alerts_log (ts, server, kind, problem, message) "
-                  "VALUES (now() - make_interval(days => %s), %s, %s, %s, %s)",
-                  (dias, server, kind, problem, msg))
+                  "VALUES (now() - %s * interval '1 day', %s, %s, %s, %s)",
+                  (float(dias), server, kind, problem, msg))
 
 
 def test_aberto_e_o_que_terminou_em_raised(banco):
@@ -62,3 +62,17 @@ def test_prune_guarda_o_raised_de_problema_ainda_aberto(banco):
         restam = c.execute("SELECT kind, problem FROM alerts_log ORDER BY id").fetchall()
     assert [(r["kind"], r["problem"]) for r in restam] == [("raised", "DISK")]
     assert banco.open_alerts() == {"a": {"DISK": "disco em 91%"}}
+
+
+def test_tempos_do_aberto_contam_o_ultimo_lembrete(banco):
+    gravar("a", "raised", "svc:X", "parado", dias=3)
+    gravar("a", "reminder", "svc:X", "lembrete velho", dias=2.5)
+    gravar("a", "resolved", "svc:X", "parado", dias=2)
+    gravar("a", "raised", "svc:X", "parado de novo", dias=1)
+    gravar("a", "raised", "DOWN", "sem contato", dias=0.5)
+    gravar("a", "reminder", "DOWN", "segue", dias=0.25)
+    t = banco.open_alerts_tempos()["a"]
+    assert set(t) == {"svc:X", "DOWN"}
+    # lembrete do episodio anterior nao conta
+    assert t["svc:X"]["aviso"] == t["svc:X"]["desde"]
+    assert t["DOWN"]["aviso"] - t["DOWN"]["desde"] == pytest.approx(0.25 * 86400, abs=5)

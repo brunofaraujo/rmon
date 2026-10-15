@@ -568,8 +568,13 @@ def execute(server, wc, action: str) -> tuple[bool, str]:
     return nlb_action(server, wc, action)
 
 
-def run_cycle(inv, coletas: dict[str, dict], now: float | None = None) -> list[dict]:
-    """Chamado ao fim de cada poll_all, com as coletas que acabaram de chegar."""
+def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
+              hold: Iterable[str] = ()) -> list[dict]:
+    """Chamado ao fim de cada poll_all, com as coletas que acabaram de chegar.
+
+    `hold` sao os hosts em janela de manutencao (app/manutencao.py): quem esta
+    mexendo no servidor nao quer a automacao drenando ou reingressando o no.
+    """
     cfg = settings_for(inv.defaults)
     servidores = {s.name: s for s in nlb_servers(inv)}
     if cfg["mode"] == "off" or not servidores:
@@ -578,7 +583,7 @@ def run_cycle(inv, coletas: dict[str, dict], now: float | None = None) -> list[d
     with _LOCK:
         state = load_state()
         vistas = views_from(inv, coletas, now)
-        decisoes, state = evaluate(vistas, state, cfg, now)
+        decisoes, state = evaluate(vistas, state, cfg, now, hold)
         for d in decisoes:
             if d.get("action"):
                 ok, detalhe = execute(servidores[d["server"]], inv.winrm, d["action"])

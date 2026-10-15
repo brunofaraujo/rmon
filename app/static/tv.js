@@ -194,6 +194,10 @@
     // cartao normal nao ganha etiqueta: o ponto verde ja diz "online" e a
     // largura toda fica para o hostname. Etiqueta so quando ha o que avisar.
     var estado = s.sev === 2 ? "atencao" : (s.sev === 1 ? "aviso" : "");
+    // janela de manutencao: o host pode estar fora de proposito (reboot,
+    // atualizacao) e nao deve acender a TV do NOC
+    var manut = s.manut ? " manut" : "";
+    if (s.manut) { estado = "manutencao"; }
     var nome = String(s.name || "");
     var cls = nome.length > 22 ? " extenso" : (nome.length > 15 ? " longo" : "");
     function head(pill) {
@@ -201,6 +205,13 @@
         '<div class="tvc-id"><span class="n' + cls + '">' + esc(nome) + "</span>" +
         '<span class="ip">' + esc(s.host) + "</span></div>" +
         (pill ? '<span class="s">' + pill + "</span>" : "") + "</div>";
+    }
+
+    if (!s.up && s.manut) {
+      return '<article class="tvc sev0 manut">' + head(estado) +
+        '<div class="tvc-down manut"><b>EM MANUTENCAO</b><span>ate ' + esc(s.manut) +
+        " &middot; sem coleta agora</span></div>" +
+        '<div class="tvc-ft"><span>ultima coleta ' + (s.ts ? "ha " + fmtAge(s.age) : "-") + "</span></div></article>";
     }
 
     if (!s.up) {
@@ -218,7 +229,7 @@
     var rod = rodapeHTML(s);
     // no cartao apertado o rodape so sobrevive se tiver algo a dizer
     var alerta = s.jobs && (s.jobs.err || s.jobs.failed > 0) ? " alerta" : "";
-    return '<article class="tvc sev' + s.sev + '">' + head(estado) +
+    return '<article class="tvc sev' + s.sev + manut + '">' + head(estado) +
       '<div class="tvc-bars">' + barHTML("CPU", s.cpu, 90) + barHTML("MEM", s.mem, th.mem) + "</div>" +
       (mostraTags ? '<div class="tvc-tags">' + tagsHTML(s, th) + "</div>" : "") +
       '<div class="tvc-ft' + alerta + '"><span class="up">uptime ' + fmtDur(s.uptime) + "</span>" +
@@ -344,7 +355,8 @@
       kpi(s.online === s.total ? "ok" : "", s.online, "Online") +
       kpi(s.offline ? "bad" : "ok", s.offline, "Sem contato") +
       kpi(s.services_down ? "bad" : "ok", s.services_down, "Servicos parados") +
-      kpi(s.events ? "warn" : "ok", s.events, "Ocorrencias 24h");
+      kpi(s.events ? "warn" : "ok", s.events, "Ocorrencias 24h") +
+      (s.maint ? kpi("", s.maint, "Em manutencao") : "");
   }
 
   function renderTicker() {

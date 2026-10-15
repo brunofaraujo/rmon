@@ -33,7 +33,9 @@
   <a class="card" href="/server/{{ row.cfg.name }}">
     <div class="card-top">
       <div class="card-title"><span class="status-dot {{ 'up' if reachable else 'down' }}"></span>{{ row.cfg.name }}</div>
-      <span class="pill {{ 'green' if reachable else 'red' }}"><span class="d"></span>{{ 'ONLINE' if reachable else 'SEM CONTATO' }}</span>
+      {% set mj = manut.get(row.cfg.name) %}
+      {% if mj %}<span class="pill blue" title="Manutencao aberta por {{ mj.por }}{% if mj.motivo %}: {{ mj.motivo }}{% endif %}. Alertas calados."><span class="d"></span>MANUTENCAO</span>
+      {% else %}<span class="pill {{ 'green' if reachable else 'red' }}"><span class="d"></span>{{ 'ONLINE' if reachable else 'SEM CONTATO' }}</span>{% endif %}
     </div>
     <div class="host">{{ row.cfg.host }} &middot; perfil {{ row.cfg.cred }}</div>
 
