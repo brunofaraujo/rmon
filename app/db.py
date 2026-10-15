@@ -312,7 +312,11 @@ def prune(keep_days: int = 30) -> int:
     with _conn() as c:
         cur = c.execute("DELETE FROM checks WHERE ts < now() - (%s || ' days')::interval", (str(keep_days),))
         c.execute("DELETE FROM audit_log WHERE ts < now() - interval '180 days'")
-        c.execute("DELETE FROM alerts_log WHERE ts < now() - interval '180 days'")
+        # Um problema aberto ha mais de 180 dias (disco cheio que ninguem
+        # resolve) guarda o seu 'raised': sem ele, o restart seguinte o daria
+        # por novo e notificaria de novo (ver open_alerts).
+        c.execute("DELETE FROM alerts_log WHERE ts < now() - interval '180 days'"
+                  f" AND id NOT IN (SELECT id FROM ({_ULTIMO_REGISTRO}) u WHERE kind = 'raised')")
         # mudancas de pacote sao raras e valiosas na investigacao: guarda 1 ano
         c.execute("DELETE FROM package_events WHERE ts < now() - interval '365 days'")
         return cur.rowcount
@@ -423,6 +427,31 @@ def record_alert(server: str, kind: str, problem: str, message: str) -> None:
                       (server, kind, problem, message))
     except Exception:
         pass
+
+
+# O registro mais recente de cada (servidor, problema) entre os levantados e
+# resolvidos. Quando ele e um 'raised', o problema segue aberto.
+_ULTIMO_REGISTRO = """SELECT DISTINCT ON (server, problem) id, server, problem, kind, message
+    FROM alerts_log WHERE kind IN ('raised', 'resolved')
+    ORDER BY server, problem, ts DESC, id DESC"""
+
+
+def open_alerts() -> dict[str, dict[str, str]]:
+    """Problemas que o alerts_log da como abertos: {servidor: {chave: texto}}.
+
+    E o estado que o scheduler guarda em memoria para notificar so nas
+    transicoes. Sem rele-lo daqui, todo restart do servico (todo deploy) dava
+    os problemas ainda abertos por novos - de novo no celular e de novo como
+    'raised' na linha do tempo - e o que se resolvia com o RMon parado nunca
+    ganhava o seu 'resolved'.
+    """
+    with _conn() as c:
+        rows = c.execute(f"SELECT server, problem, message FROM ({_ULTIMO_REGISTRO}) u "
+                         "WHERE kind = 'raised'").fetchall()
+    abertos: dict[str, dict[str, str]] = {}
+    for r in rows:
+        abertos.setdefault(r["server"], {})[r["problem"]] = r["message"] or ""
+    return abertos
 
 
 def recent_alerts(hours: int = 48, limit: int = 500, server: str | None = None) -> list[dict]:

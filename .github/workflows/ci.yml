@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 e o minimo documentado; 3.14 e o que roda na VM de producao.
+        python: ["3.11", "3.14"]
+    services:
+      # Mesma versao major da producao. Banco descartavel: os testes de SQL
+      # (tests/test_db_alertas.py) truncam tabelas. Sem senha (trust): o
+      # container so existe durante o job, e senha no YAML acende o GitGuardian.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: rmon
+          POSTGRES_DB: rmon_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rmon"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      RMON_TEST_DSN: postgresql://rmon@127.0.0.1:5432/rmon_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Dependencias
+        run: pip install -r requirements.txt pytest
+      - name: Compilar
+        run: python -m compileall -q app deploy tests
+      - name: Testes
+        run: python -m pytest -q

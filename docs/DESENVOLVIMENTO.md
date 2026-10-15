@@ -61,6 +61,26 @@ uvicorn app.main:app --reload
 Abra `http://127.0.0.1:8080`. O schema do banco é criado automaticamente no start e o
 admin é semeado a partir do `.env` no primeiro boot.
 
+## Testes
+
+```bash
+pip install pytest
+python -m pytest -q
+```
+
+Os testes do motor de alertas (`tests/test_alertas.py`, `tests/test_estado_alertas.py`)
+e do NLB (`tests/test_nlb.py`) não precisam de rede nem de banco. Os de SQL
+(`tests/test_db_alertas.py`) só rodam com `RMON_TEST_DSN` apontando para um PostgreSQL
+**descartável** — eles truncam tabelas:
+
+```bash
+RMON_TEST_DSN=postgresql://rmon@127.0.0.1:5432/rmon_test python -m pytest -q
+```
+
+O GitHub Actions (`.github/workflows/ci.yml`) roda tudo, com um PostgreSQL de serviço,
+em todo PR e em todo push no `main`, no Python 3.11 (mínimo) e 3.14 (o da produção).
+Mudou um critério de alerta? Escreva o caso que motivou a mudança como teste.
+
 ## Estrutura do código
 
 ```
