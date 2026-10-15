@@ -170,6 +170,35 @@ servers:
 O estado da automação (desde quando cada nó está doente/apto, quem drenou, histórico de
 drenagens) fica em `app_config` (`key = 'nlb_state'`) e sobrevive a restart do RMon.
 
+## Padronização entre os nós
+
+O sinal "autentica sem criar sessão" depende de **todos** os nós gravarem o evento 1149.
+Quem grava ou não é a camada de segurança do RDP
+(`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\SecurityLayer`):
+
+| `SecurityLayer` | Significa | Grava o 1149? |
+|---|---|---|
+| 0 | RDP nativo, sem TLS | **não** |
+| 1 | Negociar (padrão do Windows) | sim |
+| 2 | TLS | sim |
+
+A coleta lê, em cada nó, o `SecurityLayer`, a NLA (`UserAuthentication`) e quando foi o
+último 1149. `scheduler.padrao_cluster` compara com os pares do mesmo cluster. Nó
+diferente da maioria, ou ativo sem 1149 há 7 dias enquanto um par gravou nas últimas
+24h, vira o aviso **Fora do padrão**. Esse aviso notifica uma vez e aparece na faixa do
+topo e na página `/fontes` até ser corrigido.
+
+Corrigir um nó com `SecurityLayer` 0, em PowerShell como administrador **no próprio
+nó**:
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer -Value 1
+```
+
+Vale para as conexões novas; as sessões abertas seguem como estão, e não precisa
+reiniciar nada. O valor 1 (Negociar) é o mesmo dos outros nós, então os mesmos clientes
+continuam entrando. Para voltar atrás, use `-Value 0`.
+
 ## Limitações conhecidas
 
 - **Nó sem WinRM não é drenado.** No pico da falha (commit esgotado) é exatamente o que
@@ -182,3 +211,5 @@ drenagens) fica em `app_config` (`key = 'nlb_state'`) e sobrevive a restart do R
 - A comparação com os pares supõe que o NLB distribui de forma parecida; afinidade por
   IP de origem pode concentrar uma unidade inteira num nó. Por isso ela exige movimento
   real nos pares (`peer_sess_min`) e não vale na carência.
+- Nó fora do padrão (ver acima) perde o sinal "autentica sem criar sessão" até ser
+  corrigido. Ele fica só com a comparação com os pares, e o RMon avisa.

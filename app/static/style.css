@@ -486,6 +486,7 @@ html[data-theme="light"] .src-tag.elastic { color: #00756d; }
   border-bottom: 1px solid var(--line); }
 .src-strip:hover { background: var(--surface-2); }
 .src-strip .src-ver { margin-left: auto; color: var(--accent); }
+.src-strip .src-fora { color: var(--red); }
 .src-part { display: inline-flex; align-items: center; gap: .3rem; }
 .src-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); display: inline-block; }
 .src-dot.ok, .src-dot.es-ok { background: var(--green); }

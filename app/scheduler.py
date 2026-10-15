@@ -280,6 +280,9 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
     p.update(broker_problems(r, th, broker_ref, broker_estavel))
     p.update(jobrunner_problems(r.get("jobrunners"), th))
     p.update(job_problems(r.get("jobs"), th, fila_hist, p))
+    # divergencias do padrao dos outros servidores (padrao_cluster, gravado na coleta)
+    if isinstance(r.get("padrao"), dict):
+        p.update({k: str(v) for k, v in r["padrao"].items() if str(k).startswith("PADRAO:")})
     return p
 
 
@@ -661,6 +664,93 @@ def _fechar_manutencao(nome: str, host: str, janela: dict, agora: float) -> None
         notify.send(cab + "\nNenhum problema aberto: voltou limpo.")
 
 
+# Camada de seguranca do RDP (RDP-Tcp\SecurityLayer) e NLA, para o texto.
+_SECURITY_LAYER = {0: "RDP nativo, sem TLS", 1: "Negociar", 2: "TLS"}
+_NLA = {0: "desligada", 1: "ligada"}
+# Agente do Elastic calado ha mais que isso (a consulta de batimento olha 15 min)
+_ELASTIC_MUDO_S = 15 * 60
+
+
+def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = None,
+                   nomes_es: dict[str, str] | None = None, es_ativo: bool = False,
+                   agora: float | None = None) -> dict[str, dict[str, str]]:
+    """O que deixa um servidor FORA DO PADRAO dos outros: {servidor: {chave: texto}}.
+
+    Coleta que vale para uns servidores e nao para outros nao protege nada - o
+    .188 passou meses sem gravar o 1149 (SecurityLayer=0) e o NLB nunca
+    conseguiu julga-lo pelo sinal "autentica sem abrir sessao". Aqui cada no e
+    comparado com os pares e a divergencia vira aviso (`PADRAO:*`, ambar, que
+    notifica uma vez e fica na tela ate ser corrigida):
+
+    * nos do NLB, por cluster: SecurityLayer e NLA do RDP diferentes da maioria;
+      no ativo no NLB que nao grava o 1149 ha 7 dias enquanto um par gravou nas
+      ultimas 24h (fim de semana sem logon em nenhum no nao acusa ninguem);
+    * Elastic ligado: agente de um servidor calado enquanto os outros mandam
+      (Elastic inteiro fora do ar nao acusa ninguem).
+    """
+    agora = time.time() if agora is None else agora
+    out: dict[str, dict[str, str]] = {}
+
+    def marcar(nome: str, chave: str, texto: str) -> None:
+        out.setdefault(nome, {})[chave] = texto
+
+    por_cluster: dict[str, list[tuple[str, dict]]] = {}
+    for s, r in coletas:
+        n = r.get("nlb") if isinstance(r.get("nlb"), dict) else None
+        if getattr(s, "nlb", False) and r.get("reachable") and n and n.get("cluster"):
+            por_cluster.setdefault(str(n["cluster"]), []).append((s.name, n))
+    for cluster, nos in por_cluster.items():
+        if len(nos) < 2:
+            continue
+        for campo, rotulo, explica in (("security_layer", "SecurityLayer do RDP", _SECURITY_LAYER),
+                                       ("nla", "NLA do RDP", _NLA)):
+            valores = [n.get(campo) for _, n in nos if n.get(campo) is not None]
+            if len(valores) < 2:
+                continue
+            contagem: dict = {}
+            for v in valores:
+                contagem[v] = contagem.get(v, 0) + 1
+            maioria, qtd = max(contagem.items(), key=lambda kv: kv[1])
+            if qtd * 2 <= len(valores):
+                continue  # sem maioria, nao ha "padrao" para cobrar
+            for nome, n in nos:
+                v = n.get(campo)
+                if v is not None and v != maioria:
+                    marcar(nome, f"PADRAO:{campo}",
+                           f"{rotulo} = {v} ({explica.get(v, '?')}), diferente dos outros nos do "
+                           f"cluster {cluster} ({maioria}, {explica.get(maioria, '?')})")
+        ativos = [(nome, n) for nome, n in nos if n.get("status") in nlb.ATIVOS]
+        gravam = [nome for nome, n in ativos
+                  if n.get("ultimo_1149_min") is not None and n["ultimo_1149_min"] <= 24 * 60]
+        if not gravam:
+            continue
+        for nome, n in ativos:
+            ult = n.get("ultimo_1149_min")
+            if "ultimo_1149_min" in n and (ult is None or ult > 7 * 24 * 60):
+                texto = (f"nao grava o evento 1149 (RDP autenticado), que {', '.join(gravam)} grava: o "
+                         "NLB nao consegue ver se este no autentica sem abrir sessao")
+                if (out.get(nome) or {}).pop("PADRAO:security_layer", None) is not None:
+                    texto += (f". Causa: SecurityLayer do RDP = {n.get('security_layer')} "
+                              f"({_SECURITY_LAYER.get(n.get('security_layer'), '?')}); com 1 (Negociar), "
+                              "como nos outros nos, o Windows passa a gravar")
+                marcar(nome, "PADRAO:1149", texto)
+
+    if es_ativo and vistos_es:
+        frescos = {h for h, ts in vistos_es.items() if agora - ts <= _ELASTIC_MUDO_S}
+        if frescos:
+            for s, r in coletas:
+                h = (nomes_es or {}).get(s.name)
+                if not h or h in frescos:
+                    continue
+                ts = vistos_es.get(h)
+                marcar(s.name, "PADRAO:elastic",
+                       f"agente do Elastic ({h}) sem mandar dados "
+                       + (f"desde {manutencao.hora(ts)}" if ts else "nos ultimos 15 min")
+                       + ", enquanto os outros servidores mandam: historico do JobRunner e RDP deste "
+                         "host ficam so com o WinRM")
+    return {k: v for k, v in out.items() if v}
+
+
 def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
@@ -696,8 +786,19 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         except Exception:  # noqa: BLE001
             log.exception("Elasticsearch: falha ao completar a coleta (seguindo pelo WinRM)")
         # De onde veio cada dado deste ciclo, para a tela dizer (app/fontes.py)
-        fontes.registrar(coletas, nomes_es, vistos_es,
-                         elastic.ativo(elastic.settings_for(inv.defaults)))
+        es_ativo = elastic.ativo(elastic.settings_for(inv.defaults))
+        fontes.registrar(coletas, nomes_es, vistos_es, es_ativo)
+        # Padronizacao: gravada com a coleta, para painel, mural e alerta verem o mesmo
+        padrao = padrao_cluster(coletas, vistos_es, nomes_es, es_ativo)
+        for server, result in coletas:
+            result["padrao"] = dict(padrao.get(server.name) or {})
+            # Elastic sem resposta neste ciclo nao "resolve" o agente parado
+            # que ja estava acusado: sem leitura, o estado anterior vale.
+            if es_ativo and not vistos_es:
+                velho = (_last.get(server.name) or {}).get("PADRAO:elastic")
+                if velho:
+                    result["padrao"]["PADRAO:elastic"] = velho
+        fontes.registrar_padrao({s.name: r["padrao"] for s, r in coletas})
         for server, result in coletas:
             _identificar_jobrunners(result.get("jobrunners"), th)
 

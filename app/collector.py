@@ -208,6 +208,16 @@ if (__NLB__) {
     $rdpSince = (Get-Date).AddMinutes(-__RDP_WIN__)
     $nlb.auth = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; Id = 1149; StartTime = $rdpSince } -ErrorAction SilentlyContinue).Count
     $nlb.sess = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'; Id = 21, 25; StartTime = $rdpSince } -ErrorAction SilentlyContinue).Count
+    # Padronizacao entre os nos (scheduler.padrao_cluster): a camada de seguranca
+    # do RDP decide se o 1149 e gravado - com SecurityLayer=0 (RDP nativo) o
+    # Windows nao grava, e o no fica sem o sinal "autentica sem abrir sessao".
+    $nlb.security_layer = $null; $nlb.nla = $null; $nlb.ultimo_1149_min = $null
+    try {
+        $rdpTcp = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop
+        $nlb.security_layer = $rdpTcp.SecurityLayer; $nlb.nla = $rdpTcp.UserAuthentication
+    } catch { }
+    $u1149 = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; Id = 1149 } -MaxEvents 1 -ErrorAction SilentlyContinue
+    if ($u1149) { $nlb.ultimo_1149_min = [int]((Get-Date) - $u1149.TimeCreated).TotalMinutes }
     $nlb = [pscustomobject]$nlb
 }
 [pscustomobject]@{

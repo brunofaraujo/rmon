@@ -52,6 +52,8 @@ _SCHEMA = [
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS commit_pct real",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS jobrunners jsonb",
     "ALTER TABLE checks ADD COLUMN IF NOT EXISTS nlb jsonb",
+    # problemas de padronizacao entre os nos (scheduler.padrao_cluster)
+    "ALTER TABLE checks ADD COLUMN IF NOT EXISTS padrao jsonb",
     # --- inventario de software (cadencia propria, nao entra em checks) ---
     """CREATE TABLE IF NOT EXISTS host_packages (
         server text NOT NULL,
@@ -162,8 +164,8 @@ def insert_check(server: str, result: dict[str, Any]) -> None:
         c.execute(
             """INSERT INTO checks (server, reachable, cpu, mem_pct, uptime_sec,
                  disks, services, events, app_ok, app_ms, error, users_count, jobs,
-                 broker, commit_pct, jobrunners, nlb)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                 broker, commit_pct, jobrunners, nlb, padrao)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (server, bool(result.get("reachable")), result.get("cpu"), result.get("mem_pct"),
              result.get("uptime_sec"), Jsonb(result.get("disks") or []),
              Jsonb(result.get("services") or []), Jsonb(result.get("events") or []),
@@ -171,7 +173,8 @@ def insert_check(server: str, result: dict[str, Any]) -> None:
              Jsonb(result["jobs"]) if result.get("jobs") else None,
              Jsonb(result.get("broker") or []), result.get("commit_pct"),
              Jsonb(result["jobrunners"]) if result.get("jobrunners") else None,
-             Jsonb(result["nlb"]) if result.get("nlb") else None),
+             Jsonb(result["nlb"]) if result.get("nlb") else None,
+             Jsonb(result["padrao"]) if result.get("padrao") else None),
         )
 
 
