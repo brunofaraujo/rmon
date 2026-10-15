@@ -12,6 +12,17 @@
   <a class="btn" href="/">&larr; Painel</a>
 </div>
 
+{% set fsrv = fonte_do_servidor(name) %}
+{% if fsrv %}
+<div class="src-faixa" title="De onde veio cada dado desta tela no ultimo ciclo de coleta">
+  <span class="faint small">Fontes desta tela:</span>
+  <span class="src-tag winrm">WinRM</span><span class="small">{{ 'coleta ok' if fsrv.winrm_ok else 'sem resposta' }}: metricas, servicos, discos, broker{% if fsrv.jobrunner == 'winrm' %}, JobRunner atual{% endif %}</span>
+  {% if fsrv.jobrunner == 'elastic' or fsrv.elastic_host %}
+  <span class="src-tag elastic">Elastic</span><span class="small">{% if fsrv.elastic_visto %}agente {{ fsrv.elastic_host }}{% else %}{{ fsrv.elastic_host }} sem dados{% endif %}: historico do JobRunner{% if fsrv.jobrunner == 'elastic' %}, JobRunner atual{% endif %}{% if fsrv.nlb_auth == 'elastic' or fsrv.nlb_sess == 'elastic' %}, contagens de RDP do NLB{% endif %}</span>
+  {% endif %}
+  <a class="small" href="/fontes">ver todas</a>
+</div>
+{% endif %}
 {% if flash %}<div class="alert ok">{{ flash }}</div>{% endif %}
 {% if manut %}
 <div class="alert info" style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
@@ -54,7 +65,8 @@
 {% if es %}
 <div class="panel">
   <h2 style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">Memoria do maior JobRunner
-    <span class="muted small">(Elasticsearch &middot; {{ es.nome }})</span>
+    <span class="src-tag elastic">Elastic</span>
+    <span class="muted small">(historico do Elasticsearch &middot; host {{ es.nome }})</span>
     <span class="pills" style="margin-left:auto">{% for h, rot in [(24, '24h'), (168, '7 dias'), (720, '30 dias')] %}<a class="pill chip-link {{ 'green' if es.horas == h else '' }}" href="?jr_h={{ h }}">{{ rot }}</a>{% endfor %}</span></h2>
   {% if es.graf %}
   {% set g = es.graf %}
@@ -91,7 +103,7 @@
   {% set jr = current.jobrunners %}
   {% if jr and jr.fonte == 'elastic' %}
   <div class="panel">
-    <h2>JobRunner do RM <span class="muted small">(lido do Elasticsearch: o WinRM nao responde)</span></h2>
+    <h2>JobRunner do RM <span class="src-tag elastic">Elastic</span> <span class="muted small">(o WinRM nao responde: leitura do Elasticsearch)</span></h2>
     <div class="pills">
       {% for p in jr.top %}
       {% set gb = (p.private_mb or 0) / 1024 %}
@@ -180,7 +192,7 @@
   {% if d.jobrunners and d.jobrunners.count %}
   {% set jr = d.jobrunners %}
   <div class="panel">
-    <h2>JobRunner do RM <span class="muted small">({{ jr.count }} processo(s), {{ ((jr.total_mb or 0) / 1024) | round(1) }} GB de memoria privada no total)</span></h2>
+    <h2>JobRunner do RM <span class="src-tag winrm">WinRM</span> <span class="muted small">({{ jr.count }} processo(s), {{ ((jr.total_mb or 0) / 1024) | round(1) }} GB de memoria privada no total)</span></h2>
     <div class="pills">
       {% for p in jr.top %}
       {% set gb = (p.private_mb or 0) / 1024 %}

@@ -283,7 +283,8 @@ def test_host_sem_winrm_mostra_o_jobrunner_do_elastic_sem_botao(com_elastic):
                                       "fonte": "elastic", "computer": "HOSTA"})]
     com_elastic.app.entrar()
     html = com_elastic.app.c.get("/server/app-34").text
-    assert "lido do Elasticsearch" in html and "PID 4242" in html
+    assert "leitura do Elasticsearch" in html and "PID 4242" in html
+    assert "JobRunner do RM <span class=\"src-tag elastic\">Elastic</span>" in html
     assert 'class="svc-btn jr-kill"' not in html and "acima de 8 GB" in html
     r = com_elastic.app.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "4242"})
     assert r.status_code == 409 and "Elasticsearch" in r.json()["msg"] and est.mortes == []
@@ -293,9 +294,11 @@ def test_nlb_mostra_de_onde_veio_cada_contagem(app_falso):
     main.STATE["inv"].servers[0].nlb = True
     app_falso.estado.coletas = [coleta(nlb={
         "status": 1008, "cluster": "vip", "host_id": 1, "auth": 7, "sess": 0,
-        "auth_winrm": 7, "sess_winrm": 0, "auth_elastic": 7, "sess_elastic": 0,
-        "fonte": {"auth": "elastic", "sess": "elastic"}})]
+        "auth_winrm": 7, "sess_winrm": 0, "auth_elastic": 9, "sess_elastic": 0,
+        "fonte": {"auth": "winrm", "sess": "elastic"}})]
     app_falso.entrar()
     html = app_falso.c.get("/nlb").text
-    assert "7 aut. / 0 sess." in html and ">Elastic</span>" in html
-    assert "Elastic: 7 aut. / 0 sess. &middot; WinRM: 7 aut. / 0 sess." in html
+    # cada numero com a sua etiqueta, a vista - nao num tooltip
+    assert '7 aut. <span class="src-tag winrm">WinRM</span>' in html
+    assert '0 sess. <span class="src-tag elastic">Elastic</span>' in html
+    assert "Elastic 9/0 &middot; WinRM 7/0" in html

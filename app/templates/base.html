@@ -51,6 +51,19 @@
     </div>
     {% endif %}
   </header>
+  {% if authed and request.session.get('role') == 'admin' %}
+  {% set ft = fontes_topo() %}
+  <a class="src-strip" href="/fontes" title="De onde vem cada dado do painel. Clique para ver por servidor.">
+    <span class="faint">Fontes de dados:</span>
+    {% if not ft.coletado %}<span class="src-part"><span class="src-dot espera"></span>aguardando a 1a coleta</span>
+    {% else %}
+    <span class="src-part"><span class="src-dot {{ ft.winrm_estado }}"></span><span class="src-tag winrm">WinRM</span> <b>{{ ft.winrm_ok }}/{{ ft.total }}</b> hosts responderam</span>
+    <span class="src-part"><span class="src-dot es-{{ ft.es_estado }}"></span><span class="src-tag elastic">Elastic</span>
+      <b>{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[ft.es_estado] }}</b>{% if ft.es_estado == 'ok' %} <span class="faint">(ultima consulta {{ ft.es_texto }})</span>{% endif %}</span>
+    {% endif %}
+    <span class="src-ver">ver por servidor &rarr;</span>
+  </a>
+  {% endif %}
   <main class="container">
     {% block content %}{% endblock %}
   </main>
