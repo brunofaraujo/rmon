@@ -50,10 +50,65 @@
 </details>
 {% endif %}
 
+{% macro painel_elastic() %}
+{% if es %}
+<div class="panel">
+  <h2 style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">Memoria do maior JobRunner
+    <span class="muted small">(Elasticsearch &middot; {{ es.nome }})</span>
+    <span class="pills" style="margin-left:auto">{% for h, rot in [(24, '24h'), (168, '7 dias'), (720, '30 dias')] %}<a class="pill chip-link {{ 'green' if es.horas == h else '' }}" href="?jr_h={{ h }}">{{ rot }}</a>{% endfor %}</span></h2>
+  {% if es.graf %}
+  {% set g = es.graf %}
+  <svg class="es-graf" viewBox="0 0 {{ g.w }} {{ g.h }}" preserveAspectRatio="none" role="img"
+       aria-label="Memoria privada do maior RM.Host.JobRunner: pico de {{ g.pico_gb }} GB">
+    {% if g.critico_y is not none %}<line class="lim crit" x1="0" x2="{{ g.w }}" y1="{{ g.critico_y }}" y2="{{ g.critico_y }}"><title>critico: {{ jr_limite_gb }} GB</title></line>{% endif %}
+    {% if g.aviso_y is not none %}<line class="lim aviso" x1="0" x2="{{ g.w }}" y1="{{ g.aviso_y }}" y2="{{ g.aviso_y }}"><title>aviso: {{ jr_aviso_gb }} GB</title></line>{% endif %}
+    <polygon class="area" points="{{ g.area }}"/>
+    <polyline class="linha" points="{{ g.linha }}" vector-effect="non-scaling-stroke"/>
+    <circle class="pico" cx="{{ g.pico_x }}" cy="{{ g.pico_y }}" r="3"><title>{{ g.pico_gb }} GB, PID {{ g.pico_pid }}</title></circle>
+  </svg>
+  <div class="muted small" style="display:flex;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
+    <span>{{ g.t0 | dt }}</span>
+    <span>pico de <b class="{{ 'txt-red' if jr_limite_gb and g.pico_gb >= jr_limite_gb else ('txt-amber' if jr_aviso_gb and g.pico_gb >= jr_aviso_gb else '') }}">{{ g.pico_gb }} GB</b>
+      (PID {{ g.pico_pid }}) em {{ g.pico_t | dt }} &middot; linhas: aviso {{ jr_aviso_gb }} GB, critico {{ jr_limite_gb }} GB</span>
+    <span>{{ g.t1 | dt }}</span>
+  </div>
+  {% else %}
+  <div class="alert ok small">Nenhum JobRunner entre os maiores processos do host nesse periodo. O Elastic so guarda os processos do topo de memoria/CPU: quieto e bom sinal.</div>
+  {% endif %}
+  <div class="faint small" style="margin-top:.4rem">Agente do Elastic neste host:
+    {% if es.fresco %}ultima metrica ha {{ [es.idade, 0] | max | int }}s
+    {% elif es.visto %}<span class="txt-amber">sem dados desde {{ es.visto | dt }}: o agente parou. A serie e as contagens de RDP voltam para o WinRM.</span>
+    {% else %}<span class="txt-amber">sem dados nos ultimos 7 dias (agente parado ou host sem agente).</span>{% endif %}
+    {% if es.erro %}&middot; <span class="txt-red">Elasticsearch com erro agora: {{ es.erro }}</span>{% endif %}</div>
+</div>
+{% endif %}
+{% endmacro %}
+
 {% if not current %}
   <div class="alert">Sem dados para este servidor ainda.</div>
 {% elif not current.reachable %}
   <div class="alert">Sem contato via WinRM. Ultimo erro: {{ current.error }}</div>
+  {% set jr = current.jobrunners %}
+  {% if jr and jr.fonte == 'elastic' %}
+  <div class="panel">
+    <h2>JobRunner do RM <span class="muted small">(lido do Elasticsearch: o WinRM nao responde)</span></h2>
+    <div class="pills">
+      {% for p in jr.top %}
+      {% set gb = (p.private_mb or 0) / 1024 %}
+      {% set ex = (jr.jobs or {}).get(p.pid | string) %}
+      <span class="pill {{ 'red' if (jr_limite_gb and gb >= jr_limite_gb) else ('amber' if (jr_aviso_gb and gb >= jr_aviso_gb) else '') }}"
+            title="PID {{ p.pid }}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB</span>
+      {% endfor %}
+    </div>
+    {% if jr_alerta %}
+    <div class="alert small" style="margin-top:.6rem">
+      {% for msg in jr_alerta.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="muted small" style="margin-top:.4rem">Sem WinRM nao da para encerrar o processo daqui: cancele o job no RM (Gerenciamento de Jobs) ou atue no host.</div>
+  </div>
+  {% endif %}
+  {{ painel_elastic() }}
 {% else %}
   {% set d = current %}
   {% set cpu = (d.cpu if d.cpu is not none else 0) | round(0,'floor') | int %}
@@ -145,6 +200,8 @@
     {% endif %}
   </div>
   {% endif %}
+
+  {{ painel_elastic() }}
 
   <div class="panel">
     <h2>Servicos monitorados</h2>

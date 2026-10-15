@@ -77,6 +77,9 @@ class ServerConfig:
     # No de cluster NLB de terminal server: coleta o estado do NLB e os logons
     # RDP, e entra na drenagem/reingresso automatico (ver app/nlb.py).
     nlb: bool = False
+    # host.name deste servidor no Elasticsearch. Vazio = o COMPUTERNAME que o
+    # inventario ja coletou, em minusculas (casa "srv06n" e "srv06n.dominio").
+    elastic_host: str = ""
 
 
 def credential_for(profile: str) -> tuple[str, str]:
@@ -207,6 +210,7 @@ def load_inventory(path: str) -> Inventory:
                 cred=raw.get("cred", "default"),
                 jobs=raw.get("jobs"),
                 nlb=bool(raw.get("nlb", False)),
+                elastic_host=str(raw.get("elastic_host") or "").strip(),
             )
         )
     ambientes = {str(k): str(v) for k, v in (data.get("environments") or {}).items()}

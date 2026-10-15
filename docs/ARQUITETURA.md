@@ -37,17 +37,21 @@ flowchart TD
    - checa `app_health` por HTTP (independente do WinRM);
    - **nunca levanta exceção** — erros são encapsulados no resultado.
 3. Se o servidor tem bloco `jobs`, `jobstats.query` consulta o SQL Server.
-4. `db.insert_check` grava o snapshot em `checks`.
-5. `scheduler.problems` avalia o resultado contra os limiares; problemas **novos** e
+4. Com o Elasticsearch configurado, `scheduler._enriquecer_elastic` completa as coletas
+   (`app/elastic.py`, só leitura): as contagens de RDP dos nós do NLB vêm do Elastic e o
+   WinRM cobre o que faltar; host sem WinRM ganha a leitura do JobRunner do Elastic.
+   Elastic fora ou agente do host parado: nada muda, segue o WinRM.
+5. `db.insert_check` grava o snapshot em `checks`.
+6. `scheduler.problems` avalia o resultado contra os limiares; problemas **novos** e
    **resolvidos** viram registros em `alerts_log` e, se houver canal, notificação
    (comparando com o estado anterior em memória — só transições). Esse estado é
    **recarregado do `alerts_log` no primeiro ciclo após o start** (`db.open_alerts`),
    então um restart não renotifica o que já estava aberto. Coleta sem contato não
    resolve nada além do próprio `DOWN` (o resto fica desconhecido, não consertado), e
    serviço ou servidor que saiu do inventário fecha o alerta sem mandar "resolvido".
-6. Com as coletas do ciclo, `nlb.run_cycle` avalia os nós com `nlb: true` e decide
+7. Com as coletas do ciclo, `nlb.run_cycle` avalia os nós com `nlb: true` e decide
    drenar/reingressar no NLB (só executa no modo `auto`) — ver [NLB.md](NLB.md).
-7. A cada 6h, `db.prune` remove histórico antigo.
+8. A cada 6h, `db.prune` remove histórico antigo.
 
 O primeiro ciclo é disparado imediatamente no start (thread única) para popular o
 painel sem esperar o primeiro intervalo.

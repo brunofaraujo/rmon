@@ -5,6 +5,7 @@ admin): erro de template so apareceria em producao, na frente do usuario.
 """
 from __future__ import annotations
 
+import re
 import time
 from types import SimpleNamespace
 
@@ -240,3 +241,61 @@ def test_alvo_so_da_lista_da_coleta():
     assert collector.jobrunner_alvo(c, 5) is None
     assert collector.jobrunner_alvo(c, "x") is None
     assert collector.jobrunner_alvo({}, 4242) is None
+
+
+# ------------------------------------------------------------ Elasticsearch
+
+@pytest.fixture
+def com_elastic(app_falso, monkeypatch):
+    monkeypatch.setenv("RMON_ES_URL", "https://elastic.exemplo:9200")
+    monkeypatch.setenv("RMON_ES_API_KEY", "chave-de-teste")
+    monkeypatch.setattr(db, "computadores", lambda: {"app-34": "HOSTA"})
+    pedidos = []
+    serie = [{"t": AGORA - 7200, "mb": 2048, "pid": 4242}, {"t": AGORA - 600, "mb": 9 * 1024, "pid": 4242}]
+
+    def jobrunner_serie(cfg, nome, processo, horas=24):
+        pedidos.append((nome, processo, horas))
+        return serie
+
+    monkeypatch.setattr(main.elastic, "jobrunner_serie", jobrunner_serie)
+    monkeypatch.setattr(main.elastic, "vivos", lambda cfg, nomes, janela="now-15m": {"hosta": time.time() - 20})
+    return SimpleNamespace(app=app_falso, pedidos=pedidos)
+
+
+def test_tela_mostra_a_serie_do_elastic(com_elastic):
+    com_elastic.app.entrar()
+    html = com_elastic.app.c.get("/server/app-34?jr_h=168").text
+    assert "Memoria do maior JobRunner" in html and 'class="es-graf"' in html
+    assert "pico de <b class=\"txt-red\">9.0 GB</b>" in html
+    assert re.search(r"ultima metrica ha 2\ds", html)
+    assert com_elastic.pedidos == [("hosta", "RM.Host.JobRunner", 168)]
+
+
+def test_tela_sem_elastic_nao_tem_o_painel(app_falso):
+    app_falso.entrar()
+    assert "Memoria do maior JobRunner" not in app_falso.c.get("/server/app-34").text
+
+
+def test_host_sem_winrm_mostra_o_jobrunner_do_elastic_sem_botao(com_elastic):
+    est = com_elastic.app.estado
+    est.coletas = [coleta(reachable=False, error="WinRMOperationTimeoutError",
+                          jobrunners={"top": [{"pid": 4242, "private_mb": 9 * 1024}],
+                                      "fonte": "elastic", "computer": "HOSTA"})]
+    com_elastic.app.entrar()
+    html = com_elastic.app.c.get("/server/app-34").text
+    assert "lido do Elasticsearch" in html and "PID 4242" in html
+    assert 'class="svc-btn jr-kill"' not in html and "acima de 8 GB" in html
+    r = com_elastic.app.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "4242"})
+    assert r.status_code == 409 and "Elasticsearch" in r.json()["msg"] and est.mortes == []
+
+
+def test_nlb_mostra_de_onde_veio_cada_contagem(app_falso):
+    main.STATE["inv"].servers[0].nlb = True
+    app_falso.estado.coletas = [coleta(nlb={
+        "status": 1008, "cluster": "vip", "host_id": 1, "auth": 7, "sess": 0,
+        "auth_winrm": 7, "sess_winrm": 0, "auth_elastic": 7, "sess_elastic": 0,
+        "fonte": {"auth": "elastic", "sess": "elastic"}})]
+    app_falso.entrar()
+    html = app_falso.c.get("/nlb").text
+    assert "7 aut. / 0 sess." in html and ">Elastic</span>" in html
+    assert "Elastic: 7 aut. / 0 sess. &middot; WinRM: 7 aut. / 0 sess." in html

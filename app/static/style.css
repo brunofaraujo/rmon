@@ -472,3 +472,13 @@ a.chip-link:hover, .pill.occ-link:hover { border-color: var(--accent); color: va
 a.stat { display: block; transition: .15s; }
 a.stat:hover { border-color: var(--line-2); background: var(--surface-3); transform: translateY(-1px); }
 a.kpi:hover .val { color: var(--accent); }
+
+/* ---------- Serie do JobRunner (Elasticsearch) ---------- */
+.es-graf { display: block; width: 100%; height: 150px; margin: .4rem 0 .3rem;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.es-graf .linha { fill: none; stroke: var(--accent); stroke-width: 2; }
+.es-graf .area { fill: var(--accent); opacity: .12; }
+.es-graf .lim { stroke-width: 1; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.es-graf .lim.aviso { stroke: var(--amber); }
+.es-graf .lim.crit { stroke: var(--red); }
+.es-graf .pico { fill: var(--red); }

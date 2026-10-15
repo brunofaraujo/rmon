@@ -75,6 +75,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 | `app_health` | — | `url`, `expect_status`, `timeout_sec` — checagem HTTP independente do WinRM |
 | `jobs` | — | `window_min`, `servidor`, `success_status`, `failed_status` — requer login SQL configurado |
 | `nlb` | — | `true` = nó de cluster NLB de terminal server: coleta o estado do NLB e os logons RDP e entra na drenagem/reingresso automático (ver [NLB.md](NLB.md)) |
+| `elastic_host` | — | `host.name` do servidor no Elasticsearch, quando não for o COMPUTERNAME (ver [Elasticsearch](#elasticsearch-opcional-só-leitura)) |
 
 ### Serviços fixos x descobertos (`service_patterns`)
 
@@ -385,6 +386,8 @@ parser Python próprio (o `systemd` **não** usa `EnvironmentFile` — ver
 | `RMON_SQL_HOST`/`_PORT`/`_DB`/`_USER`/`_PASSWORD` | Login (somente-leitura) do SQL Server p/ estatísticas de jobs |
 | `RMON_TELEGRAM_TOKEN` / `RMON_TELEGRAM_CHAT_ID` | Alerta via Telegram |
 | `RMON_SLACK_WEBHOOK` | Alerta via Slack (Incoming Webhook) |
+| `RMON_ES_URL` / `RMON_ES_API_KEY` | Elasticsearch opcional, só leitura (ver [Elasticsearch](#elasticsearch-opcional-só-leitura)). Vazio = tudo pelo WinRM |
+| `RMON_ES_CA` | PEM da CA do Elasticsearch (`off` desliga a verificação de TLS, não recomendado) |
 | `RMON_CONFIG` | Caminho do `servers.yaml` (padrão `/opt/rmon/config/servers.yaml`) |
 | `RMON_HOST` / `RMON_PORT` | Bind do servidor (em prod o systemd fixa `0.0.0.0:8080`) |
 | `RMON_TV_TOKEN` | Token do mural em quiosque: libera `/tv?token=...` sem login (ver abaixo) |
@@ -401,6 +404,7 @@ sudo deploy/definir-winrm.sh <perfil>
 sudo deploy/definir-sql.sh
 sudo deploy/definir-telegram.sh
 sudo deploy/definir-slack.sh
+sudo deploy/definir-elastic.sh
 ```
 
 ### Credenciais multidomínio (perfis)
@@ -609,6 +613,66 @@ segundos, e a tentativa seguinte responde em menos de um segundo. Por isso:
 Para voltar ao comportamento antigo (alertar na primeira falha), use `down_after: 1`.
 
 ---
+
+## Elasticsearch (opcional, só leitura)
+
+Se o parque já manda dados para um Elasticsearch (Elastic Agent/Fleet com as integrações
+**System** e **Windows**), o RMon pode lê-lo ao lado do WinRM. Não grava nada lá: só
+`_search`. Sem as variáveis abaixo, tudo segue pelo WinRM, como sempre.
+
+| O quê | Índice | Como o RMon usa |
+|---|---|---|
+| Memória dos `RM.Host.JobRunner` | `metrics-system.process-*` | Gráfico da **série histórica** na tela do servidor (24h/7/30 dias). Quando o WinRM do host não responde, a leitura atual do JobRunner vem daqui e os alertas de 4/8 GB continuam valendo |
+| Eventos 1149 / 21 / 25 (RDP) | `logs-winlog.rdp_*` | Contagens do NLB (autenticou × abriu sessão). O que só uma fonte sabe, vale ela. Com as duas, vale a leitura **mais saudável** (menos autenticações, mais sessões): atraso de ingestão não pode drenar nó saudável |
+| Batimento do agente | `metrics-system.cpu-*` | Dado só vale se o host mandou métrica há menos de `max_age_sec`. Agente parado vira "não sei", nunca "zero" |
+
+O `system.process` do Elastic guarda só os processos **do topo** de memória/CPU de cada
+host. Um JobRunner pequeno não aparece, mas um que dispara aparece: é justamente o caso
+que interessa. No incidente de 13/10, a escalada inteira até 80 GB está lá, um ponto por
+minuto.
+
+### Ligar
+
+1. No Kibana (**Dev Tools**), crie uma API key que **só lê** esses índices:
+
+   ```
+   POST /_security/api_key
+   {
+     "name": "rmon-leitura",
+     "role_descriptors": {
+       "rmon_leitura": {
+         "indices": [{
+           "names": ["metrics-system.process-*", "metrics-system.cpu-*", "logs-winlog.rdp_*"],
+           "privileges": ["read"]
+         }]
+       }
+     }
+   }
+   ```
+
+   Guarde o campo `encoded` da resposta.
+2. Na VM: `sudo bash /opt/rmon/deploy/definir-elastic.sh`. O script pede a URL e a chave,
+   grava a CA que o Elastic apresenta (e mostra a impressão digital SHA-256 para você
+   conferir), testa a chave com uma busca e reinicia o serviço.
+
+### Ajustes (`defaults.elastic`, todos opcionais)
+
+```yaml
+defaults:
+  elastic:
+    enabled: true            # false desliga sem apagar a chave do .env
+    timeout_sec: 5           # cada consulta; estourou = segue pelo WinRM
+    max_age_sec: 180         # host sem métrica há mais que isso = agente parado
+    rdp: true                # contagens 1149/21/25 do NLB pelo Elastic
+    jobrunner: true          # série e leitura do JobRunner sem WinRM
+    process_index: "metrics-system.process-*"
+    rdp_index: "logs-winlog.rdp_*"
+    alive_index: "metrics-system.cpu-*"
+```
+
+O servidor é achado no Elastic pelo `host.name`. O padrão é o COMPUTERNAME que o
+inventário já coletou, em minúsculas: `SRV06N` casa `srv06n` e `srv06n.dominio.local`.
+Se o nome no Elastic for outro, use `elastic_host` no servidor.
 
 ## NLB dos terminal servers (`defaults.nlb`)
 

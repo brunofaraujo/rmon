@@ -10,8 +10,10 @@ from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, execution, inventory, jobstats, manutencao, nlb, notify, packages
+from . import db, elastic, execution, inventory, jobstats, manutencao, nlb, notify, packages
 from .collector import collect_server
+from .collector import jobrunner_settings as collector_jobrunner_settings
+from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
 from .inventory import collect_inventory
 
@@ -247,9 +249,15 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
     if not r.get("reachable"):
         need = max(1, int(th.get("down_after", 3) or 1))
         streak = need if fail_streak is None else fail_streak
-        if streak < need:
-            return p
-        p["DOWN"] = f"sem contato (WinRM) ha {streak} coletas: {(r.get('error') or '')[:100]}"
+        if streak >= need:
+            p["DOWN"] = f"sem contato (WinRM) ha {streak} coletas: {(r.get('error') or '')[:100]}"
+        # Sem WinRM o resto da coleta e lixo - menos o JobRunner lido do
+        # Elasticsearch (app/elastic.py), que chega por outro caminho. E
+        # justamente quando o JobRunner estoura o commit que o WinRM do host
+        # para de responder: e a hora em que o alerta dele mais importa.
+        jr = r.get("jobrunners")
+        if isinstance(jr, dict) and jr.get("fonte") == "elastic":
+            p.update(jobrunner_problems(jr, th))
         return p
     for s in r.get("services") or []:
         if service_down(s):
@@ -451,6 +459,89 @@ def _identificar_jobrunners(jr: dict | None, th: dict) -> None:
         jr["jobs"] = jobstats.executions_by_pid(jr.get("computer"), grandes) or {}
 
 
+def aplicar_rdp(r: dict, es: dict | None) -> None:
+    """Combina as contagens 1149/21/25 do Elasticsearch com as do WinRM.
+
+    O que so uma fonte sabe, vale ela: canal nao coletado no Elastic (o 1149
+    de um host que nem grava o evento) ou agente parado ficam com o WinRM;
+    host cujo Get-WinEvent nao respondeu fica com o Elastic.
+
+    Quando as duas sabem, vale a leitura que deixa o no MAIS SAUDAVEL: menos
+    autenticacoes (`auth`) e mais sessoes (`sess`). E essa contagem que, no
+    modo auto, drena o no do NLB - e um atraso de ingestao (5-11 s normais,
+    mais com o cluster carregado) pode mostrar o 1149 antes do 21/25 e fazer um
+    no saudavel parecer "autentica sem abrir sessao". Fonte secundaria nao
+    drena no que a leitura local nao drenaria.
+
+    As duas leituras ficam gravadas (`auth_winrm`/`sess_winrm` e o Elastic em
+    `fonte`) para a tela do NLB e para comparar depois.
+    """
+    n = r.get("nlb") if isinstance(r.get("nlb"), dict) else None
+    if n is None:
+        if not es or all(es.get(c) is None for c in ("auth", "sess")):
+            return
+        # host sem WinRM: so as contagens; status do NLB segue desconhecido
+        n = r["nlb"] = {"status": None, "cluster": None, "host_id": None,
+                        "auth": None, "sess": None, "error": None}
+    n["auth_winrm"], n["sess_winrm"] = n.get("auth"), n.get("sess")
+    n["auth_elastic"], n["sess_elastic"] = (es or {}).get("auth"), (es or {}).get("sess")
+    fonte: dict[str, str] = {}
+    for campo, saudavel in (("auth", min), ("sess", max)):
+        do_es, do_winrm = (es or {}).get(campo), n.get(campo)
+        if do_es is None and do_winrm is None:
+            continue
+        if do_winrm is None or (do_es is not None and saudavel(do_es, do_winrm) == do_es):
+            n[campo] = do_es
+            fonte[campo] = "elastic"
+        else:
+            fonte[campo] = "winrm"
+    n["fonte"] = fonte
+
+
+def _enriquecer_elastic(inv: Inventory, coletas: list[tuple]) -> None:
+    """Completa as coletas do ciclo com o Elasticsearch (so leitura, opcional).
+
+    * contagens de RDP dos nos do NLB: Elastic primeiro, WinRM no que faltar;
+    * JobRunners de host sem WinRM: a leitura do Elastic substitui a que nao
+      veio, e os alertas de 4/8 GB continuam valendo (ver problems()).
+
+    Elastic desligado, fora do ar ou sem dado fresco do host: nada muda, a
+    coleta segue so com o WinRM. Nunca levanta excecao.
+    """
+    cfg = elastic.settings_for(inv.defaults)
+    if not elastic.ativo(cfg):
+        return
+    try:
+        comp = db.computadores()
+    except Exception:  # noqa: BLE001
+        comp = {}
+    nomes = {}
+    for server, r in coletas:
+        jr = r.get("jobrunners") if isinstance(r.get("jobrunners"), dict) else {}
+        nomes[server.name] = elastic.nome_es(server, comp.get(server.name) or jr.get("computer"))
+    rdp_de = [s for s, _ in coletas if cfg.get("rdp") and getattr(s, "nlb", False)
+              and nomes.get(s.name)]
+    jr_de = [(s, r) for s, r in coletas if cfg.get("jobrunner") and not r.get("reachable")
+             and nomes.get(s.name)]
+    if not (rdp_de or jr_de):
+        return
+    vivos = elastic.frescos(cfg, sorted({nomes[s.name] for s in rdp_de}
+                                        | {nomes[s.name] for s, _ in jr_de}))
+    if rdp_de:
+        contagens = elastic.rdp(cfg, [nomes[s.name] for s in rdp_de if nomes[s.name] in vivos],
+                                collector_nlb_window(inv.defaults))
+        for server, r in coletas:
+            if server in rdp_de:
+                aplicar_rdp(r, contagens.get(nomes[server.name]))
+    processo = collector_jobrunner_settings(inv.defaults).get("process") or "RM.Host.JobRunner"
+    for server, r in jr_de:
+        if nomes[server.name] not in vivos:
+            continue
+        jr = elastic.jobrunners_agora(cfg, nomes[server.name], processo, comp.get(server.name))
+        if jr:
+            r["jobrunners"] = jr
+
+
 def transicoes(prev: dict[str, str], probs: dict[str, str],
                r: dict) -> tuple[dict[str, str], list[str], list[str]]:
     """Compara o estado anterior com os problemas desta coleta.
@@ -590,8 +681,16 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                     result["jobs"]["queue"] = jobstats.queue(
                         jb.get("servidor"), th.get("jobs_stuck_min", 30),
                         th.get("jobs_orphan_min", 360))
-            _identificar_jobrunners(result.get("jobrunners"), th)
             coletas.append((server, result))
+
+        # Elasticsearch (opcional): contagens de RDP do NLB e JobRunner de host
+        # sem WinRM. Antes de gravar, para o painel e o alerta verem o mesmo dado.
+        try:
+            _enriquecer_elastic(inv, coletas)
+        except Exception:  # noqa: BLE001
+            log.exception("Elasticsearch: falha ao completar a coleta (seguindo pelo WinRM)")
+        for server, result in coletas:
+            _identificar_jobrunners(result.get("jobrunners"), th)
 
         for server, result in coletas:
             db.insert_check(server.name, result)
@@ -673,7 +772,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
 
 def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str, dict]],
                  janelas: dict[str, dict], ultimas24: list[dict], servidores: list[str],
-                 agora: float) -> str:
+                 agora: float, elastic_mudos: list[str] | None = None) -> str:
     """Resumo diario em texto: o que esta aberto (vermelho e ambar), quem esta em
     manutencao e o movimento das ultimas 24h.
 
@@ -709,10 +808,42 @@ def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str,
     if ativas:
         partes.append("\U0001F527 Em manutencao: " + ", ".join(
             f"{n} ate {manutencao.hora(j.get('ate'))}" for n, j in sorted(ativas.items())))
+    if elastic_mudos:
+        partes.append("📡 Elastic sem dados de: " + ", ".join(elastic_mudos)
+                      + " (agente parado: serie e RDP desses hosts so pelo WinRM)")
     abriram = sum(1 for a in ultimas24 if a.get("kind") == "raised")
     resolveram = sum(1 for a in ultimas24 if a.get("kind") == "resolved")
     partes.append(f"Ultimas 24h: {abriram} alerta(s) aberto(s), {resolveram} resolvido(s).")
     return "\n".join(partes)
+
+
+def _elastic_mudos(inv: Inventory, agora: float) -> list[str]:
+    """Servidores cujo agente do Elastic parou de mandar dado (ou nunca mandou
+    em 7 dias). Agente morto passa despercebido - foi assim no srv06n em 14/10 -
+    e com ele somem a serie do JobRunner e as contagens de RDP do Elastic."""
+    cfg = elastic.settings_for(inv.defaults)
+    if not elastic.ativo(cfg):
+        return []
+    try:
+        comp = db.computadores()
+    except Exception:  # noqa: BLE001
+        return []
+    nomes = {s.name: elastic.nome_es(s, comp.get(s.name)) for s in inv.servers}
+    nomes = {k: v for k, v in nomes.items() if v}
+    if not nomes:
+        return []
+    vistos = elastic.vivos(cfg, sorted(set(nomes.values())), "now-7d")
+    if not vistos and elastic.erro_atual():
+        return []  # o Elastic e que esta fora: nao acusa os agentes
+    limite = float(cfg.get("max_age_sec") or 180)
+    mudos = []
+    for srv, nome in sorted(nomes.items()):
+        ts = vistos.get(nome)
+        if ts is None:
+            mudos.append(f"{srv} (nada em 7 dias)")
+        elif agora - ts > limite:
+            mudos.append(f"{srv} (desde {manutencao.hora(ts)})")
+    return mudos
 
 
 def resumo_diario(inv: Inventory, forcar: bool = False) -> bool:
@@ -738,7 +869,7 @@ def resumo_diario(inv: Inventory, forcar: bool = False) -> bool:
     nomes = [s.name for s in inv.servers]
     texto = texto_resumo(db.open_alerts(), db.open_alerts_tempos(), manutencao.todas(),
                          [a for a in db.recent_alerts(24, 5000) if a.get("server") in nomes],
-                         nomes, agora)
+                         nomes, agora, _elastic_mudos(inv, agora))
     notify.send(texto)
     db.set_config("resumo_ultimo", hoje)
     log.info("resumo diario enviado")

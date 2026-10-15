@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, execution, inventory, jobstats, manutencao, nlb, notify,
+from . import (__version__, db, elastic, execution, inventory, jobstats, manutencao, nlb, notify,
                packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
@@ -463,6 +463,10 @@ def server_detail(request: Request, name: str):
     th = _thresholds()
     ref = scheduler.broker_reference(th.get("broker_history_days")).get(name) or {}
     estavel = db.broker_estado().get(name) or {}
+    try:
+        horas = int(request.query_params.get("jr_h", 24))
+    except ValueError:
+        horas = 24
     return templates.TemplateResponse(
         "server.html",
         {"request": request, "name": name, "current": hist[0], "hist": hist,
@@ -470,8 +474,32 @@ def server_detail(request: Request, name: str):
          "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel),
          "jr_alerta": scheduler.jobrunner_problems(hist[0].get("jobrunners"), th),
          "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb"),
+         "es": _elastic_do_servidor(name, hist[0], th, horas if horas in (24, 168, 720) else 24),
          "manut": manut, "flash": flash},
     )
+
+
+def _elastic_do_servidor(name: str, coleta: dict, th: dict, horas: int) -> dict | None:
+    """Painel do Elasticsearch na tela do servidor: a serie de memoria do maior
+    JobRunner (historico que o WinRM nao tem) e se o agente do host esta vivo.
+    None quando o Elastic nao esta configurado ou o host nao tem nome nele."""
+    inv = STATE["inv"]
+    cfg = elastic.settings_for(inv.defaults)
+    srv = _servidor(name)
+    if not (elastic.ativo(cfg) and srv):
+        return None
+    jr = coleta.get("jobrunners") if isinstance(coleta.get("jobrunners"), dict) else {}
+    nome = elastic.nome_es(srv, db.computadores().get(name) or jr.get("computer"))
+    if not nome:
+        return None
+    processo = jobrunner_settings(inv.defaults).get("process") or "RM.Host.JobRunner"
+    serie = elastic.jobrunner_serie(cfg, nome, processo, horas)
+    visto = elastic.vivos(cfg, [nome], "now-7d").get(nome)
+    return {"nome": nome, "horas": horas, "serie": serie,
+            "graf": elastic.grafico(serie, th.get("jobrunner_warn_gb") or 0, th.get("jobrunner_gb") or 0),
+            "visto": visto, "idade": (time.time() - visto) if visto else None,
+            "fresco": bool(visto and time.time() - visto <= float(cfg.get("max_age_sec") or 180)),
+            "erro": elastic.erro_atual()}
 
 
 @app.get("/api/status")
@@ -584,6 +612,10 @@ async def jobrunner_encerrar(request: Request):
         return JSONResponse({"ok": False, "msg": "para confirmar, digite o PID exatamente: nada feito"},
                             status_code=400)
     ultimo = {r["server"]: r for r in db.latest_per_server()}.get(srv.name) or {}
+    if ((ultimo.get("jobrunners") or {}).get("fonte")) == "elastic":
+        return JSONResponse({"ok": False, "msg": "a leitura deste host veio do Elasticsearch porque o "
+                                                 "WinRM nao responde: sem WinRM nao ha como encerrar"},
+                            status_code=409)
     proc = jobrunner_alvo(ultimo, pid)
     if not proc:
         return JSONResponse({"ok": False, "msg": "esse PID nao esta entre os JobRunners da ultima "
