@@ -88,3 +88,12 @@ def test_tela_do_servidor_diz_as_fontes(app_falso):  # noqa: F811
     html = app_falso.c.get("/server/app-34").text
     assert "Fontes desta tela:" in html and "metricas, servicos, discos, broker, JobRunner atual" in html
     assert 'JobRunner do RM <span class="src-tag winrm">WinRM</span>' in html
+
+
+def test_css_do_painel_tem_selo_de_deploy(app_falso):  # noqa: F811
+    """Sem o selo, o navegador seguia com o style.css antigo em cache e as
+    etiquetas de fonte apareciam sem cor em producao."""
+    app_falso.entrar()
+    for rota in ("/", "/fontes", "/login"):
+        html = app_falso.c.get(rota).text
+        assert f'href="/static/style.css?v={main.templates.env.globals["assets"]}"' in html, rota
