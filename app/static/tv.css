@@ -67,6 +67,10 @@ body.tv-body {
   inset: 0;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* coluna explicita que nunca passa do container: sem ela a coluna implicita
+     crescia ate a largura do texto do letreiro (nowrap) e um problema de texto
+     longo empurrava o mural inteiro para fora da tela, a direita */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--gap);
   padding: clamp(8px, 1.4vh, 24px) clamp(10px, 1.2vw, 30px);
   /* deslocamento anti-burn-in (alterado periodicamente pelo JS) */
@@ -292,6 +296,7 @@ html[data-theme="light"] .tv-tag.bad  { color: #b42318; }
   display: flex; align-items: center; gap: .9em;
   background: var(--panel); border: 1px solid var(--line); border-radius: .6em;
   padding: .5em 1em; font-size: clamp(12px, 1.65vh, 26px); min-height: 0;
+  min-width: 0; overflow: hidden;
 }
 .tv-ticker .ico { flex: none; font-size: 1.15em; }
 .tv-ticker .msg { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
