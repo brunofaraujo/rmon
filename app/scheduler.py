@@ -733,6 +733,12 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                     texto += (f". Causa: SecurityLayer do RDP = {n.get('security_layer')} "
                               f"({_SECURITY_LAYER.get(n.get('security_layer'), '?')}); com 1 (Negociar), "
                               "como nos outros nos, o Windows passa a gravar")
+                elif n.get("security_layer") in (1, 2):
+                    # ja corrigido (o .188 em 15/10): o 1149 so aparece no proximo
+                    # logon, e sem ninguem conectando o aviso parecia ter falhado
+                    texto += (f". O SecurityLayer do RDP ja e {n['security_layer']} "
+                              f"({_SECURITY_LAYER[n['security_layer']]}), igual aos outros nos: se acabou "
+                              "de ser corrigido, o aviso some sozinho no primeiro logon RDP novo neste no")
                 marcar(nome, "PADRAO:1149", texto)
 
     if es_ativo and vistos_es:

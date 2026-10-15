@@ -32,6 +32,16 @@ def test_o_caso_do_188():
     assert "PADRAO:security_layer" not in p["app-188"]
 
 
+def test_188_ja_corrigido_aguarda_o_primeiro_logon():
+    # SecurityLayer ja trocado para 1, mas ninguem conectou desde entao: o
+    # aviso fica (o 1149 ainda nao apareceu) e diz que some sozinho
+    p = scheduler.padrao_cluster([no("app-34"), no("app-188", u1149=None), no("app-190", u1149=40)])
+    texto = p["app-188"]["PADRAO:1149"]
+    assert "Causa" not in texto
+    assert "SecurityLayer do RDP ja e 1 (Negociar), igual aos outros nos" in texto
+    assert "primeiro logon RDP novo" in texto
+
+
 def test_configuracao_diferente_mesmo_gravando():
     p = scheduler.padrao_cluster([no("a"), no("b", nla=1), no("c")])
     assert set(p) == {"b"} and "NLA do RDP = 1 (ligada)" in p["b"]["PADRAO:nla"]

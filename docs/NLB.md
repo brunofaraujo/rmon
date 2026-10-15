@@ -199,6 +199,11 @@ Vale para as conexões novas; as sessões abertas seguem como estão, e não pre
 reiniciar nada. O valor 1 (Negociar) é o mesmo dos outros nós, então os mesmos clientes
 continuam entrando. Para voltar atrás, use `-Value 0`.
 
+O aviso **não some na hora da correção**. Ele espera o primeiro logon RDP novo naquele
+nó gravar o 1149. Fora do expediente isso pode levar horas. Enquanto isso, o texto do
+aviso diz que o `SecurityLayer` já está igual ao dos pares. Para confirmar na hora,
+abra uma conexão RDP direto no IP do nó.
+
 ## Limitações conhecidas
 
 - **Nó sem WinRM não é drenado.** No pico da falha (commit esgotado) é exatamente o que
