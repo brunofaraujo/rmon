@@ -282,6 +282,37 @@
     }
   }
 
+  /* A letra do cartao (escala()) sai so do tamanho da celula, sem saber quanto
+     cabecalho, barras e rodape ocupam. Em cartao grande - 1920x1080 com 8
+     servidores numa grade 3x3 - ela crescia ate nao sobrar altura para UMA
+     linha de etiquetas, e cortaTags() escondia todas: o cartao ficava so com
+     "+6". Aqui a letra encolhe aos poucos ate a primeira linha caber em todos
+     os cartoes. Se nem com 75% couber, segue assim (o "+N" diz o que falta). */
+  function cabeEtiquetas() {
+    var cs = parseFloat(el.grid.style.getPropertyValue("--cs"));
+    if (!cs) { return; }
+    var minimo = cs * 0.75;
+    while (cs > minimo && !linhaDeEtiquetasCabe()) {
+      cs = Math.max(minimo, cs * 0.95);
+      el.grid.style.setProperty("--cs", cs.toFixed(2) + "px");
+    }
+  }
+
+  function linhaDeEtiquetasCabe() {
+    var conts = el.grid.getElementsByClassName("tvc-tags");
+    for (var i = 0; i < conts.length; i++) {
+      var c = conts[i];
+      var primeira = null;
+      for (var j = 0; j < c.children.length; j++) {
+        if (c.children[j].className.indexOf("pref") < 0) { primeira = c.children[j]; break; }
+      }
+      if (primeira && primeira.getBoundingClientRect().bottom > c.getBoundingClientRect().bottom + 1) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // -------------------------------------------------------------- layout
   /* Escolhe colunas x linhas maximizando o tamanho da letra (o que decide a
      leitura a 5 metros de distancia), penalizando celulas vazias e cartoes
@@ -417,6 +448,7 @@
         var html = "";
         for (var i = 0; i < d.servers.length; i++) { html += cardHTML(d.servers[i], th, mostraTags); }
         el.grid.innerHTML = html;
+        if (mostraTags) { cabeEtiquetas(); }
         cortaTags();
       }
       renderTicker();
