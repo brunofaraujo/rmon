@@ -20,6 +20,44 @@
 {% if es_erro %}<div class="alert">Elasticsearch com erro agora: {{ es_erro }}. Tudo segue pelo WinRM.</div>{% endif %}
 
 <div class="panel">
+  <h2>Padronizacao <span class="muted small">(toda coleta vale para todos os servidores, ou o RMon acusa)</span></h2>
+  {% if divergencias %}
+  <div class="alert">
+    <b>{{ divergencias | length }} divergencia(s) do padrao:</b>
+    {% for d in divergencias %}<div style="margin-top:.35rem">&#9888; <a class="linkish" href="/server/{{ d.server }}"><b>{{ d.server }}</b></a> &middot; {{ d.label }}: {{ d.texto }}</div>{% endfor %}
+  </div>
+  {% else %}
+  <div class="alert ok small">Todos os servidores no mesmo padrao de coleta.</div>
+  {% endif %}
+  {% if nos_nlb %}
+  <div class="table-wrap" style="margin-top:.6rem">
+    <table class="tbl">
+      <thead><tr><th>No do NLB</th><th>SecurityLayer do RDP</th><th>NLA</th><th>Ultimo 1149 (RDP autenticado)</th><th>Situacao</th></tr></thead>
+      <tbody>
+        {% for no in nos_nlb %}
+        {% set n = no.n %}
+        {% set fora = no.padrao %}
+        <tr>
+          <td><a class="linkish" href="/server/{{ no.nome }}"><b>{{ no.nome }}</b></a></td>
+          <td class="{{ 'txt-red' if 'PADRAO:security_layer' in fora or ('PADRAO:1149' in fora and n.security_layer == 0) else '' }}">
+            {% if n.security_layer is none %}<span class="faint">-</span>{% else %}{{ n.security_layer }} <span class="small">({{ {0: 'RDP nativo, sem TLS', 1: 'Negociar', 2: 'TLS'}.get(n.security_layer, '?') }})</span>{% endif %}</td>
+          <td class="{{ 'txt-red' if 'PADRAO:nla' in fora else '' }}">{% if n.nla is none %}<span class="faint">-</span>{% else %}{{ 'ligada' if n.nla == 1 else 'desligada' }}{% endif %}</td>
+          <td class="{{ 'txt-red' if 'PADRAO:1149' in fora else '' }}">
+            {% if 'ultimo_1149_min' not in n %}<span class="faint">aguardando coleta</span>
+            {% elif n.ultimo_1149_min is none %}<b>nenhum no log</b>
+            {% elif n.ultimo_1149_min < 60 %}ha {{ n.ultimo_1149_min }} min
+            {% elif n.ultimo_1149_min < 2880 %}ha {{ (n.ultimo_1149_min / 60) | int }} h
+            {% else %}ha {{ (n.ultimo_1149_min / 1440) | int }} dias{% endif %}</td>
+          <td>{% if fora %}<span class="pill red">fora do padrao</span>{% elif not no.reachable %}<span class="pill amber">sem coleta</span>{% else %}<span class="pill green">no padrao</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel">
   <h2>Quem fornece o que</h2>
   <div class="table-wrap">
     <table class="tbl">

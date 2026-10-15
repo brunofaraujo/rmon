@@ -223,6 +223,26 @@ para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job n
 
 ---
 
+## Fontes de dados e padronização
+
+A faixa abaixo do topo de toda tela diz quantos hosts o **WinRM** alcançou e se o
+**Elastic** está respondendo. Quando algum servidor sai do padrão de coleta, ela mostra
+em vermelho **"N servidor(es) fora do padrão de coleta"**. Clique na faixa para abrir
+`/fontes`:
+
+- **Padronização:** o que está divergente e por quê. Para os nós do NLB, mostra o
+  `SecurityLayer` do RDP, a NLA e o último 1149, lado a lado;
+- **Quem fornece o quê:** que dado vem do WinRM e qual vem do Elastic;
+- **Por servidor:** se o WinRM respondeu, se o agente do Elastic está vivo e de onde
+  vieram o JobRunner e as contagens de RDP.
+
+O aviso **Fora do padrão** é âmbar e notifica uma vez. Ele aparece quando:
+
+- um nó do NLB está com `SecurityLayer`/NLA diferente dos pares, ou não grava o 1149. A
+  correção está em [NLB.md](NLB.md#padronização-entre-os-nós);
+- o agente do Elastic de um servidor está calado enquanto os outros mandam. Reinicie o
+  serviço `Elastic Agent` no host.
+
 ## Elasticsearch: série do JobRunner e RDP do NLB
 
 Com o Elasticsearch ligado (ver [CONFIGURACAO.md](CONFIGURACAO.md#elasticsearch-opcional-só-leitura)):

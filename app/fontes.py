@@ -49,6 +49,11 @@ def registrar(coletas: list[tuple], nomes_es: dict[str, str] | None = None,
     _estado.update(ts=agora, servidores=servidores, es_ativo=bool(es_ativo))
 
 
+def registrar_padrao(padrao: dict[str, dict[str, str]]) -> None:
+    """Servidores fora do padrao neste ciclo (scheduler.padrao_cluster)."""
+    _estado["padrao"] = {k: dict(v) for k, v in (padrao or {}).items() if v}
+
+
 def estado() -> dict[str, Any]:
     return _estado
 
@@ -82,4 +87,5 @@ def resumo(es: dict[str, Any], agora: float | None = None) -> dict[str, Any]:
         "winrm_estado": "ok" if total and ok == total else ("erro" if total and ok == 0 else "parcial"),
         "es_estado": es_estado, "es_texto": es_texto,
         "ciclo_ha": int(agora - _estado["ts"]) if _estado.get("ts") else None,
+        "fora_padrao": sorted((_estado.get("padrao") or {}).keys()),
     }

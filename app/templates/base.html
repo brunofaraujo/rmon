@@ -63,6 +63,7 @@
     <span class="src-part"><span class="src-dot es-{{ ft.es_estado }}"></span><span class="src-tag elastic">Elastic</span>
       <b>{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[ft.es_estado] }}</b>{% if ft.es_estado == 'ok' %} <span class="faint">(ultima consulta {{ ft.es_texto }})</span>{% endif %}</span>
     {% endif %}
+    {% if ft.fora_padrao %}<span class="src-part src-fora" title="{{ ft.fora_padrao | join(', ') }}"><span class="src-dot erro"></span><b>{{ ft.fora_padrao | length }} servidor(es) fora do padrao de coleta</b> <span class="faint">({{ ft.fora_padrao | join(', ') }})</span></span>{% endif %}
     <span class="src-ver">ver por servidor &rarr;</span>
   </a>
   {% endif %}

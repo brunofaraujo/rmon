@@ -709,6 +709,9 @@ def _problema_label(chave: str) -> str:
         return "Servico " + chave[4:]
     if chave.startswith("broker:"):
         return "Broker " + chave[7:]
+    if chave.startswith("PADRAO:"):
+        return "Fora do padrao: " + {"security_layer": "SecurityLayer do RDP", "nla": "NLA do RDP",
+                                     "1149": "evento 1149", "elastic": "agente do Elastic"}.get(chave[7:], chave[7:])
     if chave.startswith("jobrunner-kill:"):
         return "JobRunner encerrado (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner-crit:"):
@@ -790,9 +793,23 @@ def fontes_page(request: Request):
         linhas.append({"nome": srv.name, "host": srv.host, "f": f,
                        "es_idade": (agora - visto) if visto else None,
                        "es_fresco": bool(visto and agora - visto <= float(cfg.get("max_age_sec") or 180))})
+    # Padronizacao: o que a ultima coleta de cada servidor acusou, e a
+    # configuracao de RDP dos nos do NLB lado a lado
+    ultimas = {c["server"]: c for c in db.latest_per_server()}
+    divergencias = []
+    nos_nlb = []
+    for srv in inv.servers:
+        c = ultimas.get(srv.name) or {}
+        for chave, texto in (c.get("padrao") or {}).items():
+            divergencias.append({"server": srv.name, "label": _problema_label(chave), "texto": texto})
+        if srv.nlb:
+            n = c.get("nlb") or {}
+            nos_nlb.append({"nome": srv.name, "n": n, "padrao": c.get("padrao") or {},
+                            "reachable": bool(c.get("reachable"))})
     return templates.TemplateResponse(
         "fontes.html",
         {"request": request, "linhas": linhas, "ts": est.get("ts"), "topo": _fontes_topo(),
+         "divergencias": divergencias, "nos_nlb": nos_nlb,
          "es_ativo": elastic.ativo(cfg), "es_url": cfg.get("url"), "es_erro": elastic.erro_atual(),
          "es_ok_ts": elastic.saude().get("ok_ts"), "es_cfg": cfg, "version": __version__})
 

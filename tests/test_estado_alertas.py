@@ -342,3 +342,18 @@ def test_resumo_corta_lista_longa():
     abertos = {"a": {f"svc:S{i:02d}": f"servico S{i:02d} = Stopped" for i in range(30)}}
     texto = scheduler.texto_resumo(abertos, {}, {}, [], ["a"], 1_760_000_000.0)
     assert "Criticos abertos (30)" in texto and "... e mais 15" in texto
+
+
+def test_elastic_sem_resposta_nao_resolve_agente_parado(ambiente, monkeypatch):
+    from app import elastic
+    monkeypatch.setattr(elastic, "ativo", lambda cfg: True)
+    vistos = {}
+    monkeypatch.setattr(scheduler, "_enriquecer_elastic", lambda inv, col: ({"app-34": "h34"}, dict(vistos)))
+    vistos.update({"h34": ambiente.relogio[0] - 3600, "outro": ambiente.relogio[0]})
+    monkeypatch.setattr(scheduler.time, "time", lambda: ambiente.relogio[0])
+    msgs = ambiente.ciclo(**ok())
+    assert len(msgs) == 1 and "agente do Elastic" in msgs[0]
+    vistos.clear()  # Elastic nao respondeu neste ciclo
+    assert ambiente.ciclo(**ok()) == []
+    vistos.update({"h34": ambiente.relogio[0], "outro": ambiente.relogio[0]})
+    assert "resolvido" in ambiente.ciclo(**ok())[0]
