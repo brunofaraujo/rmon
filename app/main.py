@@ -19,8 +19,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, db, execution, inventory, jobstats, nlb, packages, scheduler
-from .collector import list_sessions, logoff_session, service_action
+from . import (__version__, db, execution, inventory, jobstats, manutencao, nlb, notify,
+               packages, scheduler)
+from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
+                        logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
 from .logconf import setup_logging
 from .scheduler import build_scheduler, poll_all, poll_inventory, scan_packages
@@ -294,7 +296,8 @@ def _tv_payload() -> dict:
     servers: list[dict] = []
     issues: list[dict] = []
     summary = {"total": 0, "online": 0, "offline": 0, "services_down": 0,
-               "events": 0, "crit": 0, "warn": 0}
+               "events": 0, "crit": 0, "warn": 0, "maint": 0}
+    em_manut = manutencao.ativas(now)
 
     for cfg in inv.servers:
         d = latest.get(cfg.name)
@@ -312,25 +315,34 @@ def _tv_payload() -> dict:
         disks = (d["disks"] or []) if d else []
         events = (d["events"] or []) if d else []
         jobs = d["jobs"] if (d and d.get("jobs")) else None
+        manut = em_manut.get(cfg.name)
 
         summary["total"] += 1
-        summary["online" if up else "offline"] += 1
-        summary["services_down"] += sum(1 for x in svcs if scheduler.service_down(x))
         summary["events"] += sum(int(e.get("count", 1)) for e in events)
+        if manut:
+            # fora do ar de proposito: nem vermelho, nem letreiro, nem KPI de falha
+            sev = 0
+            summary["maint"] += 1
+            summary["online"] += 1 if up else 0
+        else:
+            summary["online" if up else "offline"] += 1
+            summary["services_down"] += sum(1 for x in svcs if scheduler.service_down(x))
         if sev == 2:
             summary["crit"] += 1
         elif sev == 1:
             summary["warn"] += 1
 
-        for key, text in probs.items():
-            issues.append({"server": cfg.name, "text": text,
-                           "sev": 2 if scheduler.critico(key) else 1})
-        if not up and "DOWN" not in probs:
-            issues.append({"server": cfg.name, "sev": 1,
-                           "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
+        if not manut:
+            for key, text in probs.items():
+                issues.append({"server": cfg.name, "text": text,
+                               "sev": 2 if scheduler.critico(key) else 1})
+            if not up and "DOWN" not in probs:
+                issues.append({"server": cfg.name, "sev": 1,
+                               "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
 
         servers.append({
             "name": cfg.name, "host": cfg.host, "up": up, "sev": sev,
+            "manut": manutencao.hora(manut["ate"])[-5:] if manut else None,
             # sem contato ainda nao confirmado: mural mostra ambar, nao vermelho
             "unstable": (not up and "DOWN" not in probs),
             "cpu": _pct(d["cpu"]) if d else None,
@@ -429,6 +441,7 @@ def dashboard(request: Request):
     return templates.TemplateResponse(
         "dashboard.html",
         {"request": request, "rows": rows, "summary": summary, "broker_ref": ref,
+         "manut": manutencao.ativas(),
          "interval": inv.poll_interval_seconds, "version": __version__},
     )
 
@@ -438,10 +451,13 @@ def server_detail(request: Request, name: str):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
     hist = db.history(name, limit=120)
+    manut = manutencao.ativas().get(name)
+    flash = request.session.pop("sflash", None)
     if not hist:
         return templates.TemplateResponse(
             "server.html",
-            {"request": request, "name": name, "hist": [], "current": None},
+            {"request": request, "name": name, "hist": [], "current": None,
+             "manut": manut, "flash": flash},
             status_code=404,
         )
     th = _thresholds()
@@ -453,7 +469,8 @@ def server_detail(request: Request, name: str):
          "broker_ref": ref,
          "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel),
          "jr_alerta": scheduler.jobrunner_problems(hist[0].get("jobrunners"), th),
-         "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb")},
+         "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb"),
+         "manut": manut, "flash": flash},
     )
 
 
@@ -490,6 +507,106 @@ async def service_act(request: Request):
     ok, msg = service_action(srv, inv.winrm, svc, action, allowed=vistos)
     db.audit(request.session.get("user"), f"service_{action}", f"{server_name}/{svc} -> {ok}: {msg}", _ip(request))
     log.info("%s %s/%s por %s -> %s (%s)", action, server_name, svc, request.session.get("user"), ok, msg)
+    return JSONResponse({"ok": ok, "msg": msg})
+
+
+def _servidor(nome: str):
+    return {s.name: s for s in STATE["inv"].servers}.get(nome or "")
+
+
+def _server_redirect(request: Request, nome: str, msg: str) -> RedirectResponse:
+    request.session["sflash"] = msg
+    return RedirectResponse(f"/server/{quote(nome)}", status_code=303)
+
+
+@app.post("/manutencao/iniciar")
+async def manutencao_iniciar(request: Request):
+    """Abre (ou estende) a janela de manutencao de um host: cala as notificacoes
+    dele e poe o no em hold no NLB. Os alertas seguem registrados."""
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    srv = _servidor(form.get("server"))
+    if not srv:
+        return JSONResponse({"error": "servidor desconhecido"}, status_code=404)
+    try:
+        minutos = int(form.get("minutos") or 60)
+    except ValueError:
+        minutos = 60
+    user = request.session.get("user") or "?"
+    j = manutencao.iniciar(srv.name, minutos, form.get("motivo") or "", user)
+    texto = (f"manutencao aberta por {user} ate {manutencao.hora(j['ate'])}"
+             + (f": {j['motivo']}" if j["motivo"] else ""))
+    db.record_alert(srv.name, "manutencao", "MANUT", texto)
+    db.audit(user, "manutencao_iniciar", f"{srv.name}: {texto}", _ip(request))
+    log.warning("%s: %s", srv.name, texto)
+    if notify.enabled():
+        await run_in_threadpool(notify.send, f"\U0001F527 RMonitor \u2014 {srv.name} ({srv.host}): "
+                                              f"{texto}. Alertas deste host calados ate la; "
+                                              "no fim sai um resumo.")
+    return _server_redirect(request, srv.name, f"Manutencao ate {manutencao.hora(j['ate'])}: "
+                                                "alertas calados e NLB em hold.")
+
+
+@app.post("/manutencao/encerrar")
+async def manutencao_encerrar(request: Request):
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    form = await request.form()
+    srv = _servidor(form.get("server"))
+    if not srv:
+        return JSONResponse({"error": "servidor desconhecido"}, status_code=404)
+    user = request.session.get("user") or "?"
+    if manutencao.encerrar(srv.name):
+        db.audit(user, "manutencao_encerrar", srv.name, _ip(request))
+        msg = "Manutencao encerrada: o resumo do que ficou aberto sai na proxima coleta."
+    else:
+        msg = "Este host nao estava em manutencao."
+    return _server_redirect(request, srv.name, msg)
+
+
+@app.post("/jobrunner/encerrar")
+async def jobrunner_encerrar(request: Request):
+    """Encerra no host um RM.Host.JobRunner da ultima coleta (admin, auditado).
+
+    E o remedio para o relatorio sem filtro que cresce ate derrubar o host: o
+    RM perde aquela execucao e o host recupera a memoria. Exige o PID digitado
+    e so aceita um dos JobRunners que a coleta mostrou na tela.
+    """
+    if not _is_authed(request) or _role(request) != "admin":
+        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+    form = await request.form()
+    srv = _servidor(form.get("server"))
+    if not srv:
+        return JSONResponse({"ok": False, "msg": "servidor desconhecido"}, status_code=404)
+    pid = (form.get("pid") or "").strip()
+    if not pid or (form.get("confirm") or "").strip() != pid:
+        return JSONResponse({"ok": False, "msg": "para confirmar, digite o PID exatamente: nada feito"},
+                            status_code=400)
+    ultimo = {r["server"]: r for r in db.latest_per_server()}.get(srv.name) or {}
+    proc = jobrunner_alvo(ultimo, pid)
+    if not proc:
+        return JSONResponse({"ok": False, "msg": "esse PID nao esta entre os JobRunners da ultima "
+                                                 "coleta: recarregue a tela"}, status_code=409)
+    pid_i = int(proc["pid"])
+    ex = ((ultimo.get("jobrunners") or {}).get("jobs") or {}).get(str(pid_i)) or {}
+    gb = float(proc.get("private_mb") or 0) / 1024
+    quem = (f"job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}' de "
+            f"{ex.get('usuario') or '?'}" if ex else "job nao identificado")
+    processo = jobrunner_settings(STATE["inv"].defaults).get("process") or "RM.Host.JobRunner"
+    ok, msg = await run_in_threadpool(kill_jobrunner, srv, STATE["inv"].winrm, pid_i,
+                                      proc.get("start"), processo)
+    user = request.session.get("user") or "?"
+    detalhe = f"{srv.name} PID {pid_i} ({gb:.1f} GB, {quem})"
+    db.audit(user, "jobrunner_kill", f"{detalhe} -> {ok}: {msg}"[:900], _ip(request))
+    log.warning("JobRunner %s encerrado por %s -> %s (%s)", detalhe, user, ok, msg)
+    if ok:
+        db.record_alert(srv.name, "acao", f"jobrunner-kill:{pid_i}",
+                        f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) encerrado por {user}")
+        if notify.enabled():
+            await run_in_threadpool(notify.send, f"\U0001F6D1 RMonitor \u2014 {srv.name} ({srv.host}): "
+                                                  f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) "
+                                                  f"encerrado por {user}")
     return JSONResponse({"ok": ok, "msg": msg})
 
 
@@ -531,7 +648,14 @@ PROBLEMA_LABEL = {
     "blocked": "NLB: drenagem bloqueada", "unreachable_sick": "NLB: doente sem WinRM",
     "out_unowned": "NLB: fora do cluster", "recovered": "NLB: recuperado",
     "nlb_error": "NLB: leitura", "failed": "NLB: acao falhou",
+    "MANUT": "Manutencao",
 }
+
+# Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
+KIND_LABEL = {"raised": "abriu", "resolved": "resolveu", "reminder": "lembrete",
+              "manutencao": "manutencao", "acao": "acao manual", "package": "pacote",
+              "nlb": "nlb"}
+templates.env.globals["kind_label"] = KIND_LABEL
 
 
 def _problema_label(chave: str) -> str:
@@ -539,6 +663,8 @@ def _problema_label(chave: str) -> str:
         return "Servico " + chave[4:]
     if chave.startswith("broker:"):
         return "Broker " + chave[7:]
+    if chave.startswith("jobrunner-kill:"):
+        return "JobRunner encerrado (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner-crit:"):
         return "JobRunner estourando (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner:"):
@@ -613,6 +739,7 @@ def nlb_page(request: Request):
     coletas = {r["server"]: r for r in db.latest_per_server()}
     vistas = nlb.views_from(inv, coletas, agora)
     estado = (nlb.load_state() or {}).get("nodes", {})
+    em_manut = manutencao.ativas(agora)
     nos = []
     for v in vistas:
         st = estado.get(v["name"], {})
@@ -622,7 +749,7 @@ def nlb_page(request: Request):
             "ativo": v.get("status") in nlb.ATIVOS,
             "fora": v.get("status") in nlb.FORA,
             "sinais": nlb.sick_reasons(v, vistas, cfg, st, agora),
-            "hold": bool(st.get("hold")) or v["name"] in cfg["hold"],
+            "hold": bool(st.get("hold")) or v["name"] in cfg["hold"] or v["name"] in em_manut,
             "ts": (coletas.get(v["name"]) or {}).get("ts"),
         })
     hist = [a for a in db.recent_alerts(24 * 7, 300) if a.get("kind") == "nlb"]
@@ -731,7 +858,9 @@ async def admin_config(request: Request):
                              "jobs_orphan_min": _int("jobs_orphan_min", 360, 30, 10080),
                              "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000),
                              "jobrunner_warn_gb": _int("jobrunner_warn_gb", 4, 0, 512),
-                             "jobrunner_gb": _int("jobrunner_gb", 8, 0, 512)})
+                             "jobrunner_gb": _int("jobrunner_gb", 8, 0, 512),
+                             "lembrete_h": _int("lembrete_h", 4, 0, 72),
+                             "resumo_hora": _int("resumo_hora", 8, -1, 23)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)

@@ -584,6 +584,91 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
         return False, f"{type(exc).__name__}: {exc}"[:200]
 
 
+# --- Encerrar um RM.Host.JobRunner que esta estourando a memoria ---
+# O PID vem do formulario, entao o script confere tudo no host antes de matar:
+# o processo existe, ainda e um JobRunner e e o MESMO que a coleta viu (hora de
+# inicio igual) - PID reaproveitado por outro processo nao morre por engano.
+_PS_KILL_JR = r"""
+$p = Get-Process -Id __PID__ -ErrorAction SilentlyContinue
+if (-not $p) { 'GONE' }
+elseif ($p.ProcessName -ne __NAME__) { 'NOT_JR ' + $p.ProcessName }
+else {
+    $ini = $null
+    try { $ini = $p.StartTime.ToString('yyyy-MM-dd HH:mm:ss') } catch { }
+    if (__START__ -and $ini -ne __START__) { 'REUSED ' + $ini }
+    else {
+        $mb = [math]::Round($p.PrivateMemorySize64 / 1MB, 0)
+        Stop-Process -Id __PID__ -Force -ErrorAction Stop
+        'OK ' + $mb
+    }
+}
+"""
+_INICIO_RE = _re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
+
+
+def jobrunner_alvo(coleta: dict | None, pid) -> dict | None:
+    """O processo que o painel pode encerrar: um dos JobRunners da ultima coleta.
+
+    Fora dessa lista o pedido e recusado - nao existe "matar PID qualquer".
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    jr = (coleta or {}).get("jobrunners")
+    top = jr.get("top") if isinstance(jr, dict) else None
+    for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
+        if isinstance(proc, dict) and proc.get("pid") is not None and int(proc["pid"]) == pid:
+            return proc
+    return None
+
+
+def script_encerrar_jobrunner(pid: int, inicio: str | None, processo: str) -> str:
+    pid = int(pid)
+    if pid <= 0:
+        raise ValueError("PID invalido")
+    if not _re.fullmatch(r"[A-Za-z0-9._-]+", processo or ""):
+        raise ValueError("nome de processo invalido")
+    inicio = inicio if inicio and _INICIO_RE.fullmatch(str(inicio)) else ""
+    return (_PS_KILL_JR.replace("__PID__", str(pid))
+            .replace("__NAME__", _ps_str(processo)).replace("__START__", _ps_str(inicio)))
+
+
+def interpretar_encerramento(saida: str, pid: int) -> tuple[bool, str]:
+    linha = (saida or "").strip().splitlines()[-1:] or [""]
+    cod, _, resto = linha[0].strip().partition(" ")
+    if cod == "OK":
+        return True, f"PID {pid} encerrado ({resto or '?'} MB de memoria privada liberados)"
+    if cod == "GONE":
+        return False, f"o PID {pid} ja tinha terminado: nada a fazer"
+    if cod == "NOT_JR":
+        return False, f"o PID {pid} agora e {resto or 'outro processo'}, nao um JobRunner: nada feito"
+    if cod == "REUSED":
+        return False, (f"o PID {pid} e de um processo iniciado em {resto or '?'}, nao o que a "
+                       "coleta viu (PID reaproveitado): nada feito")
+    return False, (saida or "sem resposta do host").strip()[:200]
+
+
+def kill_jobrunner(server: ServerConfig, wc: WinRMConfig, pid: int, inicio: str | None,
+                   processo: str) -> tuple[bool, str]:
+    """Encerra um RM.Host.JobRunner pelo PID (Stop-Process -Force), com as conferencias acima."""
+    try:
+        script = script_encerrar_jobrunner(pid, inicio, processo)
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
+    user, pw = credential_for(server.cred)
+    if not user or not pw:
+        return False, f"sem credencial (perfil '{server.cred}')"
+    try:
+        session = _winrm_session(server.host, wc, user, pw)
+        r = _run_ps(session, script, _deadline(wc))
+        if r.status_code != 0:
+            return False, _decode(r.std_err)[:200] or "Stop-Process falhou"
+        return interpretar_encerramento(_decode(r.std_out), int(pid))
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
 # --- NLB: drenar / reingressar o proprio no ---
 # Comandos FIXOS (nada vindo de formulario entra no script). nlb.exe atua no no
 # local pelo driver, sem WMI remoto nem "controle remoto" do NLB - por isso roda

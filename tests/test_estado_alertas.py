@@ -12,13 +12,35 @@ import pytest
 
 from app import db, nlb, notify, scheduler
 
+HORA = 3600
+
 
 class Banco:
     """O pedaco do app.db que o poll_all usa, em memoria."""
 
-    def __init__(self):
+    def __init__(self, relogio):
+        self.relogio = relogio
         self.alertas: list[tuple[str, str, str, str]] = []
+        self.ts: list[float] = []
         self.checks: dict[str, list[bool]] = {}
+        self.config: dict = {}
+
+    def get_config(self, chave, padrao=None):
+        return self.config.get(chave, padrao)
+
+    def set_config(self, chave, valor):
+        self.config[chave] = valor
+
+    def open_alerts_tempos(self):
+        tempos: dict[str, dict[str, dict[str, float]]] = {}
+        for (server, kind, problem, _), ts in zip(self.alertas, self.ts):
+            if kind == "raised":
+                tempos.setdefault(server, {})[problem] = {"desde": ts, "aviso": ts}
+            elif kind == "reminder" and problem in tempos.get(server, {}):
+                tempos[server][problem]["aviso"] = ts
+            elif kind == "resolved":
+                tempos.get(server, {}).pop(problem, None)
+        return tempos
 
     def open_alerts(self):
         ultimo: dict[tuple[str, str], tuple[str, str]] = {}
@@ -33,6 +55,7 @@ class Banco:
 
     def record_alert(self, server, kind, problem, message):
         self.alertas.append((server, kind, problem, message))
+        self.ts.append(self.relogio[0])
 
     def insert_check(self, server, result):
         self.checks.setdefault(server, []).insert(0, bool(result.get("reachable")))
@@ -46,20 +69,34 @@ class Banco:
         return n
 
 
+def _sem_banco_de_verdade():
+    raise AssertionError("o teste tentou abrir conexao com o PostgreSQL")
+
+
 @pytest.fixture
 def ambiente(monkeypatch):
-    banco = Banco()
+    relogio = [1_760_000_000.0]
+    banco = Banco(relogio)
     enviadas: list[str] = []
     coletas: dict[str, dict] = {}
-    for nome in ("open_alerts", "record_alert", "insert_check", "fail_streak"):
+    holds: list[set] = []
+    # qualquer funcao do db que o teste esqueceu de trocar falha na hora, em
+    # vez de ficar esperando um PostgreSQL que nao existe
+    monkeypatch.setattr(db, "_conn", _sem_banco_de_verdade)
+    for nome in ("open_alerts", "open_alerts_tempos", "record_alert", "insert_check",
+                 "fail_streak", "get_config", "set_config"):
         monkeypatch.setattr(db, nome, getattr(banco, nome))
-    monkeypatch.setattr(db, "get_config", lambda k, d=None: d)
     monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
     monkeypatch.setattr(db, "broker_estado", lambda dias=1: {})
     monkeypatch.setattr(db, "fila_hist", lambda n=3: {})
-    monkeypatch.setattr(nlb, "run_cycle", lambda inv, res: None)
+    monkeypatch.setattr(db, "recent_alerts", lambda h=48, lim=500, server=None: [
+        {"server": s, "kind": k, "problem": p, "message": m}
+        for (s, k, p, m), ts in zip(banco.alertas, banco.ts) if relogio[0] - ts <= h * HORA])
+    monkeypatch.setattr(nlb, "run_cycle",
+                        lambda inv, res, now=None, hold=(): holds.append(set(hold)))
     monkeypatch.setattr(notify, "enabled", lambda: True)
     monkeypatch.setattr(notify, "send", lambda texto: enviadas.append(texto) or True)
+    monkeypatch.setattr(scheduler, "_agora", lambda: relogio[0])
     monkeypatch.setattr(scheduler, "collect_server",
                         lambda s, winrm, defaults: dict(coletas[s.name]))
     servidor = SimpleNamespace(name="app-34", host="10.0.0.34", jobs=None)
@@ -68,6 +105,8 @@ def ambiente(monkeypatch):
     def reiniciar():
         """O que um restart do servico faz com o scheduler: memoria zerada."""
         monkeypatch.setattr(scheduler, "_last", {})
+        monkeypatch.setattr(scheduler, "_desde", {})
+        monkeypatch.setattr(scheduler, "_avisado", {})
         monkeypatch.setattr(scheduler, "_restaurado", False)
 
     def ciclo(**r):
@@ -76,8 +115,12 @@ def ambiente(monkeypatch):
         scheduler.poll_all(inv, None)
         return list(enviadas)
 
+    def passar(horas):
+        relogio[0] += horas * HORA
+
     reiniciar()
-    return SimpleNamespace(banco=banco, ciclo=ciclo, reiniciar=reiniciar)
+    return SimpleNamespace(banco=banco, ciclo=ciclo, reiniciar=reiniciar, passar=passar,
+                           relogio=relogio, enviadas=enviadas, holds=holds, inv=inv)
 
 
 def ok(**kw):
@@ -174,3 +217,128 @@ def test_servidor_tirado_do_inventario_fecha_calado(ambiente):
     assert ambiente.banco.alertas[-1] == ("app-antigo", "resolved", "DISK",
                                           "disco C: em 95% (saiu do monitoramento)")
     assert ambiente.banco.open_alerts() == {}
+
+
+# ------------------------------------------------------------ manutencao
+
+def test_manutencao_cala_e_avisa_uma_vez_no_fim(ambiente):
+    from app import manutencao
+    manutencao.iniciar("app-34", 60, "reboot planejado", "bruno", agora=ambiente.relogio[0])
+    assert ambiente.ciclo(**sem_contato()) == []
+    assert ambiente.ciclo(**sem_contato()) == []
+    assert ambiente.ciclo(**sem_contato()) == []      # DOWN abre, calado
+    assert ambiente.ciclo(**parado()) == []           # volta com servico parado, calado
+    assert ("raised", "DOWN") in kinds(ambiente.banco)  # o historico nao perde nada
+    assert ambiente.holds[-1] == {"app-34"}            # NLB nao mexe no no
+    ambiente.passar(1.1)
+    msgs = ambiente.ciclo(**parado())
+    assert len(msgs) == 1 and "fim da manutencao" in msgs[0]
+    assert "RM.Host.Service1 = Stopped" in msgs[0] and "sem contato" not in msgs[0]
+    assert manutencao.todas() == {}
+    assert ambiente.holds[-1] == set()
+    assert ambiente.ciclo(**parado()) == []           # e nao repete
+
+
+def test_manutencao_que_volta_limpa_diz_isso(ambiente):
+    from app import manutencao
+    manutencao.iniciar("app-34", 30, "", "bruno", agora=ambiente.relogio[0])
+    ambiente.ciclo(**parado())
+    ambiente.ciclo(**ok())
+    manutencao.encerrar("app-34", agora=ambiente.relogio[0])
+    msgs = ambiente.ciclo(**ok())
+    assert len(msgs) == 1 and "voltou limpo" in msgs[0]
+
+
+def test_janela_estendida_nao_e_fechada_pelo_ciclo(ambiente):
+    from app import manutencao
+    manutencao.iniciar("app-34", 30, "", "bruno", agora=ambiente.relogio[0])
+    ambiente.passar(1)
+    manutencao.iniciar("app-34", 30, "", "bruno", agora=ambiente.relogio[0])
+    assert ambiente.ciclo(**parado()) == []
+    assert "app-34" in manutencao.todas()
+
+
+# ------------------------------------------------------------ lembrete
+
+def test_critico_aberto_e_lembrado_a_cada_intervalo(ambiente):
+    ambiente.ciclo(**parado())
+    ambiente.passar(3.9)
+    assert ambiente.ciclo(**parado()) == []
+    ambiente.passar(0.2)
+    msgs = ambiente.ciclo(**parado())
+    assert len(msgs) == 1 and "segue aberto ha 4h06" in msgs[0]
+    assert ambiente.ciclo(**parado()) == []           # um lembrete por intervalo
+    ambiente.passar(4)
+    assert "segue aberto ha 8h06" in ambiente.ciclo(**parado())[0]
+
+
+def test_aviso_ambar_nao_tem_lembrete(ambiente):
+    ambiente.ciclo(**ok(mem_pct=95))
+    ambiente.passar(10)
+    assert ambiente.ciclo(**ok(mem_pct=95)) == []
+
+
+def test_lembrete_sobrevive_ao_restart(ambiente):
+    ambiente.ciclo(**parado())
+    ambiente.passar(4.1)
+    assert len(ambiente.ciclo(**parado())) == 1       # lembrou
+    ambiente.reiniciar()
+    ambiente.passar(1)
+    assert ambiente.ciclo(**parado()) == []           # restart nao relembra
+    ambiente.passar(3.1)
+    assert "segue aberto ha 8h" in ambiente.ciclo(**parado())[0]
+
+
+def test_lembrete_desligado(ambiente):
+    ambiente.banco.config["alerts"] = {"lembrete_h": 0}
+    ambiente.ciclo(**parado())
+    ambiente.passar(30)
+    assert ambiente.ciclo(**parado()) == []
+
+
+def test_sem_lembrete_durante_manutencao_e_relogio_recomeca_no_fim(ambiente):
+    from app import manutencao
+    ambiente.ciclo(**parado())
+    manutencao.iniciar("app-34", 6 * 60, "", "bruno", agora=ambiente.relogio[0])
+    ambiente.passar(5)
+    assert ambiente.ciclo(**parado()) == []
+    ambiente.passar(1.1)
+    assert "fim da manutencao" in ambiente.ciclo(**parado())[0]
+    ambiente.passar(1)
+    assert ambiente.ciclo(**parado()) == []           # o fim valeu como aviso
+
+
+# ------------------------------------------------------------ resumo diario
+
+def test_resumo_sai_na_hora_e_uma_vez_por_dia(ambiente, monkeypatch):
+    import time as _t
+    ambiente.ciclo(**parado())
+    ambiente.ciclo(**ok(mem_pct=95, services=parado()["services"]))
+    ambiente.banco.record_alert("app-34", "raised", "JOBS", "5 execucoes de job com erro")
+    hora = _t.localtime(ambiente.relogio[0]).tm_hour
+    ambiente.banco.config["alerts"] = {"resumo_hora": (hora + 1) % 24}
+    assert not scheduler.resumo_diario(ambiente.inv)
+    ambiente.banco.config["alerts"] = {"resumo_hora": hora}
+    ambiente.enviadas.clear()
+    assert scheduler.resumo_diario(ambiente.inv)
+    texto = ambiente.enviadas[-1]
+    assert "Criticos abertos (1)" in texto and "RM.Host.Service1" in texto
+    assert "Avisos abertos (2)" in texto and "job com erro" in texto and "memoria" in texto
+    assert not scheduler.resumo_diario(ambiente.inv)  # mesmo dia: nao repete
+
+
+def test_resumo_desligado(ambiente):
+    ambiente.banco.config["alerts"] = {"resumo_hora": -1}
+    assert not scheduler.resumo_diario(ambiente.inv)
+    assert ambiente.enviadas == []
+
+
+def test_resumo_sem_nada_aberto_e_sinal_de_vida():
+    texto = scheduler.texto_resumo({}, {}, {}, [], ["a"], 1_760_000_000.0)
+    assert "Nenhum problema aberto" in texto and "Ultimas 24h: 0" in texto
+
+
+def test_resumo_corta_lista_longa():
+    abertos = {"a": {f"svc:S{i:02d}": f"servico S{i:02d} = Stopped" for i in range(30)}}
+    texto = scheduler.texto_resumo(abertos, {}, {}, [], ["a"], 1_760_000_000.0)
+    assert "Criticos abertos (30)" in texto and "... e mais 15" in texto

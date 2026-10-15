@@ -170,6 +170,34 @@
         });
     });
 
+    // Encerrar um RM.Host.JobRunner: o RM perde a execucao, entao a confirmacao
+    // e digitar o PID (como drenar no NLB exige digitar o nome do servidor).
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('.jr-kill') : null;
+      if (!b) return;
+      e.preventDefault(); e.stopPropagation();
+      var srv = b.getAttribute('data-server'), pid = b.getAttribute('data-pid');
+      var resp = prompt('Encerrar o JobRunner PID ' + pid + ' (' + b.getAttribute('data-gb') + ' GB, ' +
+        b.getAttribute('data-job') + ') em ' + srv + '?\n\nO RM perde esta execucao do job. ' +
+        'Para confirmar, digite o PID:');
+      if (resp === null) return;
+      if (resp.trim() !== pid) { alert('PID diferente: nada foi feito.'); return; }
+      b.disabled = true;
+      rmonTask.start('Encerrar JobRunner ' + pid, 'em ' + srv + ' - conferindo o processo no host...');
+      var fd = new FormData(); fd.append('server', srv); fd.append('pid', pid); fd.append('confirm', resp.trim());
+      fetch('/jobrunner/encerrar', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          rmonTask.log(srv + ' PID ' + pid + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
+          rmonTask.done(d.ok ? 'Encerrado. Atualizando a tela...' : 'Nao encerrado: ' + (d.msg || 'erro'), d.ok, true);
+          if (!d.ok) { b.disabled = false; }
+        }).catch(function () {
+          rmonTask.log('erro de rede', false);
+          rmonTask.done('Erro de rede', false, false);
+          b.disabled = false;
+        });
+    });
+
     // Atalho para dentro do cartao do servidor: o cartao inteiro ja e um link
     // para /server/<nome>, e link dentro de link e HTML invalido. Entao os
     // chips que levam a outro lugar (sessoes daquele host, jobs, ocorrencias)

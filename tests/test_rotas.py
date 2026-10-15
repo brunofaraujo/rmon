@@ -1,0 +1,242 @@
+"""Rotas da Fase 2 (manutencao e encerrar JobRunner) pelo FastAPI, com banco falso.
+
+Tambem renderiza as telas que mudaram (painel, servidor, mural, ocorrencias e
+admin): erro de template so apareceria em producao, na frente do usuario.
+"""
+from __future__ import annotations
+
+import time
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import collector, db, main, manutencao, notify
+from app.config import ServerConfig, WinRMConfig
+from app.security import hash_password
+
+SENHA = "senha-de-teste-123"
+AGORA = time.time()
+
+
+def coleta(**kw):
+    r = {"server": "app-34", "ts": AGORA - 30, "reachable": True, "cpu": 20, "mem_pct": 40,
+         "uptime_sec": 86400, "disks": [{"drive": "C:", "used_pct": 50, "free_gb": 50, "size_gb": 100}],
+         "services": [{"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto"}],
+         "events": [], "app_ok": True, "app_ms": 120, "users_count": 3, "error": None, "jobs": None,
+         "broker": None, "commit_pct": 40,
+         "jobrunners": {"count": 12, "total_mb": 9000, "computer": "SRV06N",
+                        "top": [{"pid": 4242, "private_mb": 5 * 1024, "start": "2026-10-15 08:00:00"},
+                                {"pid": 77, "private_mb": 300, "start": "2026-10-15 09:00:00"}],
+                        "jobs": {"4242": {"idjob": 2431028, "nome": "Relatorio de turma",
+                                          "usuario": "fulano"}}}}
+    r.update(kw)
+    return r
+
+
+@pytest.fixture
+def app_falso(monkeypatch):
+    usuarios = {"admin": {"username": "admin", "role": "admin", "active": True,
+                          "password_hash": hash_password(SENHA)},
+                "tv": {"username": "tv", "role": "viewer", "active": True,
+                       "password_hash": hash_password(SENHA)}}
+    estado = SimpleNamespace(config={}, alertas=[], auditoria=[], enviadas=[], mortes=[],
+                             coletas=[coleta()])
+
+    def falha():
+        raise AssertionError("o teste tentou abrir conexao com o PostgreSQL")
+
+    monkeypatch.setattr(db, "_conn", falha)
+    monkeypatch.setattr(db, "get_user", lambda u: usuarios.get(u))
+    monkeypatch.setattr(db, "touch_login", lambda u: None)
+    monkeypatch.setattr(db, "audit", lambda *a, **k: estado.auditoria.append(a))
+    monkeypatch.setattr(db, "get_config", lambda k, d=None: estado.config.get(k, d))
+    monkeypatch.setattr(db, "set_config", lambda k, v: estado.config.__setitem__(k, v))
+    monkeypatch.setattr(db, "record_alert", lambda *a: estado.alertas.append(a))
+    monkeypatch.setattr(db, "latest_per_server", lambda: [dict(c) for c in estado.coletas])
+    monkeypatch.setattr(db, "history", lambda name, limit=120: [dict(c) for c in estado.coletas])
+    monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
+    monkeypatch.setattr(db, "broker_estado", lambda dias=1: {})
+    monkeypatch.setattr(db, "fila_hist", lambda n=3: {})
+    monkeypatch.setattr(db, "fail_streak", lambda s, limit=20: 0)
+    monkeypatch.setattr(db, "list_users", lambda: list(usuarios.values()))
+    monkeypatch.setattr(db, "recent_alerts", lambda h=48, lim=500, server=None: [
+        {"ts": AGORA - 600, "server": "app-34", "kind": "reminder", "problem": "svc:RM.Host.Service",
+         "message": "segue aberto ha 4h00: servico RM.Host.Service = Stopped"},
+        {"ts": AGORA - 300, "server": "app-34", "kind": "manutencao", "problem": "MANUT",
+         "message": "manutencao aberta por admin"},
+        {"ts": AGORA - 60, "server": "app-34", "kind": "acao", "problem": "jobrunner-kill:4242",
+         "message": "JobRunner PID 4242 encerrado por admin"}])
+    monkeypatch.setattr(notify, "enabled", lambda: True)
+    monkeypatch.setattr(notify, "send", lambda t: estado.enviadas.append(t) or True)
+    monkeypatch.setattr(main, "kill_jobrunner",
+                        lambda srv, wc, pid, inicio, proc: estado.mortes.append((srv.name, pid, inicio, proc))
+                        or (True, f"PID {pid} encerrado (5120 MB de memoria privada liberados)"))
+    servidor = ServerConfig(name="app-34", host="10.0.0.34")
+    inv = SimpleNamespace(servers=[servidor], winrm=WinRMConfig(), defaults={},
+                          poll_interval_seconds=60, environments={})
+    monkeypatch.setitem(main.STATE, "inv", inv)
+    monkeypatch.setitem(main.STATE, "settings", SimpleNamespace(tv_token=""))
+    main._TV_CACHE.update(ts=0.0, data=None)
+    cliente = TestClient(main.app)
+
+    def entrar(usuario="admin"):
+        r = cliente.post("/login", data={"username": usuario, "password": SENHA},
+                         follow_redirects=False)
+        assert r.status_code == 302
+
+    return SimpleNamespace(c=cliente, estado=estado, entrar=entrar)
+
+
+# ------------------------------------------------------------ telas
+
+@pytest.mark.parametrize("rota", ["/", "/server/app-34", "/tv", "/ocorrencias", "/admin"])
+def test_telas_renderizam(app_falso, rota):
+    app_falso.entrar()
+    r = app_falso.c.get(rota)
+    assert r.status_code == 200, r.text[:500]
+
+
+def test_linha_do_tempo_mostra_os_tipos_novos(app_falso):
+    app_falso.entrar()
+    html = app_falso.c.get("/ocorrencias").text
+    assert "lembrete &middot;" in html and "manutencao &middot; Manutencao" in html
+    assert "JobRunner encerrado (PID 4242)" in html
+
+
+def test_admin_tem_os_limiares_novos(app_falso):
+    app_falso.entrar()
+    html = app_falso.c.get("/admin").text
+    assert 'name="lembrete_h"' in html and 'name="resumo_hora"' in html
+    app_falso.c.post("/admin/config", data={"lembrete_h": "6", "resumo_hora": "-1"})
+    alerts = app_falso.estado.config["alerts"]
+    assert alerts["lembrete_h"] == 6 and alerts["resumo_hora"] == -1
+
+
+# ------------------------------------------------------------ manutencao
+
+def test_abrir_manutencao(app_falso):
+    app_falso.entrar()
+    r = app_falso.c.post("/manutencao/iniciar",
+                         data={"server": "app-34", "minutos": "120", "motivo": "atualizacao do RM"},
+                         follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/server/app-34"
+    j = app_falso.estado.config["manutencao"]["app-34"]
+    assert j["por"] == "admin" and j["motivo"] == "atualizacao do RM"
+    assert 119 * 60 < j["ate"] - time.time() <= 120 * 60
+    assert app_falso.estado.alertas[-1][1:3] == ("manutencao", "MANUT")
+    assert "calados" in app_falso.estado.enviadas[-1]
+    html = app_falso.c.get("/server/app-34").text
+    assert "Em manutencao ate" in html and "Encerrar agora" in html
+
+
+def test_manutencao_tem_teto(app_falso):
+    app_falso.entrar()
+    app_falso.c.post("/manutencao/iniciar", data={"server": "app-34", "minutos": "99999"})
+    j = app_falso.estado.config["manutencao"]["app-34"]
+    assert j["ate"] - time.time() <= manutencao.MAX_MIN * 60
+
+
+def test_encerrar_manutencao_adianta_o_fim(app_falso):
+    app_falso.entrar()
+    app_falso.c.post("/manutencao/iniciar", data={"server": "app-34", "minutos": "60"})
+    app_falso.c.post("/manutencao/encerrar", data={"server": "app-34"})
+    assert app_falso.estado.config["manutencao"]["app-34"]["ate"] <= time.time()
+    assert manutencao.ativas() == {}
+
+
+def test_manutencao_some_do_mural_vermelho(app_falso):
+    app_falso.entrar()
+    tv = app_falso.c.get("/api/tv").json()
+    assert tv["servers"][0]["sev"] == 2 and tv["issues"]
+    app_falso.c.post("/manutencao/iniciar", data={"server": "app-34", "minutos": "60"})
+    main._TV_CACHE.update(ts=0.0, data=None)
+    tv = app_falso.c.get("/api/tv").json()
+    s = tv["servers"][0]
+    assert s["sev"] == 0 and s["manut"] and tv["issues"] == []
+    assert tv["summary"]["maint"] == 1 and tv["summary"]["services_down"] == 0
+
+
+def test_viewer_nao_abre_manutencao(app_falso):
+    app_falso.entrar("tv")
+    r = app_falso.c.post("/manutencao/iniciar", data={"server": "app-34", "minutos": "60"})
+    assert r.status_code == 403
+    assert "manutencao" not in app_falso.estado.config
+
+
+def test_servidor_desconhecido(app_falso):
+    app_falso.entrar()
+    r = app_falso.c.post("/manutencao/iniciar", data={"server": "outro", "minutos": "60"})
+    assert r.status_code == 404
+
+
+# ------------------------------------------------------------ encerrar JobRunner
+
+def test_encerrar_jobrunner(app_falso):
+    app_falso.entrar()
+    r = app_falso.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "4242"})
+    assert r.json()["ok"]
+    assert app_falso.estado.mortes == [("app-34", 4242, "2026-10-15 08:00:00", "RM.Host.JobRunner")]
+    assert app_falso.estado.alertas[-1][1:3] == ("acao", "jobrunner-kill:4242")
+    assert "2431028" in app_falso.estado.enviadas[-1] and "por admin" in app_falso.estado.enviadas[-1]
+    assert app_falso.estado.auditoria[-1][1] == "jobrunner_kill"
+
+
+def test_encerrar_exige_o_pid_digitado(app_falso):
+    app_falso.entrar()
+    r = app_falso.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "424"})
+    assert r.status_code == 400 and app_falso.estado.mortes == []
+
+
+def test_so_encerra_jobrunner_da_ultima_coleta(app_falso):
+    app_falso.entrar()
+    r = app_falso.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4", "confirm": "4"})
+    assert r.status_code == 409 and app_falso.estado.mortes == []
+
+
+def test_viewer_nao_encerra(app_falso):
+    app_falso.entrar("tv")
+    r = app_falso.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "4242"})
+    assert r.status_code == 403 and app_falso.estado.mortes == []
+
+
+def test_botao_de_encerrar_aparece_na_tela(app_falso):
+    app_falso.entrar()
+    html = app_falso.c.get("/server/app-34").text
+    assert 'class="svc-btn jr-kill"' in html and 'data-pid="4242"' in html
+
+
+# ------------------------------------------------------------ script no host
+
+def test_script_confere_nome_e_inicio_antes_de_matar():
+    s = collector.script_encerrar_jobrunner(4242, "2026-10-15 08:00:00", "RM.Host.JobRunner")
+    assert "Get-Process -Id 4242" in s and "Stop-Process -Id 4242 -Force" in s
+    assert "'RM.Host.JobRunner'" in s and "'2026-10-15 08:00:00'" in s
+    # inicio fora do formato nao entra no script (e desliga so essa conferencia)
+    s = collector.script_encerrar_jobrunner(4242, "'; Remove-Item C:\\ -Recurse; '", "RM.Host.JobRunner")
+    assert "Remove-Item" not in s
+
+
+@pytest.mark.parametrize("pid,proc", [(0, "RM.Host.JobRunner"), (-1, "RM.Host.JobRunner"),
+                                      (10, "x'; rm"), ("abc", "RM.Host.JobRunner")])
+def test_script_recusa_entrada_invalida(pid, proc):
+    with pytest.raises((ValueError, TypeError)):
+        collector.script_encerrar_jobrunner(pid, None, proc)
+
+
+def test_interpretar_respostas_do_host():
+    assert collector.interpretar_encerramento("OK 5120", 9) == (
+        True, "PID 9 encerrado (5120 MB de memoria privada liberados)")
+    assert not collector.interpretar_encerramento("GONE", 9)[0]
+    assert "notepad" in collector.interpretar_encerramento("NOT_JR notepad", 9)[1]
+    assert "reaproveitado" in collector.interpretar_encerramento("REUSED 2026-10-15 10:00:00", 9)[1]
+    assert not collector.interpretar_encerramento("", 9)[0]
+
+
+def test_alvo_so_da_lista_da_coleta():
+    c = coleta()
+    assert collector.jobrunner_alvo(c, "4242")["pid"] == 4242
+    assert collector.jobrunner_alvo(c, 77)["pid"] == 77
+    assert collector.jobrunner_alvo(c, 5) is None
+    assert collector.jobrunner_alvo(c, "x") is None
+    assert collector.jobrunner_alvo({}, 4242) is None

@@ -182,6 +182,47 @@ sudo /opt/rmon/.venv/bin/python /opt/rmon/deploy/descobrir.py
 
 ---
 
+## Manutenção, lembretes e resumo diário
+
+### Janela de manutenção
+
+Antes de reiniciar um host, atualizar o RM ou trocar hardware, abra a janela na tela do
+servidor (**🔧 Manutenção** → duração e motivo → *Calar alertas*). Durante a janela:
+
+- a coleta continua e tudo vai para o histórico (`alerts_log`), mas **nada deste host
+  notifica**, nem os lembretes;
+- a automação do NLB trata o nó como em *hold*: não drena nem reingressa;
+- o mural mostra o cartão em azul ("EM MANUTENCAO"), fora do vermelho e do letreiro.
+
+Quando a janela acaba, ou quando alguém clica em *Encerrar agora*, a coleta seguinte manda
+**uma** mensagem: o que seguiu aberto, ou "voltou limpo". A janela tem teto de 24h e pode
+ser estendida pela mesma tela. Abrir, estender e encerrar ficam na auditoria (*Logs*).
+
+### Lembrete de crítico aberto
+
+Problema vermelho que segue aberto volta ao canal a cada `lembrete_h` horas (padrão 4h),
+com o tempo desde que abriu: "⏰ segue aberto ha 8h06: ...". Avisos âmbar não têm lembrete:
+eles vão para o resumo diário. O controle de "quando foi o último aviso" fica no banco,
+então um restart não dispara o lembrete de novo.
+
+### Resumo diário
+
+Na hora `resumo_hora` (padrão 8h) sai um resumo com os críticos e avisos abertos,
+inclusive os que nunca notificam (jobs com erro, SQL fora), quem está em manutenção e o
+movimento das últimas 24h. Se o resumo da manhã não chegou, o RMon parou. Os dois valores
+ficam em *Admin* → *Limiares de alerta* e mudam sem restart.
+
+### Encerrar um JobRunner que está estourando
+
+Na tela do servidor, cada um dos maiores `RM.Host.JobRunner` (os que a coleta lista) tem um **✕** ao lado. A confirmação
+mostra o job e quem o pediu, e exige o PID digitado. Antes de matar, o host confere três
+coisas: o processo ainda existe, ainda é um JobRunner e tem a mesma hora de início que a
+coleta viu (PID reaproveitado não morre por engano). O RM perde aquela execução. A ação vai
+para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job no RM: o ✕
+é para quando não dá tempo.
+
+---
+
 ## Coleta instável (alertas DOWN intermitentes)
 
 Sintoma: um servidor alterna "sem contato" e "resolvido" várias vezes por hora,

@@ -64,8 +64,8 @@
     <li class="hrow {{ a.kind }}" data-text="{{ (a.server ~ ' ' ~ a.problem ~ ' ' ~ (a.message or '')) | lower }}">
       <span class="quando mono">{{ a.ts | dt }}</span>
       <a class="linkish" href="/ocorrencias?h={{ horas }}&server={{ a.server }}" title="So este servidor">{{ a.server }}</a>
-      <span class="pill {{ 'red' if a.kind == 'raised' and a.crit else ('green' if a.kind == 'resolved' else ('blue' if a.kind == 'package' else 'amber')) }} tag">
-        {{ 'abriu' if a.kind == 'raised' else ('resolveu' if a.kind == 'resolved' else a.kind) }} &middot; {{ a.label }}</span>
+      <span class="pill {{ 'red' if a.kind in ('raised', 'reminder') and a.crit else ('green' if a.kind == 'resolved' else ('blue' if a.kind in ('package', 'manutencao', 'acao') else 'amber')) }} tag">
+        {{ kind_label.get(a.kind, a.kind) }} &middot; {{ a.label }}</span>
       <span class="txt">{{ a.message }}</span>
     </li>
     {% endfor %}

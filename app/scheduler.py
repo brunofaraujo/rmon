@@ -10,7 +10,7 @@ from typing import Iterable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import db, execution, inventory, jobstats, nlb, notify, packages
+from . import db, execution, inventory, jobstats, manutencao, nlb, notify, packages
 from .collector import collect_server
 from .config import Inventory, Settings
 from .inventory import collect_inventory
@@ -22,6 +22,15 @@ _last: dict[str, dict] = {}
 # _last nasce vazio a cada start; antes da primeira avaliacao ele e recarregado
 # do alerts_log (ver _restaurar_estado).
 _restaurado = False
+# Por servidor e problema aberto: quando abriu e quando foi avisado pela ultima
+# vez (o 'raised' ou o lembrete). Restaurados junto com _last.
+_desde: dict[str, dict[str, float]] = {}
+_avisado: dict[str, dict[str, float]] = {}
+
+
+def _agora() -> float:
+    """Relogio do scheduler (os testes trocam para simular horas passando)."""
+    return time.time()
 
 
 DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 3,
@@ -42,7 +51,11 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   "jobs_all_failed": 10,
                   # memoria privada de UM RM.Host.JobRunner, em GB: aviso
                   # precoce e critico (ver jobrunner_problems)
-                  "jobrunner_warn_gb": 4, "jobrunner_gb": 8}
+                  "jobrunner_warn_gb": 4, "jobrunner_gb": 8,
+                  # critico ainda aberto e lembrado a cada tantas horas (0 desliga)
+                  "lembrete_h": 4,
+                  # hora do resumo diario dos alertas (-1 desliga)
+                  "resumo_hora": 8}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -491,6 +504,7 @@ def _restaurar_estado(servidores: Iterable[str]) -> None:
     if _restaurado:
         return
     abertos = db.open_alerts()
+    tempos = db.open_alerts_tempos()
     ativos = set(servidores)
     for nome, probs in abertos.items():
         if nome not in ativos:
@@ -498,9 +512,57 @@ def _restaurar_estado(servidores: Iterable[str]) -> None:
                 db.record_alert(nome, "resolved", k, texto + " (saiu do monitoramento)")
             continue
         _last.setdefault(nome, dict(probs))
+        for k, t in (tempos.get(nome) or {}).items():
+            _desde.setdefault(nome, {}).setdefault(k, t["desde"])
+            _avisado.setdefault(nome, {}).setdefault(k, t["aviso"])
     _restaurado = True
     log.info("estado dos alertas restaurado: %d problema(s) aberto(s) em %d servidor(es)",
              sum(len(p) for p in abertos.values()), len(abertos))
+
+
+def _duracao(seg: float) -> str:
+    seg = max(0, int(seg))
+    d, r = divmod(seg, 86400)
+    h, r = divmod(r, 3600)
+    m = r // 60
+    if d:
+        return f"{d}d{h:02d}h"
+    return f"{h}h{m:02d}" if h else f"{m}min"
+
+
+def lembretes_devidos(atual: dict[str, str], avisado: dict[str, float],
+                      agora: float, intervalo_s: float) -> list[str]:
+    """Criticos abertos cujo ultimo aviso ja tem `intervalo_s` ou mais.
+
+    So o vermelho que notifica merece lembrete: e o que exige alguem agindo, e
+    um servico parado ha 6h sem ninguem olhar e pior do que o alerta das 6h
+    atras faz parecer. Aviso (ambar) fica para o resumo diario.
+    """
+    if intervalo_s <= 0:
+        return []
+    return [k for k in atual
+            if critico(k) and notifica(k) and k in avisado
+            and agora - avisado[k] >= intervalo_s]
+
+
+def _fechar_manutencao(nome: str, host: str, janela: dict, agora: float) -> None:
+    """Fim da janela: uma mensagem so, com o que seguiu aberto."""
+    abertos = {k: v for k, v in (_last.get(nome) or {}).items() if notifica(k)}
+    db.record_alert(nome, "manutencao", "MANUT",
+                    f"fim da manutencao aberta em {manutencao.hora(janela.get('desde'))}: "
+                    + (f"{len(abertos)} problema(s) seguem abertos" if abertos else "sem pendencias"))
+    for k in abertos:
+        # a mensagem abaixo e o aviso: o relogio do lembrete recomeca aqui
+        _avisado.setdefault(nome, {})[k] = agora
+    if not notify.enabled():
+        return
+    cab = (f"\U0001F527 RMonitor — {nome} ({host}): fim da manutencao aberta por "
+           f"{janela.get('por') or '?'} em {manutencao.hora(janela.get('desde'))}")
+    if abertos:
+        notify.send(cab + "\nSeguem abertos:\n" + "\n".join(
+            ("\U0001F534 " if critico(k) else "⚠ ") + v for k, v in abertos.items()))
+    else:
+        notify.send(cab + "\nNenhum problema aberto: voltou limpo.")
 
 
 def poll_all(inv: Inventory, settings: Settings) -> None:
@@ -546,34 +608,141 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         ref = broker_reference(th.get("broker_history_days"))
         estado = db.broker_estado()
         filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
+        agora = _agora()
+        janelas = manutencao.todas()
+        # Janela vencida ainda cala neste ciclo: quem fala por ela e a mensagem
+        # de fim de manutencao, logo abaixo. Senao o "resolvido" de algo que
+        # abriu calado durante a janela chegaria solto, sem o alerta de antes.
+        calar = set(janelas)
+        try:
+            intervalo = max(0.0, float(th.get("lembrete_h") or 0)) * 3600
+        except (TypeError, ValueError):
+            intervalo = 0.0
         for server, result in coletas:
-            streak = 0 if result.get("reachable") else db.fail_streak(server.name)
-            probs = problems(result, th, streak, ref.get(server.name),
-                             estado.get(server.name), filas.get(server.name))
-            prev = _last.get(server.name, {})
+            nome = server.name
+            streak = 0 if result.get("reachable") else db.fail_streak(nome)
+            probs = problems(result, th, streak, ref.get(nome),
+                             estado.get(nome), filas.get(nome))
+            prev = _last.get(nome, {})
             atual, new_keys, gone_keys = transicoes(prev, probs, result)
             calados = {k for k in gone_keys if fora_do_monitoramento(k, result)}
+            desde = _desde.setdefault(nome, {})
+            avisado = _avisado.setdefault(nome, {})
             for k in new_keys:
-                db.record_alert(server.name, "raised", k, atual[k])
+                db.record_alert(nome, "raised", k, atual[k])
+                desde[k] = avisado[k] = agora
             for k in gone_keys:
-                db.record_alert(server.name, "resolved", k,
+                db.record_alert(nome, "resolved", k,
                                 prev[k] + (" (saiu do monitoramento)" if k in calados else ""))
+                desde.pop(k, None)
+                avisado.pop(k, None)
+            _last[nome] = atual
+            if nome in calar:
+                continue
             # Aviso (job com erro, SQL fora do ar) fica registrado e aparece na
             # tela, mas nao vira mensagem: alerta que nao exige acao imediata
             # so ensina o time a ignorar o canal.
             msgs = ["\U0001F534 " + atual[k] for k in new_keys if notifica(k)]
             msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys
                      if notifica(k) and k not in calados]
+            for k in lembretes_devidos(atual, avisado, agora, intervalo):
+                aberto = _duracao(agora - desde.get(k, avisado[k]))
+                db.record_alert(nome, "reminder", k, f"segue aberto ha {aberto}: {atual[k]}")
+                avisado[k] = agora
+                msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
             if msgs and notify.enabled():
-                notify.send(f"RMonitor — {server.name} ({server.host})\n" + "\n".join(msgs))
-            _last[server.name] = atual
+                notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
+
+        fechadas = manutencao.vencidas(agora, janelas)
+        hosts = {s.name: s.host for s in inv.servers}
+        for nome, janela in fechadas.items():
+            if nome in hosts:
+                _fechar_manutencao(nome, hosts[nome], janela, agora)
+        if fechadas:
+            manutencao.remover(list(fechadas), agora)
 
         # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
-        # ciclo. Nunca derruba a coleta - erro aqui vira log.
+        # ciclo. Nunca derruba a coleta - erro aqui vira log. Host em
+        # manutencao fica em hold: a automacao nao mexe em quem esta sendo mexido.
         try:
-            nlb.run_cycle(inv, {s.name: r for s, r in coletas})
+            nlb.run_cycle(inv, {s.name: r for s, r in coletas},
+                          hold=manutencao.ativas(agora, janelas))
         except Exception:  # noqa: BLE001
             log.exception("NLB: falha no ciclo de avaliacao")
+
+
+def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str, dict]],
+                 janelas: dict[str, dict], ultimas24: list[dict], servidores: list[str],
+                 agora: float) -> str:
+    """Resumo diario em texto: o que esta aberto (vermelho e ambar), quem esta em
+    manutencao e o movimento das ultimas 24h.
+
+    E o lugar dos avisos que nao notificam (job com erro, SQL fora, memoria
+    alta que nunca vira incidente): eles ficam visiveis uma vez por dia, sem
+    ensinar o time a ignorar o canal. E tambem o sinal de vida do monitor - se
+    o resumo da manha nao chegou, o RMon parou.
+    """
+    def linhas(criticos: bool) -> list[str]:
+        out = []
+        for nome in servidores:
+            for k, texto in sorted((abertos.get(nome) or {}).items()):
+                if critico(k) != criticos:
+                    continue
+                t = (tempos.get(nome) or {}).get(k) or {}
+                ha = f" (ha {_duracao(agora - t['desde'])})" if t.get("desde") else ""
+                out.append(f"• {nome}: {texto[:160]}{ha}")
+        return out
+
+    def bloco(titulo: str, itens: list[str], limite: int = 15) -> list[str]:
+        if not itens:
+            return []
+        extra = [f"... e mais {len(itens) - limite}"] if len(itens) > limite else []
+        return [f"{titulo} ({len(itens)}):"] + itens[:limite] + extra
+
+    partes = [f"\U0001F4CB RMonitor — resumo diario {time.strftime('%d/%m', time.localtime(agora))}"]
+    crit, avisos = linhas(True), linhas(False)
+    partes += bloco("\U0001F534 Criticos abertos", crit)
+    partes += bloco("⚠ Avisos abertos", avisos)
+    if not crit and not avisos:
+        partes.append("✅ Nenhum problema aberto.")
+    ativas = manutencao.ativas(agora, janelas)
+    if ativas:
+        partes.append("\U0001F527 Em manutencao: " + ", ".join(
+            f"{n} ate {manutencao.hora(j.get('ate'))}" for n, j in sorted(ativas.items())))
+    abriram = sum(1 for a in ultimas24 if a.get("kind") == "raised")
+    resolveram = sum(1 for a in ultimas24 if a.get("kind") == "resolved")
+    partes.append(f"Ultimas 24h: {abriram} alerta(s) aberto(s), {resolveram} resolvido(s).")
+    return "\n".join(partes)
+
+
+def resumo_diario(inv: Inventory, forcar: bool = False) -> bool:
+    """Roda de hora em hora e manda o resumo na hora configurada, uma vez por dia.
+
+    A hora vem dos limiares (painel > YAML > padrao), entao muda sem restart.
+    A marca do ultimo envio fica no banco: restart dentro da hora nao repete.
+    """
+    th = {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
+    agora = _agora()
+    try:
+        hora = int(th.get("resumo_hora", 8))
+    except (TypeError, ValueError):
+        hora = 8
+    hoje = time.strftime("%Y-%m-%d", time.localtime(agora))
+    if not forcar:
+        if hora < 0 or time.localtime(agora).tm_hour != hora:
+            return False
+        if db.get_config("resumo_ultimo") == hoje:
+            return False
+    if not notify.enabled():
+        return False
+    nomes = [s.name for s in inv.servers]
+    texto = texto_resumo(db.open_alerts(), db.open_alerts_tempos(), manutencao.todas(),
+                         [a for a in db.recent_alerts(24, 5000) if a.get("server") in nomes],
+                         nomes, agora)
+    notify.send(texto)
+    db.set_config("resumo_ultimo", hoje)
+    log.info("resumo diario enviado")
+    return True
 
 
 def poll_inventory(inv: Inventory, settings: Settings) -> None:
@@ -741,6 +910,9 @@ def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
         id="poll_all", max_instances=1, coalesce=True,
     )
     sched.add_job(db.prune, "interval", hours=6, id="prune", max_instances=1, coalesce=True)
+    # De hora em hora: resumo_diario decide se e a hora configurada.
+    sched.add_job(resumo_diario, "cron", minute=0, args=[inv], id="resumo_diario",
+                  max_instances=1, coalesce=True)
     # A fila e curta e barata de olhar; o intervalo curto e so latencia da tela.
     sched.add_job(run_pending_tasks, "interval", seconds=20, args=[inv, settings],
                   id="run_pending_tasks", max_instances=1, coalesce=True)

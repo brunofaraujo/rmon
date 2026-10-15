@@ -12,6 +12,44 @@
   <a class="btn" href="/">&larr; Painel</a>
 </div>
 
+{% if flash %}<div class="alert ok">{{ flash }}</div>{% endif %}
+{% if manut %}
+<div class="alert info" style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+  <span>&#128295; <b>Em manutencao ate {{ manut.ate | dt }}</b> &middot; aberta por {{ manut.por }}{% if manut.motivo %}: {{ manut.motivo }}{% endif %}.
+    Os alertas deste host seguem registrados, mas nao notificam; o NLB nao mexe no no. No fim sai um resumo do que ficou aberto.</span>
+  <form method="post" action="/manutencao/iniciar" style="display:flex;gap:.4rem;align-items:center">
+    <input type="hidden" name="server" value="{{ name }}"><input type="hidden" name="motivo" value="{{ manut.motivo }}">
+    <select class="input" name="minutos" title="Nova duracao, contada a partir de agora">
+      <option value="30">30 min</option><option value="60" selected>1 h</option><option value="120">2 h</option><option value="240">4 h</option>
+    </select>
+    <button type="submit" class="btn small" title="A janela passa a terminar daqui a esse tempo">Renovar</button>
+  </form>
+  <form method="post" action="/manutencao/encerrar">
+    <input type="hidden" name="server" value="{{ name }}">
+    <button type="submit" class="btn small primary">Encerrar agora</button>
+  </form>
+</div>
+{% else %}
+<details class="grupo">
+  <summary>&#128295; <b>Manutencao</b> <span class="muted small">&middot; calar os alertas deste host durante reboot, atualizacao ou troca de hardware</span></summary>
+  <div class="panel">
+    <form method="post" action="/manutencao/iniciar" style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap">
+      <input type="hidden" name="server" value="{{ name }}">
+      <div><label class="muted small">Duracao</label><br>
+        <select class="input" name="minutos">
+          <option value="30">30 min</option><option value="60" selected>1 h</option><option value="120">2 h</option>
+          <option value="240">4 h</option><option value="480">8 h</option><option value="1440">24 h</option>
+        </select></div>
+      <div style="flex:1;min-width:220px"><label class="muted small">Motivo</label><br>
+        <input class="input" name="motivo" maxlength="200" placeholder="ex.: atualizacao do RM 12.1.2410" style="width:100%"></div>
+      <button type="submit" class="btn primary">Calar alertas</button>
+    </form>
+    <p class="faint small" style="margin:.6rem 0 0">A coleta continua e tudo fica no historico. Nenhuma transicao deste host notifica, nem os lembretes;
+      o NLB trata o no como em hold. Quando a janela acaba (ou voce encerra), sai <b>uma</b> mensagem dizendo o que seguiu aberto.</p>
+  </div>
+</details>
+{% endif %}
+
 {% if not current %}
   <div class="alert">Sem dados para este servidor ainda.</div>
 {% elif not current.reachable %}
@@ -93,13 +131,16 @@
       {% set gb = (p.private_mb or 0) / 1024 %}
       {% set ex = (jr.jobs or {}).get(p.pid | string) %}
       <span class="pill {{ 'red' if (jr_limite_gb and gb >= jr_limite_gb) else ('amber' if (jr_aviso_gb and gb >= jr_aviso_gb) else '') }}"
-            title="PID {{ p.pid }}{% if p.start %} &middot; iniciado {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB</span>
+            title="PID {{ p.pid }}{% if p.start %} &middot; iniciado {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB</span><button type="button" class="svc-btn jr-kill"
+            data-server="{{ name }}" data-pid="{{ p.pid }}" data-gb="{{ gb | round(1) }}"
+            data-job="{% if ex %}job {{ ex.idjob }} '{{ ex.nome or ex.classe or '?' }}' de {{ ex.usuario or '?' }}{% else %}job nao identificado{% endif %}"
+            title="Encerrar este JobRunner no host (o RM perde esta execucao)">&#10005;</button>
       {% endfor %}
     </div>
     {% if jr_alerta %}
     <div class="alert small" style="margin-top:.6rem">
       {% for msg in jr_alerta.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
-      <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se nao der, encerre o PID no host: o RM marca a execucao como falha e o host recupera a memoria.</div>
+      <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se nao der, encerre o PID pelo &#10005; ao lado dele: o RM perde a execucao e o host recupera a memoria.</div>
     </div>
     {% endif %}
   </div>

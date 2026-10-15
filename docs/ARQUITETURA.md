@@ -82,8 +82,8 @@ idempotente (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EX
 | `users` | Usuários do painel (username, hash pbkdf2, papel, ativo, último login, nome, e-mail) |
 | `checks` | Snapshot por servidor/ciclo (métricas + `disks`/`services`/`events`/`jobs` em `jsonb`) |
 | `audit_log` | Auditoria de ações (login, restart, logoff, config…) |
-| `alerts_log` | Histórico de problemas levantados/resolvidos |
-| `app_config` | Configuração runtime (tema/refresh da UI, limiares de alerta) em `jsonb` |
+| `alerts_log` | Linha do tempo: problemas levantados/resolvidos (`raised`/`resolved`), lembretes (`reminder`), janelas de manutenção (`manutencao`), ações manuais (`acao`), decisões do NLB e mudanças de pacote |
+| `app_config` | Configuração runtime em `jsonb`: tema/refresh da UI, limiares de alerta, janelas de manutenção (`manutencao`) e a data do último resumo diário |
 | `host_packages` | Inventário TOTVS atual por `(servidor, item)`: versão, fabricante, data, fonte (`rm`/`assembly`/`custom`/`registry`), `first_seen`/`last_seen` |
 | `package_events` | Mudanças de software (instalado/atualizado/regrediu/removido), guardadas por 1 ano |
 | `inventory_runs` | Última coleta de inventário por servidor (ok, nº de itens, erro, duração, última atualização do RM.Atualizador) |
@@ -129,6 +129,9 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/pacotes/catalogo/vincular` | POST | Liga um pacote baixado a um item do inventário (admin) |
 | `/pacotes/tarefas` | POST | Enfileira um pré-voo ou (se armado) uma instalação (admin) |
 | `/nlb/acao` | POST | Drenar/reingressar um nó do NLB ou ligar/desligar a manutenção (admin, auditado) |
+| `/manutencao/iniciar` | POST | Abre ou estende a janela de manutenção de um host: cala as notificações e põe o nó em hold no NLB (admin, auditado) |
+| `/manutencao/encerrar` | POST | Adianta o fim da janela; o resumo sai na próxima coleta (admin, auditado) |
+| `/jobrunner/encerrar` | POST | Encerra no host um `RM.Host.JobRunner` da última coleta, com o PID digitado (admin, auditado, notificado) |
 | `/pacotes/stage/{id}` | GET | Entrega o pacote ao host durante a instalação — sem sessão, com HMAC e prazo, só com a execução habilitada |
 
 ## Perfil `viewer` (quiosque)

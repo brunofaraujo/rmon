@@ -37,6 +37,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
     jobrunner_warn_gb: 4           # ALERTA (âmbar): um RM.Host.JobRunner com 4+ GB de memória privada
     jobrunner_gb: 8                # ALERTA (vermelho): 8+ GB — o commit do host esgota em minutos
+    lembrete_h: 4                  # crítico (vermelho) ainda aberto é notificado de novo a cada 4h (0 desliga)
+    resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
   jobrunner:                       # medição dos processos que executam os jobs do RM
     enabled: true
     process: RM.Host.JobRunner     # nome do processo (sem .exe)
