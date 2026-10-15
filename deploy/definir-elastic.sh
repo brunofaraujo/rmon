@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Liga o Elasticsearch como fonte opcional (so leitura) do RMon. Rode como root:
 #   sudo bash /opt/rmon/deploy/definir-elastic.sh
+#   sudo bash /opt/rmon/deploy/definir-elastic.sh --chave-arquivo /tmp/chave.txt
 #
 # Antes, crie no Kibana (Dev Tools) uma API key que SO LE os indices que o RMon
 # consulta - o comando esta em docs/CONFIGURACAO.md (secao Elasticsearch) - e
@@ -16,7 +17,21 @@ CA_FILE="$APP_DIR/config/elastic-ca.crt"
 [ "$(id -u)" -eq 0 ] || { echo "Rode como root (sudo)." >&2; exit 1; }
 [ -f "$ENV_FILE" ] || { echo "Nao encontrei $ENV_FILE." >&2; exit 1; }
 
-read -r -p "URL do Elasticsearch (ex.: https://elastic.exemplo.local:9200): " URL
+# --chave-arquivo <arq>: le a chave de um arquivo (apagado depois), para quem
+# nao consegue colar no terminal - ex.: salvar no Bloco de Notas e mandar com
+#   scp chave.txt rmon:/tmp/chave.txt
+CHAVE_ARQUIVO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --chave-arquivo) CHAVE_ARQUIVO="${2:-}"; shift 2 ;;
+    *) echo "Uso: $0 [--chave-arquivo <arquivo>]" >&2; exit 1 ;;
+  esac
+done
+
+# URL: Enter mantem a que ja estiver no .env
+URL_ATUAL="$(grep -E '^RMON_ES_URL=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+read -r -p "URL do Elasticsearch${URL_ATUAL:+ [$URL_ATUAL]} (ex.: https://elastic.exemplo.local:9200): " URL
+URL="${URL:-$URL_ATUAL}"
 URL="$(printf '%s' "$URL" | tr -d '[:space:]')"; URL="${URL%/}"
 case "$URL" in https://*) : ;; *) echo "Use https://host:porta." >&2; exit 1 ;; esac
 HOSTPORT="${URL#https://}"; HOSTPORT="${HOSTPORT%%/*}"
@@ -35,16 +50,45 @@ openssl x509 -in "$TMP" -noout -subject -issuer -enddate -fingerprint -sha256 | 
 read -r -p "Confere com a CA do seu Elastic? [s/N] " OK
 case "$OK" in s|S|sim|SIM) : ;; *) echo "Nada foi gravado." >&2; exit 1 ;; esac
 
-read -r -s -p "API key (campo \"encoded\"): " KEY; echo
-KEY="$(printf '%s' "$KEY" | tr -d '[:space:]')"
-[ -n "$KEY" ] || { echo "API key vazia." >&2; exit 1; }
+# A chave: o valor do campo "encoded". Aceita colado do jeito que vier - so o
+# valor, entre aspas, ou a linha inteira do JSON ("encoded": "...",) - porque
+# copiar do Kibana costuma trazer aspas e virgula junto.
+limpar_chave() {
+  local v="$1"
+  v="${v##*encoded}"
+  printf '%s' "$v" | tr -cd 'A-Za-z0-9+/=_-'
+}
+if [ -n "$CHAVE_ARQUIVO" ]; then
+  [ -f "$CHAVE_ARQUIVO" ] || { echo "Nao encontrei $CHAVE_ARQUIVO." >&2; exit 1; }
+  KEY="$(limpar_chave "$(cat "$CHAVE_ARQUIVO")")"
+  shred -u "$CHAVE_ARQUIVO" 2>/dev/null || rm -f "$CHAVE_ARQUIVO"
+  echo "Chave lida de $CHAVE_ARQUIVO (arquivo apagado)."
+else
+  echo "Cole a API key (campo \"encoded\") e tecle Enter. Por seguranca NADA aparece"
+  echo "na tela enquanto voce cola - isso e normal. (No PuTTY, cola-se com o botao"
+  echo "direito; no Windows Terminal, Ctrl+Shift+V.)"
+  read -r -s -p "API key: " KEY; echo
+  KEY="$(limpar_chave "$KEY")"
+  if [ -z "$KEY" ]; then
+    echo "Nao chegou nada. Cole de novo - desta vez o valor APARECE na tela:"
+    read -r -p "API key: " KEY
+    KEY="$(limpar_chave "$KEY")"
+  fi
+fi
+[ -n "$KEY" ] || { echo "API key vazia. Alternativa: grave a chave num arquivo e rode com --chave-arquivo <arquivo>." >&2; exit 1; }
+echo "Chave recebida: ${#KEY} caracteres (${KEY:0:4}...${KEY: -4})."
 
 echo "Testando a chave (uma busca de leitura)..."
 CODE="$(curl -sS -o /dev/null -w '%{http_code}' --cacert "$TMP" -H "Authorization: ApiKey $KEY" \
   -H 'Content-Type: application/json' \
   -d '{"size":0,"query":{"range":{"@timestamp":{"gte":"now-5m"}}}}' \
   "$URL/metrics-system.cpu-*/_search" || true)"
-[ "$CODE" = "200" ] || { echo "O Elasticsearch respondeu HTTP $CODE: confira a URL, a chave e os privilegios. Nada foi gravado." >&2; exit 1; }
+case "$CODE" in
+  200) : ;;
+  401) echo "HTTP 401: o Elasticsearch nao aceitou a chave. Confira se e o campo \"encoded\" (nao o \"id\" nem o \"api_key\") e se veio inteiro. Nada foi gravado." >&2; exit 1 ;;
+  403) echo "HTTP 403: a chave autentica, mas nao pode ler os indices. Confira o role_descriptors (docs/CONFIGURACAO.md). Nada foi gravado." >&2; exit 1 ;;
+  *) echo "O Elasticsearch respondeu HTTP $CODE: confira a URL. Nada foi gravado." >&2; exit 1 ;;
+esac
 
 install -o root -g rmon -m 0644 "$TMP" "$CA_FILE"
 cd "$APP_DIR"
