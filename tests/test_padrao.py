@@ -32,14 +32,38 @@ def test_o_caso_do_188():
     assert "PADRAO:security_layer" not in p["app-188"]
 
 
-def test_188_ja_corrigido_aguarda_o_primeiro_logon():
-    # SecurityLayer ja trocado para 1, mas ninguem conectou desde entao: o
-    # aviso fica (o 1149 ainda nao apareceu) e diz que some sozinho
+def test_188_ja_corrigido_sem_teste_da_porta():
+    # SecurityLayer ja trocado para 1 no registro, 1149 ainda nao apareceu
     p = scheduler.padrao_cluster([no("app-34"), no("app-188", u1149=None), no("app-190", u1149=40)])
     texto = p["app-188"]["PADRAO:1149"]
+    # sem o teste da porta 3389 nao da para prometer que some sozinho
     assert "Causa" not in texto
-    assert "SecurityLayer do RDP ja e 1 (Negociar), igual aos outros nos" in texto
-    assert "primeiro logon RDP novo" in texto
+    assert "registro ja e 1 (Negociar), igual aos outros nos" in texto
+    assert "ainda nao conseguiu testar" in texto and "some sozinho" not in texto
+
+
+def test_188_registro_trocado_mas_rdp_nao_releu():
+    # 16/10: SecurityLayer=1 no registro desde a vespera, 248 conexoes e nenhum
+    # 1149 - o servico de RDP (no ar desde 08/10) seguia recusando TLS
+    p = scheduler.padrao_cluster([no("app-34", rdp_tls=True),
+                                  no("app-188", u1149=None, rdp_tls=False, rdp_servico_min=8 * 1440 + 30),
+                                  no("app-190", u1149=40, rdp_tls=True)])
+    assert set(p) == {"app-188"} and set(p["app-188"]) == {"PADRAO:1149"}
+    texto = p["app-188"]["PADRAO:1149"]
+    assert "Causa: o registro ja diz SecurityLayer do RDP = 1 (Negociar)" in texto
+    assert "ainda recusa TLS" in texto and "no ar ha 8 dia(s)" in texto and "nao releu" in texto
+    assert "some sozinho" not in texto
+
+
+def test_registro_trocado_sem_releitura_acusa_mesmo_gravando_1149():
+    p = scheduler.padrao_cluster([no("a", rdp_tls=True), no("b", rdp_tls=False), no("c")])
+    assert set(p) == {"b"} and "ainda recusa TLS" in p["b"]["PADRAO:security_layer"]
+
+
+def test_corrigido_e_em_vigor_aguarda_o_primeiro_logon():
+    p = scheduler.padrao_cluster([no("app-34"), no("app-188", u1149=None, rdp_tls=True), no("app-190")])
+    texto = p["app-188"]["PADRAO:1149"]
+    assert "ja aceita TLS" in texto and "primeiro logon RDP novo" in texto
 
 
 def test_configuracao_diferente_mesmo_gravando():
@@ -112,3 +136,67 @@ def test_pagina_e_faixa_mostram_quem_esta_fora(app_falso):  # noqa: F811
     assert "fora do padrao</span>" in html
     html = app_falso.c.get("/").text
     assert "1 servidor(es) fora do padrao de coleta" in html and "(app-34)" in html
+
+
+def test_pagina_mostra_tls_recusado(app_falso):  # noqa: F811
+    srv = main.STATE["inv"].servers[0]
+    srv.nlb = True
+    app_falso.estado.coletas = [coleta(nlb={"status": 1008, "cluster": "vip", "security_layer": 1, "nla": 0,
+                                            "ultimo_1149_min": None, "rdp_tls": False},
+                                       padrao={"PADRAO:1149": "nao grava o evento 1149"})]
+    app_falso.entrar()
+    html = app_falso.c.get("/fontes").text
+    assert "TLS em vigor (porta 3389)" in html
+    assert "<b>recusa</b> <span class=\"small\">(servico de RDP nao releu o registro)</span>" in html
+
+
+class _Sock:
+    def __init__(self, resposta):
+        self.resposta, self.enviado = resposta, b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def settimeout(self, t):
+        pass
+
+    def sendall(self, b):
+        self.enviado += b
+
+    def recv(self, n):
+        return self.resposta
+
+
+def _resposta(tipo, valor):
+    import struct
+    return struct.pack(">BBH", 3, 0, 19) + bytes([14, 0xD0, 0, 0, 0x12, 0x34, 0]) + struct.pack("<BBHI", tipo, 0, 8, valor)
+
+
+def test_teste_da_porta_3389(monkeypatch):
+    from app import collector
+    for resp, esperado in ((_resposta(2, 1), True), (_resposta(3, 2), False), (b"", None)):
+        sock = _Sock(resp)
+        monkeypatch.setattr(collector.socket, "create_connection", lambda *a, **k: sock)
+        assert collector.rdp_aceita_tls("h") is esperado
+        assert sock.enviado == collector._RDP_NEG_TLS
+
+    def falha(*a, **k):
+        raise OSError("recusado")
+    monkeypatch.setattr(collector.socket, "create_connection", falha)
+    assert collector.rdp_aceita_tls("h") is None
+
+
+def test_teste_da_porta_tem_cache_e_refaz_se_o_registro_mudar(monkeypatch):
+    from app import collector
+    chamadas = []
+    monkeypatch.setattr(collector, "_rdp_tls_cache", {})
+    monkeypatch.setattr(collector, "rdp_aceita_tls", lambda h: chamadas.append(h) or False)
+    assert collector.rdp_tls_em_vigor("h", 1, agora=AGORA) is False
+    collector.rdp_tls_em_vigor("h", 1, agora=AGORA + 60)
+    assert len(chamadas) == 1
+    collector.rdp_tls_em_vigor("h", 0, agora=AGORA + 120)          # registro mudou
+    collector.rdp_tls_em_vigor("h", 0, agora=AGORA + 120 + collector.RDP_TLS_TTL_S)  # venceu
+    assert len(chamadas) == 3

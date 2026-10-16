@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
+import struct
 import time
 from base64 import b64encode
 from typing import Any, Iterable
@@ -230,6 +232,13 @@ if (__NLB__) {
     } catch { }
     $u1149 = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; Id = 1149 } -MaxEvents 1 -ErrorAction SilentlyContinue
     if ($u1149) { $nlb.ultimo_1149_min = [int]((Get-Date) - $u1149.TimeCreated).TotalMinutes }
+    # Ha quanto tempo o servico de RDP esta no ar: troca feita direto no
+    # registro so vale quando ele rele a configuracao (o .188 em 15-16/10).
+    $nlb.rdp_servico_min = $null
+    try {
+        $tsvc = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction Stop
+        $nlb.rdp_servico_min = [int]((Get-Date) - (Get-Process -Id $tsvc.ProcessId -ErrorAction Stop).StartTime).TotalMinutes
+    } catch { }
     $nlb = [pscustomobject]$nlb
 }
 [pscustomobject]@{
@@ -758,6 +767,47 @@ def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool
     return ok, f"estado {data.get('before')} -> {depois}; nlb.exe: {str(data.get('output') or '')[:200]}"
 
 
+# Negociacao do RDP (X.224 Connection Request + RDP_NEG_REQ pedindo TLS): o que
+# o servico de RDP do no aceita DE VERDADE, nao o que o registro diz. O .188
+# ficou com SecurityLayer=1 no registro desde 15/10 e continuou recusando TLS
+# (o servico, no ar desde 08/10, nao releu a chave) - e o 1149 nao vinha.
+_RDP_NEG_TLS = struct.pack(">BBH", 3, 0, 19) + bytes([14, 0xE0, 0, 0, 0, 0, 0]) + struct.pack("<BBHI", 1, 0, 8, 1)
+# Cada teste e uma conexao no listener (evento 261 num log circular de 1 MB):
+# basta de hora em hora, ou logo que o registro mudar.
+RDP_TLS_TTL_S = 3600
+_rdp_tls_cache: dict[str, tuple[float, Any, bool | None]] = {}
+
+
+def rdp_aceita_tls(host: str, port: int = 3389, timeout: float = 5.0) -> bool | None:
+    """True: o RDP negocia TLS; False: recusa (so RDP nativo); None: sem resposta."""
+    try:
+        with socket.create_connection((host, port), timeout) as c:
+            c.settimeout(timeout)
+            c.sendall(_RDP_NEG_TLS)
+            r = c.recv(64)
+    except OSError:
+        return None
+    # TPKT(4) + X.224 CC(7) + tipo do RDP_NEG: 2 = resposta, 3 = falha
+    if len(r) < 19 or r[0] != 3:
+        return None
+    if r[11] == 2:
+        return struct.unpack("<I", r[15:19])[0] in (1, 2, 8)  # TLS, CredSSP, CredSSP+EX
+    if r[11] == 3:
+        return False
+    return None
+
+
+def rdp_tls_em_vigor(host: str, registro: Any, agora: float | None = None) -> bool | None:
+    """rdp_aceita_tls com cache por host (TTL), refeito na hora se o registro mudou."""
+    agora = time.time() if agora is None else agora
+    velho = _rdp_tls_cache.get(host)
+    if velho and velho[1] == registro and agora - velho[0] < RDP_TLS_TTL_S:
+        return velho[2]
+    tls = rdp_aceita_tls(host)
+    _rdp_tls_cache[host] = (agora, registro, tls)
+    return tls
+
+
 def collect_server(
     server: ServerConfig, wc: WinRMConfig, defaults: dict[str, Any]
 ) -> dict[str, Any]:
@@ -800,6 +850,9 @@ def collect_server(
         if isinstance(jr, dict):
             jr["top"] = _as_list(jr.get("top"))
             result["jobrunners"] = jr
+        n = result.get("nlb")
+        if n is not None and server.nlb:
+            n["rdp_tls"] = rdp_tls_em_vigor(server.host, n.get("security_layer"))
     except Exception as exc:  # noqa: BLE001 - queremos registrar qualquer falha
         result["error"] = f"{type(exc).__name__}: {exc}"[:500]
     return result
