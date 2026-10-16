@@ -263,3 +263,64 @@ def test_servico_tirado_do_inventario_sai_do_monitoramento():
     assert not scheduler.fora_do_monitoramento("MEM", r)
     # sem contato a lista de servicos vem vazia: nao prova nada
     assert not scheduler.fora_do_monitoramento("svc:RM.Host.Service3", coleta(reachable=False))
+
+
+# ------------------------------------------------------------ servico que nao subiu no boot
+# rh-web-248, 15/10/2026: o Windows Update reiniciou o host e, no boot, o
+# RM.Host.Service estourou os 30 s do SCM e ficou parado. A recuperacao do
+# Windows (reiniciar) nao age em falha de partida, e o alerta dizia so
+# "servico RM.Host.Service = Stopped" - nada apontava para o reboot.
+
+AGORA = 1_760_570_000.0
+
+
+def rm_parado(**kw):
+    s = {"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto"}
+    s.update(kw)
+    return s
+
+
+def test_servico_automatico_parado_logo_apos_o_boot_e_marcado():
+    r = coleta(uptime_sec=228, services=[rm_parado()])
+    scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+    assert r["services"][0]["nao_subiu"] == int(AGORA - 228)
+    texto = scheduler.problems(r, TH)["svc:RM.Host.Service"]
+    assert texto.startswith("servico RM.Host.Service = Stopped")
+    assert "nao subiu apos o reboot de " + scheduler.manutencao.hora(AGORA - 228) in texto
+
+
+def test_marca_segue_enquanto_o_alerta_aberto_no_boot_continua():
+    # 12h depois o host ja tem uptime alto, mas o alerta abriu logo apos o boot
+    r = coleta(uptime_sec=12 * 3600, services=[rm_parado()])
+    desde = {"svc:RM.Host.Service": AGORA - 12 * 3600 + 228}
+    scheduler.marcar_pos_boot(r, desde, AGORA, 30 * 60)
+    assert r["services"][0]["nao_subiu"] == int(AGORA - 12 * 3600)
+
+
+def test_servico_que_caiu_horas_depois_do_boot_nao_e_marcado():
+    r = coleta(uptime_sec=5 * 3600, services=[rm_parado()])
+    scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+    assert "nao_subiu" not in r["services"][0]
+    assert "reboot" not in scheduler.problems(r, TH)["svc:RM.Host.Service"]
+
+
+def test_so_servico_automatico_parado_e_marcado():
+    servicos = [rm_parado(start="Manual", name="A"), rm_parado(status="Running", name="B"),
+                {"name": "W3SVC", "status": "NOT_FOUND", "src": "fixed"}]
+    r = coleta(uptime_sec=120, services=servicos)
+    scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+    assert all("nao_subiu" not in s for s in r["services"])
+
+
+def test_marcar_nao_altera_a_lista_de_quem_chamou():
+    servicos = [rm_parado()]
+    r = coleta(uptime_sec=120, services=servicos)
+    scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+    assert "nao_subiu" not in servicos[0]
+
+
+def test_sem_uptime_ou_sem_contato_nada_e_marcado():
+    for r in (coleta(services=[rm_parado()]),
+              {"reachable": False, "uptime_sec": 60, "services": [rm_parado()]}):
+        scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+        assert "nao_subiu" not in r["services"][0]

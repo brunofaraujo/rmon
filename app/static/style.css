@@ -217,6 +217,7 @@ html[data-theme="light"] .pill.amber { color: #8a5200; }
   border: 1px solid var(--line-2); background: var(--surface-2); color: var(--muted); font-size: .72rem; line-height: 1; }
 .svc-btn:hover { background: var(--surface-3); color: var(--text); }
 .svc-btn:disabled { opacity: .5; cursor: default; }
+.boot-tag { font-size: .72rem; margin-left: .1rem; }
 .pill.green { background: rgba(52,211,153,.12); border-color: rgba(52,211,153,.4); color: #b8f5df; }
 .pill.red   { background: rgba(248,113,113,.12); border-color: rgba(248,113,113,.4); color: #ffd0d0; }
 .pill.amber { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.4); color: #ffe6ac; }

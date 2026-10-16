@@ -198,6 +198,25 @@ Quando a janela acaba, ou quando alguém clica em *Encerrar agora*, a coleta seg
 **uma** mensagem: o que seguiu aberto, ou "voltou limpo". A janela tem teto de 24h e pode
 ser estendida pela mesma tela. Abrir, estender e encerrar ficam na auditoria (*Logs*).
 
+### Serviço que não subiu após o reboot
+
+O Windows dá 30 s para um serviço partir. No boot pesado de depois de uma atualização, os
+serviços .NET (RM.Host, APIs) e o SQL Server estouram esse tempo e ficam parados — e a
+recuperação configurada no serviço ("reiniciar") **não age em falha de partida**, só quando
+o serviço trava depois de rodar. Foi o que deixou o `rh-web-248` sem `RM.Host.Service` na
+noite de 15/10/2026, depois do reboot do Windows Update às 17:30.
+
+O RMon marca o serviço de início automático que está parado e cujo alerta abriu antes do
+boot ou até `boot_janela_min` (30) minutos depois dele. O alerta passa a dizer
+"(inicio automatico: nao subiu apos o reboot de 15/10 18:24)", e o serviço ganha a etiqueta
+vermelha **nao subiu apos o reboot** no painel e na tela do servidor. Serviço que caiu horas
+depois do boot fica sem a marca.
+
+Com `boot_iniciar_min` > 0 (em /admin, "Iniciar servico apos boot"), o RMon tenta **uma vez
+por boot** iniciar o serviço marcado quando o host completar esse uptime. A tentativa e o
+resultado vão para a linha do tempo (tipo `acao`) e para o canal. Se não subir, o alerta
+segue aberto. Host em manutenção não recebe a tentativa. O padrão é 0: só avisa.
+
 ### Lembrete de crítico aberto
 
 Problema vermelho que segue aberto volta ao canal a cada `lembrete_h` horas (padrão 4h),

@@ -86,6 +86,7 @@ templates.env.globals["tv_refresh"] = 15
 # pode pintar de vermelho um RM.Host que a coleta nem considera falha.
 templates.env.globals["svc_down"] = scheduler.service_down
 templates.env.globals["svc_groups"] = scheduler.service_groups
+templates.env.globals["hora"] = manutencao.hora
 # Rotulo curto de cada fonte do inventario (produto, customizacao, biblioteca...)
 templates.env.globals["fonte_label"] = inventory.FONTE_LABEL
 # Rotulo do papel de cada host (aplicacao, job server, camada web...)
@@ -699,7 +700,7 @@ PROBLEMA_LABEL = {
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
 KIND_LABEL = {"raised": "abriu", "resolved": "resolveu", "reminder": "lembrete",
-              "manutencao": "manutencao", "acao": "acao manual", "package": "pacote",
+              "manutencao": "manutencao", "acao": "acao", "package": "pacote",
               "nlb": "nlb"}
 templates.env.globals["kind_label"] = KIND_LABEL
 
@@ -948,7 +949,9 @@ async def admin_config(request: Request):
                              "jobrunner_warn_gb": _int("jobrunner_warn_gb", 4, 0, 512),
                              "jobrunner_gb": _int("jobrunner_gb", 8, 0, 512),
                              "lembrete_h": _int("lembrete_h", 4, 0, 72),
-                             "resumo_hora": _int("resumo_hora", 8, -1, 23)})
+                             "resumo_hora": _int("resumo_hora", 8, -1, 23),
+                             "boot_janela_min": _int("boot_janela_min", 30, 5, 240),
+                             "boot_iniciar_min": _int("boot_iniciar_min", 0, 0, 240)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)
