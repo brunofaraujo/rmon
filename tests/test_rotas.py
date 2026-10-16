@@ -336,3 +336,30 @@ def test_nlb_mostra_de_onde_veio_cada_contagem(app_falso):
     assert '7 aut. <span class="src-tag winrm">WinRM</span>' in html
     assert '0 sess. <span class="src-tag elastic">Elastic</span>' in html
     assert "Elastic 9/0 &middot; WinRM 7/0" in html
+
+
+def test_nlb_mostra_a_saida_do_no_sem_contato(app_falso):
+    """Reset pelo Incus visivel na tela: a etiqueta por no e o estado do canal."""
+    srv = main.STATE["inv"].servers[0]
+    srv.nlb, srv.incus_vm = True, "WIN2016"
+    main.STATE["inv"].defaults = {"nlb": {"incus_ssh": "rmon-reset@10.10.10.161"}}
+    app_falso.estado.config["nlb_state"] = {"incus": {
+        "ok": True, "ts": AGORA - 60, "destino": "rmon-reset@10.10.10.161",
+        "detail": "2 instancia(s) liberada(s)",
+        "vms": {"WIN2016": {"estado": "RUNNING", "mac": "10:66:6a:cc:09:90"}}}}
+    app_falso.estado.coletas = [coleta(nlb={"status": 1007, "cluster": "vip", "host_id": 5})]
+    app_falso.entrar()
+    html = app_falso.c.get("/nlb").text
+    assert "se travar: reset da VM WIN2016" in html
+    assert '<span class="pill green">canal OK</span>' in html and "WIN2016</span> (RUNNING)" in html
+    # sem VM no inventario: servidor fisico, so alerta
+    srv.incus_vm = ""
+    html = app_falso.c.get("/nlb").text
+    assert "se travar: so alerta critico (fisico)" in html
+
+
+def test_nlb_sem_canal_do_incus_diz_o_que_falta(app_falso):
+    main.STATE["inv"].servers[0].nlb = True
+    app_falso.entrar()
+    html = app_falso.c.get("/nlb").text
+    assert "canal nao configurado" in html and "instalar-no-hypervisor.sh" in html

@@ -25,7 +25,9 @@ import threading
 import time
 from typing import Any, Iterable
 
-log = logging.getLogger("rmon.nlb")
+from . import incus
+
+log =logging.getLogger("rmon.nlb")
 
 # StatusCode da classe WMI MicrosoftNLB_Node (wlbsctrl.h).
 STATUS = {
@@ -93,14 +95,23 @@ DEFAULTS: dict[str, Any] = {
     # Nos que o RMon nunca toca (manutencao). Tambem pode ser ligado na tela.
     "hold": [],
     # No ATIVO no NLB que fica sem contato (WinRM) por `unreachable_cycles`
-    # coletas seguidas sai do NLB enquanto durar a falta de contato. Como ele
-    # nao responde, a drenagem e feita por um VIZINHO do cluster, pelo
-    # controle remoto do NLB (incidente do .188 em 16/10: voltou ao NLB sozinho
-    # no boot e recebeu usuarios por 10 min sem estar pronto). Volta pelas
-    # regras normais de reingresso quando o contato voltar. Nao passa pelo
-    # cooldown nem pelo limite de flapping, so pelo piso do cluster.
+    # coletas seguidas e TAMBEM sem dados no Elastic ha `reset_elastic_mudo_sec`
+    # (o Windows travou, nao so o WinRM) sai do NLB pelo hypervisor: a VM
+    # (`incus_vm` no inventario) e reiniciada pelo Incus (app/incus.py), volta
+    # fora do NLB (ClusterModeOnStart=0) e o reingresso normal a devolve.
+    # Incidente do .188 em 16/10. Um vizinho do cluster NAO consegue drenar o
+    # no no Server 2016 (docs/NLB.md). Sem VM (fisico), sem confirmacao do
+    # Elastic ou passado `reset_max_day`: alerta critico, sem acao. Nao passa
+    # pelo cooldown nem pelo flapping da drenagem, so pelo piso do cluster.
     "unreachable_drain": True,
     "unreachable_cycles": 3,
+    "reset_elastic_mudo_sec": 180,
+    "reset_max_day": 2,
+    # Canal SSH para o comando forcado do hypervisor (usuario@host).
+    # Vazio = sem reset, so o alerta.
+    "incus_ssh": "",
+    "incus_key": "/opt/rmon/config/incus-reset/id_ed25519",
+    "incus_known_hosts": "/opt/rmon/config/incus-reset/known_hosts",
 }
 
 # Uma avaliacao por vez: o ciclo de coleta e os botoes da tela mexem no mesmo estado.
@@ -117,6 +128,8 @@ def settings_for(defaults: dict[str, Any] | None) -> dict[str, Any]:
     cfg["min_healthy_remaining"] = max(1, int(cfg.get("min_healthy_remaining") or 1))
     cfg["min_active_remaining"] = max(1, int(cfg.get("min_active_remaining") or 1))
     cfg["unreachable_cycles"] = max(1, int(cfg.get("unreachable_cycles") or 1))
+    cfg["reset_elastic_mudo_sec"] = max(60, int(cfg.get("reset_elastic_mudo_sec") or 60))
+    cfg["reset_max_day"] = max(0, int(cfg.get("reset_max_day") or 0))
     cfg["hold"] = [str(x) for x in (cfg.get("hold") or [])]
     return cfg
 
@@ -157,8 +170,14 @@ def _maior_jobrunner(jr: Any) -> dict[str, Any]:
 
 
 def view(name: str, host: str, r: dict, now: float,
-         generators: Iterable[str] = ("RM.Host.Service*",)) -> dict[str, Any]:
-    """O que uma coleta diz sobre o no, do ponto de vista do NLB."""
+         generators: Iterable[str] = ("RM.Host.Service*",), incus_vm: str = "",
+         es: dict | None = None) -> dict[str, Any]:
+    """O que uma coleta diz sobre o no, do ponto de vista do NLB.
+
+    `es`: o batimento do no no Elastic neste ciclo, {"ok": a consulta
+    respondeu, "ts": ultima metrica (epoch) ou None se nada em 15 min}; None
+    quando o Elastic esta desligado.
+    """
     n = r.get("nlb") if isinstance(r.get("nlb"), dict) else {}
     maior = _maior_jobrunner(r.get("jobrunners"))
     ok, parados = _rm_ok(r.get("services"), generators)
@@ -189,6 +208,8 @@ def view(name: str, host: str, r: dict, now: float,
         "boot_ts": (now - float(uptime)) if uptime is not None else None,
         "jobrunner_gb": maior.get("gb"),
         "jobrunner_pid": maior.get("pid"),
+        "incus_vm": incus_vm,
+        "es": es,
     }
 
 
@@ -266,9 +287,9 @@ def rejoin_gaps(v: dict, st: dict, cfg: dict, cluster_vazio: bool = False) -> li
     # Quem o RMon drenou por DOENCA tem de PROVAR que mudou: ou reiniciou
     # depois da drenagem, ou criou sessao de novo (RDP direto pelo IP, de
     # teste). Sem isso, o no que nao criava sessao voltaria ao balanceamento
-    # igual. Quem saiu por falta de contato prova o bastante voltando a
-    # responder com o RM.Host no ar.
-    if st.get("owned") and st.get("drained_at") and st.get("drain_reason") != "unreachable":
+    # igual. Quem saiu por falta de contato (reset pelo hypervisor) prova o
+    # bastante voltando a responder com o RM.Host no ar.
+    if st.get("owned") and st.get("drained_at") and st.get("drain_reason") not in ("unreachable", "reset"):
         reiniciou = v.get("boot_ts") is not None and v["boot_ts"] > st["drained_at"]
         if not reiniciou and not (v.get("sess") or 0):
             falta.append("sem reboot nem sessao RDP nova desde a drenagem")
@@ -312,6 +333,36 @@ def _floor(v: dict, vistas: list[dict], saude: dict[str, bool],
     return ativos, [p for p in ativos if saude.get(p["name"])]
 
 
+# Folga entre a ultima metrica do Elastic e a 1a coleta sem contato: o WinRM pode
+# ter morrido um ciclo antes de o RMon perceber, e o agente manda a cada ~10 s.
+ES_FOLGA_S = 600
+
+
+def elastic_confirma(v: dict, st: dict, cfg: dict, now: float) -> tuple[str, str]:
+    """O Elastic confirma que o Windows do no mudo parou? ("mudo"|"vivo"|"sem_leitura", texto).
+
+    So "mudo" autoriza o reset: consulta respondida, o host ja mandou dados
+    antes (nome certo no Elastic, agente instalado) e nada chega ha
+    `reset_elastic_mudo_sec`. Relogio do host adiantado conta como vivo.
+    """
+    es = v.get("es") or {}
+    if not es.get("ok"):
+        return "sem_leitura", "Elastic desligado ou sem resposta"
+    ultimo = es.get("ts") or st.get("es_last")
+    if not ultimo:
+        return "sem_leitura", "o Elastic nunca recebeu dados deste host"
+    # o agente tem de estar mandando dados quando o WinRM caiu: agente parado ha
+    # dias nao prova que o Windows travou agora
+    desde = st.get("mudo_desde")
+    if desde and float(ultimo) < float(desde) - ES_FOLGA_S:
+        return "sem_leitura", (f"o Elastic ja nao recebia dados deste host "
+                               f"{int((float(desde) - float(ultimo)) // 60)}min antes da falta de contato")
+    idade = now - float(ultimo)
+    if idade < cfg["reset_elastic_mudo_sec"]:
+        return "vivo", f"ultimo dado ha {max(0, int(idade))}s"
+    return "mudo", f"nada ha {int(idade // 60)}min"
+
+
 def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
              hold: Iterable[str] = ()) -> tuple[list[dict], dict]:
     """Decide o que fazer com cada no. Funcao pura.
@@ -353,10 +404,15 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             st["cluster"] = v["cluster"]
         if v.get("host_id") is not None:
             st["host_id"] = v["host_id"]
+        es = v.get("es") or {}
+        if es.get("ts"):
+            st["es_last"] = max(float(es["ts"]), float(st.get("es_last") or 0))
 
         if not v["reachable"]:
             st["good_since"] = None
             st["unreach"] = int(st.get("unreach") or 0) + 1
+            if st["unreach"] == 1:
+                st["mudo_desde"] = now
             if cfg.get("unreachable_drain"):
                 # ainda no NLB (pelo que se sabia) e mudo ha coletas suficientes
                 if st["unreach"] >= cfg["unreachable_cycles"] and st.get("last_status") in ATIVOS:
@@ -436,10 +492,11 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
     retirados: set[str] = set()
     agiu: set[str] = set()
 
-    # ---- sem contato: sai do NLB pelas maos de um vizinho, o mais antigo
-    # primeiro. So o piso do cluster segura: no sem contato nao conta como
-    # ativo, entao com dois mudos ao mesmo tempo nenhum sai (pode ser a rede
-    # do proprio RMon, e drenar sobrecarregaria o unico no que sobra).
+    # ---- sem contato: a VM e reiniciada pelo hypervisor, o mudo mais antigo
+    # primeiro. So com o Elastic confirmando que o Windows parou (o WinRM
+    # sozinho engasga) e respeitando o piso do cluster: no sem contato nao
+    # conta como ativo, entao com dois mudos ao mesmo tempo nenhum e tocado
+    # (pode ser a rede do proprio RMon).
     mudos.sort(key=lambda x: -nodes[x["name"]]["unreach"])
     for v in mudos:
         st = nodes[v["name"]]
@@ -447,39 +504,56 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             continue
         vv = {**v, "cluster": st.get("cluster")}
         cl = vv["cluster"] or "-"
-        resumo = f"sem contato (WinRM) ha {st['unreach']} coletas seguidas"
-        if st.get("host_id") is None or not st.get("cluster"):
-            if _note(st, "unreach", "no_id"):
-                decisoes.append(_decision(
-                    vv, "blocked",
-                    f"{resumo}, mas o RMon nao sabe o host_id dele no NLB: "
-                    "drene pelo console (nlb.exe drainstop)"))
-            continue
+        resumo = f"sem contato (WinRM) ha {st['unreach']} coletas seguidas e ainda no NLB"
         ativos, saudaveis = _floor(vv, vistas, saude, retirados)
         if len(saudaveis) < cfg["min_healthy_remaining"] or len(ativos) < cfg["min_active_remaining"]:
             if _note(st, "unreach", f"floor:{len(ativos)}:{len(saudaveis)}"):
                 decisoes.append(_decision(
                     vv, "blocked",
-                    f"{resumo}, mas drenar deixaria {len(ativos)} no(s) ativo(s) e "
+                    f"{resumo}, mas tira-lo do NLB deixaria {len(ativos)} no(s) ativo(s) e "
                     f"{len(saudaveis)} saudavel(is) (minimos {cfg['min_active_remaining']} e "
                     f"{cfg['min_healthy_remaining']}): fica no NLB"))
             continue
+        es, es_txt = elastic_confirma(v, st, cfg, now)
+        if es == "vivo":
+            # o Windows segue mandando metricas: e o WinRM que travou
+            if _note(st, "unreach", "vivo"):
+                decisoes.append(_decision(
+                    vv, "unreachable_alive",
+                    f"{resumo}, mas o Elastic ainda recebe dados dele ({es_txt}): o Windows "
+                    "esta de pe e so o WinRM travou. Nao reiniciado; se os usuarios reclamarem, "
+                    "reinicie pelo console"))
+            continue
+        st["resets"] = [t for t in (st.get("resets") or []) if now - t < 86400]
+        vm = v.get("incus_vm") or ""
+        impede = None
+        if es != "mudo":
+            impede = ("sem_es", f"sem a confirmacao do Elastic ({es_txt}) o RMon nao reinicia")
+        elif not vm or not incus.configurado(cfg):
+            impede = ("sem_vm", f"Elastic tambem sem dados ({es_txt}) e o RMon nao tem como "
+                                "reinicia-lo (servidor fisico, sem hypervisor configurado)")
+        elif len(st["resets"]) >= cfg["reset_max_day"]:
+            impede = ("flapping", f"Elastic sem dados ({es_txt}), mas o RMon ja reiniciou a VM "
+                                  f"{len(st['resets'])}x em 24h: so aviso")
+        if impede:
+            if _note(st, "unreach", "crit:" + impede[0]):
+                decisoes.append(_decision(
+                    vv, "unreachable_crit",
+                    f"{resumo}: {impede[1]}. Reinicie pelo console/iLO/hypervisor - ele segue "
+                    "recebendo usuarios"))
+            continue
         retirados.add(v["name"])
-        # o vizinho saudavel primeiro; qualquer ativo alcancavel serve
-        relays = [p["name"] for p in sorted(ativos, key=lambda p: not saude.get(p["name"]))]
+        msg = (f"{resumo}; Elastic sem dados ({es_txt}): reinicia a VM {vm} pelo Incus. "
+               "Ela volta fora do NLB e o RMon a reingressa quando estiver apta")
         if auto:
             agiu.add(cl)
             if st.get("last_try") and now - st["last_try"] < retry:
                 continue
-            decisoes.append({
-                **_decision(vv, "drain_unreachable",
-                            f"{resumo}: sai do NLB enquanto nao responder",
-                            action="drain_remote", new=_note(st, "unreach", "draining")),
-                "target": f"{st['cluster']}:{st['host_id']}", "relays": relays})
+            decisoes.append({**_decision(vv, "reset_unreachable", msg, action="reset",
+                                         new=_note(st, "unreach", "resetting")), "vm": vm})
         elif _note(st, "unreach", "would"):
-            decisoes.append(_decision(
-                vv, "would_drain",
-                f"[modo alerta] drenaria agora, pelo vizinho {relays[0]}: {resumo}"))
+            decisoes.append(_decision(vv, "would_reset", "[modo alerta] " + msg.replace(
+                "reinicia a VM", "reiniciaria a VM")))
 
     # ---- drenagem: o doente mais antigo primeiro. No modo auto sai no maximo
     # uma por cluster por ciclo; no modo alerta a simulacao continua, contando
@@ -582,13 +656,16 @@ def apply_result(state: dict, d: dict, ok: bool, now: float,
         _note(st, "sick", "drained")
         if d.get("cluster") and not d.get("by"):
             st_all.setdefault("clusters", {}).setdefault(d["cluster"], {})["last_auto"] = now
-    elif d["action"] == "drain_remote":
-        # nao entra na conta do flapping nem do cooldown: e outra causa
+    elif d["action"] == "reset":
+        # nao entra na conta do flapping nem do cooldown da drenagem: tem o
+        # proprio limite (reset_max_day). A VM sobe parada (ClusterModeOnStart=0)
+        # e o RMon e dono da volta.
         st["owned"] = True
         st["drained_at"] = now
-        st["drain_reason"] = "unreachable"
-        st["last_status"] = 1009     # o proprio no nao e lido enquanto estiver mudo
-        _note(st, "unreach", "drained")
+        st["drain_reason"] = "reset"
+        st["resets"] = (st.get("resets") or []) + [now]
+        st["last_status"] = 1005     # o proprio no nao e lido ate voltar do boot
+        _note(st, "unreach", "reset")
     elif d["action"] == "rejoin":
         st["owned"] = False
         st["drained_at"] = None
@@ -616,8 +693,9 @@ def floor_ok(vistas: list[dict], alvo: str, cfg: dict) -> tuple[bool, str]:
 
 # ---------------------------------------------------------------- adaptador
 
-ICON = {"drain": "\U0001F500", "drain_unreachable": "\U0001F500", "rejoin": "✅",
-        "would_drain": "\U0001F7E0",
+ICON = {"drain": "\U0001F500", "reset_unreachable": "\U0001F504", "rejoin": "✅",
+        "would_drain": "\U0001F7E0", "would_reset": "\U0001F7E0",
+        "unreachable_crit": "\U0001F534", "unreachable_alive": "⚠️",
         "would_rejoin": "\U0001F7E2", "blocked": "⛔", "unreachable_sick": "\U0001F534",
         "out_unowned": "⚠️", "recovered": "\U0001F7E2", "nlb_error": "⚠️",
         "failed": "❌"}
@@ -642,10 +720,12 @@ def nlb_servers(inv) -> list:
     return [s for s in inv.servers if getattr(s, "nlb", False)]
 
 
-def views_from(inv, coletas: dict[str, dict], now: float) -> list[dict]:
+def views_from(inv, coletas: dict[str, dict], now: float,
+               es: dict[str, dict] | None = None) -> list[dict]:
     from .collector import broker_settings
     gens = broker_settings(inv.defaults).get("generators") or ["RM.Host.Service*"]
-    return [view(s.name, s.host, coletas.get(s.name) or {"reachable": False}, now, gens)
+    return [view(s.name, s.host, coletas.get(s.name) or {"reachable": False}, now, gens,
+                 getattr(s, "incus_vm", "") or "", (es or {}).get(s.name))
             for s in nlb_servers(inv)]
 
 
@@ -664,26 +744,40 @@ def execute(server, wc, action: str) -> tuple[bool, str]:
     return nlb_action(server, wc, action)
 
 
-def execute_remote(servidores: dict, wc, d: dict) -> tuple[bool, str]:
-    """drainstop do no mudo pelos vizinhos de `d["relays"]`, ate um conseguir."""
-    from .collector import nlb_remote_drain
-    tentativas = []
-    for nome in (d.get("relays") or [])[:2]:
-        if nome not in servidores:
-            continue
-        ok, det = nlb_remote_drain(servidores[nome], wc, d["target"])
-        if ok:
-            return True, f"via {nome}: {det}"
-        tentativas.append(f"{nome}: {det}")
-    return False, " | ".join(tentativas) or "nenhum vizinho alcancavel"
+def checar_incus(inv, cfg: dict, state: dict, now: float) -> None:
+    """Confere de hora em hora (10 min se falhou) o canal com o hypervisor.
+
+    So leitura (`listar`); o resultado vai para state["incus"] e a tela /nlb.
+    A primeira falha e a volta viram mensagem: canal quebrado tem de aparecer
+    antes do dia em que o reset for preciso.
+    """
+    vms = {s.name: s.incus_vm for s in nlb_servers(inv) if getattr(s, "incus_vm", "")}
+    if not incus.configurado(cfg) or not vms:
+        state.pop("incus", None)
+        return
+    antes = state.get("incus") or {}
+    if not incus.devido(antes, now):
+        return
+    r = incus.checar(cfg, vms)
+    state["incus"] = {**r, "ts": now, "destino": cfg["incus_ssh"]}
+    if bool(antes.get("ok")) != r["ok"]:
+        from . import db, notify
+        txt = ("canal com o hypervisor OK: " if r["ok"] else
+               "canal com o hypervisor FALHOU (no travado sem contato nao sera reiniciado): ")
+        db.audit("rmon-nlb", "nlb_incus_" + ("ok" if r["ok"] else "falhou"),
+                 (txt + r["detail"])[:900])
+        if notify.enabled():
+            notify.send(("\U0001F7E2 " if r["ok"] else "⚠️ ") + "NLB — " + txt + r["detail"][:300])
 
 
 def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
-              hold: Iterable[str] = ()) -> list[dict]:
+              hold: Iterable[str] = (), es: dict[str, dict] | None = None) -> list[dict]:
     """Chamado ao fim de cada poll_all, com as coletas que acabaram de chegar.
 
     `hold` sao os hosts em janela de manutencao (app/manutencao.py): quem esta
     mexendo no servidor nao quer a automacao drenando ou reingressando o no.
+    `es`: batimento de cada no no Elastic ({servidor: {"ok", "ts"}}), a
+    confirmacao exigida para reiniciar no sem contato.
     """
     cfg = settings_for(inv.defaults)
     servidores = {s.name: s for s in nlb_servers(inv)}
@@ -692,19 +786,20 @@ def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
     now = time.time() if now is None else now
     with _LOCK:
         state = load_state()
-        vistas = views_from(inv, coletas, now)
+        vistas = views_from(inv, coletas, now, es)
         decisoes, state = evaluate(vistas, state, cfg, now, hold)
         for d in decisoes:
             if d.get("action"):
-                if d["action"] == "drain_remote":
-                    ok, detalhe = execute_remote(servidores, inv.winrm, d)
+                if d["action"] == "reset":
+                    ok, detalhe = incus.reset(cfg, d["vm"])
                 else:
                     ok, detalhe = execute(servidores[d["server"]], inv.winrm, d["action"])
                 state, falha_nova = apply_result(state, d, ok, now, detalhe)
                 if not ok:
                     d = {**d, "msg": f"{d['action']} FALHOU: {detalhe[:200]}"}
-                elif d["action"] == "drain_remote":
-                    d = {**d, "msg": f"{d['msg']}; drenado pelo vizinho ({detalhe[:160]})"}
+                elif d["action"] == "reset":
+                    d = {**d, "msg": d["msg"].replace("reinicia a VM", "VM reiniciada")
+                         + (f" ({detalhe[:120]})" if detalhe else "")}
                 elif d["action"] == "drain":
                     d = {**d, "msg": "drenado (nlb.exe drainstop): " + d["msg"].split(": ", 1)[-1]}
                 else:
@@ -715,6 +810,10 @@ def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
             else:
                 _record(d)
                 log.info("NLB %s %s: %s", d["server"], d["kind"], d["msg"])
+        try:
+            checar_incus(inv, cfg, state, now)
+        except Exception:  # noqa: BLE001
+            log.exception("NLB: falha ao conferir o canal com o hypervisor")
         save_state(state)
     return decisoes
 

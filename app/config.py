@@ -80,6 +80,9 @@ class ServerConfig:
     # host.name deste servidor no Elasticsearch. Vazio = o COMPUTERNAME que o
     # inventario ja coletou, em minusculas (casa "srv06n" e "srv06n.dominio").
     elastic_host: str = ""
+    # Instancia deste no no Incus (VM). No do NLB que trava sem contato e
+    # reiniciado por ela (app/incus.py); vazio = fisico, so alerta critico.
+    incus_vm: str = ""
 
 
 def credential_for(profile: str) -> tuple[str, str]:
@@ -211,6 +214,7 @@ def load_inventory(path: str) -> Inventory:
                 jobs=raw.get("jobs"),
                 nlb=bool(raw.get("nlb", False)),
                 elastic_host=str(raw.get("elastic_host") or "").strip(),
+                incus_vm=str(raw.get("incus_vm") or "").strip(),
             )
         )
     ambientes = {str(k): str(v) for k, v in (data.get("environments") or {}).items()}

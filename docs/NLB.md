@@ -21,7 +21,7 @@ O RMon olha a saúde de **aplicação** de cada nó e tira do balanceamento o n�
 Duas lições moldaram o desenho:
 
 1. **Na fase aguda o WinRM do nó doente não responde** — o próprio nó não consegue ser
-   drenado (desde 16/10 um vizinho faz isso, ver "Nó sem contato"). O que chega a tempo ali é o **aviso precoce** (o JobRunner cresce devagar
+   tirado do NLB (desde 16/10 pelo hypervisor, ver "Nó sem contato"). O que chega a tempo ali é o **aviso precoce** (o JobRunner cresce devagar
    por horas antes de explodir: alertas `jobrunner:<pid>` e `jobrunner-crit:<pid>`, ver
    CONFIGURACAO.md).
 2. **A falha longa é a que dá para automatizar**: o nó "vivo" que não cria sessão.
@@ -91,41 +91,59 @@ criar sessão nenhuma. O driver do NLB sobe e converge muito antes de o Windows 
 e o mesmo vale para um nó travado: o driver segue respondendo ao cluster enquanto o resto morre.
 
 A regra: nó **ativo no NLB** (pelo último estado lido) que fica **sem contato por
-`unreachable_cycles` (3) coletas seguidas** sai do NLB enquanto durar a falta de contato.
+`unreachable_cycles` (3) coletas seguidas** e **também sem dados no Elastic** há
+`reset_elastic_mudo_sec` (180 s) é **reiniciado pelo hypervisor**: a VM sobe fora do NLB e o
+RMon a devolve quando estiver apta.
 
-- **Quem drena é um vizinho.** O próprio nó não responde, então o RMon chama
-  `MicrosoftNLB_Node.DrainStop` na instância do alvo pelo provedor WMI `root/MicrosoftNLB`
-  de um nó alcançável e ativo do mesmo cluster (o saudável primeiro, até dois tentados).
-  Esse provedor fala com o **driver** do alvo pelo **controle remoto do NLB**, e o driver
-  segue vivo com o Windows engasgado. Sem controle remoto, o WMI do vizinho mostra os
-  outros nós com `StatusCode` 0 e não age neles. O `nlb.exe` não serve: no Windows 2016 ele
-  não tem mais `/PASSW`, e com `<cluster>:<host>` fala por WMI/DCOM com o Windows do alvo —
-  exatamente o que travou.
-- **Confirmação:** o WMI do vizinho mostra o alvo drenando/parado, ou o alvo some da lista de
-  hosts convergidos do `nlb query`. Sem uma das duas, conta como falha e é tentado de novo a
-  cada `retry_min`.
+- **Por que não um vizinho.** A primeira versão (PR #48) mandava um nó vizinho chamar
+  `MicrosoftNLB_Node.DrainStop` no nó mudo, pelo controle remoto do NLB. **Não funciona no
+  Windows Server 2008 em diante**: lá, o provedor WMI `root/MicrosoftNLB` mostra o nó remoto
+  com `StatusCode` 0 ("Node is remote") e todo método falha em instância remota, com ou sem
+  controle remoto; e o `SetPassword` do controle remoto foi removido no 2008 (o job de
+  16/10/2026 12:00 falhou nele com `0x8004100c` e parou sem mexer em nada). O `nlb.exe` com
+  `<cluster>:<host>` fala por DCOM com o Windows do alvo — exatamente o que travou.
+- **Quem reinicia é o hypervisor.** O .188 e o .190 são VMs do **Incus no .161**
+  (`fiepbsrv032`). O RMon roda `incus restart --force` da VM por SSH, com um usuário do
+  hypervisor preso a um comando forçado que só aceita `listar` e `reset <vm liberada>`, no
+  máximo 1 reset por VM a cada 30 min (`deploy/incus/instalar-no-hypervisor.sh`). Reset
+  forçado derruba o driver do NLB na hora; os outros nós reconvergem em segundos. A VM volta
+  **parada no NLB** (`ClusterModeOnStart = 0`) e o reingresso normal a devolve.
+- **Confirmação pelo Elastic.** O WinRM sozinho engasga (12 a 115 s nos app servers RM) sem o
+  Windows estar travado. O reset só sai se a consulta ao Elastic deste ciclo **respondeu**, o
+  host **já mandou dados antes** (nome certo, agente instalado) e **nada chega há 180 s**.
+  Elastic recebendo dados = "só o WinRM travou": aviso âmbar, sem reset. Elastic desligado ou
+  sem resposta = alerta crítico, sem reset.
+- **Sem saída automática = alerta crítico.** Servidor físico (o .34, HPE DL380 Gen10: o iLO
+  está sem IP), canal do Incus fora do ar ou mais de `reset_max_day` (2) resets do nó em 24 h:
+  o RMon avisa em vermelho uma vez por episódio para alguém reiniciar pelo console.
 - **Piso:** o mesmo da drenagem por doença. Nó sem contato não conta como ativo, então com
-  dois nós mudos ao mesmo tempo **nenhum** sai — pode ser a rede do próprio RMon, e drenar
-  jogaria todo mundo no único nó que sobra. Não passa por cooldown nem pelo limite de flapping.
+  dois nós mudos ao mesmo tempo **nenhum** é tocado — pode ser a rede do próprio RMon. Não
+  passa pelo cooldown nem pelo limite de flapping da drenagem.
 - **Volta:** quando o nó responde de novo, segue o reingresso normal (RM.Host no ar, commit
-  normal, Windows no ar há 10 min, apto por 10 min), sem exigir reboot nem sessão nova.
-- Precisa do `host_id` do nó no NLB, que o RMon guarda da última coleta boa. Manutenção
-  (hold ou janela) não é tocada. No modo `alert` só avisa "drenaria".
+  normal, Windows no ar há 10 min, apto por 10 min).
+- Manutenção (hold ou janela) não é tocada. No modo `alert` só avisa "reiniciaria a VM".
+- A tela `/nlb` mostra em cada nó o que acontece se ele travar ("reset da VM X" ou "só alerta
+  crítico") e o estado do canal com o hypervisor, conferido de hora em hora (`listar`, só
+  leitura; 10 min se falhou). Falha e volta do canal viram mensagem no Slack/Telegram.
 
-### Pré-requisitos no cluster
+### Pré-requisitos
 
-1. **Controle remoto do NLB ligado, com senha**, nos três nós (`RemoteControlEnabled`; a
-   senha é a `RMON_NLB_RC_PASSWORD` do `.env`, gravada por `SetPassword` e entregue ao nó por
-   variável de ambiente do shell WinRM, fora do log de script do PowerShell). É parâmetro de
-   cluster e só vale depois de recarregar o NLB em cada nó (reconvergência de segundos):
-   aplicado fora do horário por `deploy/nlb_controle_remoto.py ligar`, um nó por vez. O
-   cluster está em unicast com `UnicastInterHostCommSupport = 1`, então os nós conversam
-   entre si. `nlb_controle_remoto.py checar` mostra se cada nó lê o estado dos vizinhos.
-2. **Nó sobe fora do NLB depois de reboot** (`ClusterModeOnStart = 0`, chave em
+1. **Nó sobe fora do NLB depois de reboot** (`ClusterModeOnStart = 0`, chave em
    `HKLM\SYSTEM\CurrentControlSet\Services\WLBS\Parameters\Interface\{GUID}`). Lido só no
-   boot; não precisa recarregar. Quem devolve o nó ao NLB é o RMon (`rejoin_unowned: true`).
-   Se o **cluster inteiro** estiver parado (queda de energia), o primeiro nó com RM.Host no ar
-   volta sem esperar os 10 min.
+   boot; não precisa recarregar. Aplicado nos 3 nós em 16/10/2026 por
+   `deploy/nlb_controle_remoto.py subir-parado` (`checar` confere). Quem devolve o nó ao NLB é
+   o RMon (`rejoin_unowned: true`). Se o **cluster inteiro** estiver parado (queda de
+   energia), o primeiro nó com RM.Host no ar volta sem esperar os 10 min.
+2. **Canal com o Incus:**
+   1. na VM do RMon: `sudo bash /opt/rmon/deploy/definir-incus-reset.sh` — gera a chave em
+      `/opt/rmon/config/incus-reset/`, grava a chave do host e mostra o comando do passo 2;
+   2. no hypervisor .161, como root: `instalar-no-hypervisor.sh '<chave pública>'` — acha as
+      VMs pelo MAC da placa (.188 `10:66:6a:cc:09:90`, .190 `10:66:6a:e7:40:b1`) e cria o
+      usuário `rmon-reset` restrito ao IP do RMon e ao comando forçado. Pedidos em
+      `journalctl -t rmon-incus-reset`;
+   3. na VM do RMon: `definir-incus-reset.sh --testar` lista as VMs liberadas; no
+      `servers.yaml`, `defaults.nlb.incus_ssh: rmon-reset@10.10.10.161` e `incus_vm: <nome>`
+      em cada nó que é VM; reinicie o rmon.
 
 ## Reingresso
 
@@ -205,13 +223,17 @@ defaults:
     retry_min: 5
     rejoin_unowned: false
     hold: []
-    unreachable_drain: true   # no sem contato sai do NLB pelas maos de um vizinho
+    unreachable_drain: true   # no sem contato e Elastic mudo: reset da VM pelo Incus
     unreachable_cycles: 3
+    reset_elastic_mudo_sec: 180
+    reset_max_day: 2
+    incus_ssh: rmon-reset@10.10.10.161   # vazio = sem reset, so alerta critico
 
 servers:
   - name: rm-app-01
     host: 10.10.10.50
     nlb: true              # no de cluster NLB: entra na avaliacao
+    incus_vm: WIN2016      # VM no Incus: reiniciada se travar sem contato (fisico: omitir)
 ```
 
 O estado da automação (desde quando cada nó está doente/apto, quem drenou, histórico de
@@ -253,9 +275,12 @@ abra uma conexão RDP direto no IP do nó.
 
 ## Limitações conhecidas
 
-- **O controle remoto do NLB abre a UDP 2504 do cluster** a comandos protegidos só por
-  senha, e a Microsoft o desaconselha. Foi adotado em 16/10/2026, com OK do Bruno, porque é
-  o único jeito de tirar do NLB um nó que não responde. A senha fica só no `.env` do RMon.
+- **Nó físico travado não sai sozinho.** O .34 (HPE DL380 Gen10) não é VM e o iLO dele está
+  sem IP (porta dedicada em DHCP, sem endereço). Com o iLO na rede e um usuário só com
+  "Virtual Power and Reset", o RMon pode reiniciá-lo pelo Redfish do mesmo jeito.
+- A chave do RMon no hypervisor reinicia **só** as VMs liberadas, no máximo 1x a cada 30 min
+  cada; quem tiver a chave e o IP do RMon consegue derrubar esses nós. Ela fica em
+  `/opt/rmon/config/incus-reset/` (perm 600, usuário rmon).
 - Com `ClusterModeOnStart = 0`, se o RMon estiver fora do ar, nó reiniciado fica fora do NLB
   até alguém dar `nlb.exe start` nele.
 - `drainstop` mantém as conexões existentes até elas fecharem; o nó só fica *parado*
