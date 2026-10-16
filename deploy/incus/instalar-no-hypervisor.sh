@@ -132,7 +132,7 @@ chmod 755 "$COMANDO"
 echo "== 3/5 usuario $USUARIO (sem senha, so a chave do RMon a partir de $RMON_IP)"
 if ! id "$USUARIO" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "/var/lib/$USUARIO" --shell /bin/sh \
-          --comment "RMon: reset de VM do NLB" "$USUARIO"
+          --comment "RMon - reset de VM do NLB" "$USUARIO"
 fi
 passwd -l "$USUARIO" >/dev/null
 HOME_U="$(getent passwd "$USUARIO" | cut -d: -f6)"
