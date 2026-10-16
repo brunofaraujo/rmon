@@ -219,9 +219,11 @@ de alguém ter parado sem janela de manutenção, volta. Ficam de fora só o ser
 **Desabilitado** (foi desligado de propósito), o que nem existe no host e o host em manutenção.
 
 - Nada antes de `boot_iniciar_min` minutos de uptime (padrão 10), para o boot assentar.
-- **Não desiste.** A 1ª tentativa é na hora; cada nova espera `boot_iniciar_min` a mais que a
-  anterior, até `autocorrecao_teto_min` (padrão 30): 10, 20, 30, 30... min, enquanto estiver
-  parado. Em 16/10/2026 o `Elastic Agent` do .188 ficou uma hora sem conseguir partir depois do
+- **Não desiste.** A 1ª tentativa é na hora; as seguintes esperam 2, 5, 10, 15 min e daí
+  `autocorrecao_teto_min` (padrão 30) entre uma e outra, enquanto estiver parado. Host que não
+  respondeu ao comando (WinRM engasgado) não conta tentativa: repete no ciclo seguinte.
+- Serviço em transição (`StopPending`/`StartPending`) é deixado assentar; preso nisso por 5 min,
+  é **reiniciado** (o processo travado é morto). Em 16/10/2026 o `Elastic Agent` do .188 ficou uma hora sem conseguir partir depois do
   reboot (estourava os 30 s do Windows) e liberou sozinho às 11:05; o limite antigo de 3
   tentativas já tinha desistido.
 - Sem `Start-Service`: ele espera o serviço chegar a Running sem prazo, e num host lento o

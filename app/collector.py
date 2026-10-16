@@ -680,6 +680,9 @@ ConvertTo-Json -InputObject @($out) -Compress
 """
 # Estados que contam como "voltou": ja no ar, ou o Windows ainda subindo
 SUBIU = {"Running": "subiu", "StartPending": "comando aceito, o Windows ainda esta subindo"}
+# Prefixo do retorno quando o HOST nao respondeu (WinRM): o servico nem chegou a
+# ser tentado, e o guardiao repete no ciclo seguinte sem contar tentativa.
+SEM_RESPOSTA = "sem resposta do host: "
 
 
 def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str, str]],
@@ -707,7 +710,13 @@ def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str,
     lista = ", ".join(f"@({_ps_str(a)}, {_ps_str(n)})" for a, n in validos)
     script = _PS_SUBIR.replace("__ITENS__", lista).replace("__ESPERA__", str(int(espera_s)))
     try:
-        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=1, budget_sec=espera_s + 60)
+        # 2 tentativas: o WinRM dos app servers engasga 30 s+ de vez em quando
+        # (ReadTimeout no .188 em 16/10), e o script pode rodar de novo sem dano
+        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=espera_s + 90)
+    except Exception as exc:  # noqa: BLE001
+        motivo = SEM_RESPOSTA + f"{type(exc).__name__}: {exc}"[:200]
+        return {**out, **{n: (False, motivo) for _, n in validos}}
+    try:
         if r.status_code != 0:
             raise RuntimeError(_decode(r.std_err)[:200] or "WinRM status != 0")
         estados = {str(d.get("name")): d for d in _as_list(json.loads(_decode(r.std_out) or "[]"))}
