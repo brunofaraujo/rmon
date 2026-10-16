@@ -421,7 +421,8 @@ def _receive(proto, shell_id: str, command_id: str,
             raise WinRMOperationTimeoutError()
 
 
-def _run_ps(session: winrm.Session, script: str, deadline: float | None = None) -> winrm.Response:
+def _run_ps(session: winrm.Session, script: str, deadline: float | None = None,
+            env: dict[str, str] | None = None) -> winrm.Response:
     """Executa PowerShell remoto SEMPRE fechando o shell no Windows.
 
     O Session.run_cmd do pywinrm nao tem try/finally: se o operation timeout
@@ -436,9 +437,13 @@ def _run_ps(session: winrm.Session, script: str, deadline: float | None = None) 
     comando do cmd.exe, que corta em ~8k - a coleta inteira morria com "Linha
     de comando muito longa" assim que o script cresceu. Por stdin o tamanho
     deixa de ser um limite; o que vai na linha de comando e so o bootstrap.
+
+    `env` vira variavel de ambiente do shell remoto: e por onde vai um segredo
+    que o script precisa usar, porque o texto do script fica gravado no log
+    de script do PowerShell (evento 4104, ligado por GPO nos servidores).
     """
     proto = session.protocol
-    shell_id = proto.open_shell()
+    shell_id = proto.open_shell(env_vars=env) if env else proto.open_shell()
     command_id = None
     try:
         command_id = proto.run_command(
@@ -467,7 +472,8 @@ _TRANSIENT = (WinRMOperationTimeoutError, requests.exceptions.Timeout,
 
 
 def _run_ps_resilient(host: str, wc: WinRMConfig, user: str, pw: str, script: str,
-                      attempts: int = 2, budget_sec: float | None = None) -> winrm.Response:
+                      attempts: int = 2, budget_sec: float | None = None,
+                      env: dict[str, str] | None = None) -> winrm.Response:
     """Roda o script tentando de novo quando a falha foi timeout.
 
     Servidores de aplicacao com muitas sessoes travam esporadicamente por
@@ -483,7 +489,7 @@ def _run_ps_resilient(host: str, wc: WinRMConfig, user: str, pw: str, script: st
     for i in range(max(1, attempts)):
         session = _winrm_session(host, wc, user, pw)
         try:
-            return _run_ps(session, script, deadline)
+            return _run_ps(session, script, deadline, env)
         except _TRANSIENT as exc:
             last = exc
             log.info("WinRM %s: %s na tentativa %d/%d", host, type(exc).__name__, i + 1, attempts)
@@ -761,6 +767,116 @@ def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool
     depois = data.get("after")
     ok = depois in NLB_OK_AFTER[action]
     return ok, f"estado {data.get('before')} -> {depois}; nlb.exe: {str(data.get('output') or '')[:200]}"
+
+
+# --- NLB: drenar um no SEM CONTATO a partir de um vizinho ---
+# O proprio no nao responde, entao quem manda o drainstop e um vizinho do
+# cluster. O nlb.exe nao serve: com "<cluster>:<host>" ele fala por WMI/DCOM
+# com o Windows do alvo - justamente o que travou. Quem chega ao DRIVER do alvo
+# (vivo mesmo com o Windows engasgado) e o provedor WMI root/MicrosoftNLB do
+# vizinho, pelo controle remoto do NLB: com ele ligado no cluster, a instancia
+# MicrosoftNLB_Node do alvo tem StatusCode de verdade (desligado, vem 0) e o
+# metodo DrainStop age nele. O alvo e "<ip do cluster>:<host_id>", validado
+# antes de entrar no script.
+_PS_NLB_REMOTO = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$alvo = '__ALVO__'
+$hid = __HID__
+function Get-Alvo {
+    try {
+        @(Get-CimInstance -Namespace root/MicrosoftNLB -ClassName MicrosoftNLB_Node -ErrorAction Stop |
+            Where-Object { $_.Name -eq $alvo })
+    } catch { @() }
+}
+function Get-Membros {
+    # a ultima linha so de numeros ("1, 2, 5") do nlb query local: os hosts convergidos
+    $t = (& nlb.exe query 2>&1 | Out-String)
+    $m = [regex]::Matches($t, '(?m)^[ \t]*\d+([ \t]*,[ \t]*\d+)*[ \t]*\r?$')
+    if ($m.Count -gt 0) { @($m[$m.Count - 1].Value -split ',' | ForEach-Object { [int]$_.Trim() }) } else { @() }
+}
+# @(...) em volta de cada chamada: funcao que devolve UM objeto devolve o objeto,
+# nao uma lista, e CimInstance sozinho nao tem .Count no PowerShell 5.1
+$res = [ordered]@{ before = $null; after = $null; via = $null; rc = $null
+                   members_before = @(Get-Membros); members_after = @(); output = '' }
+$n = @(Get-Alvo)
+if ($n.Count -gt 0 -and [int]$n[0].StatusCode -gt 0) { $res.before = [int]$n[0].StatusCode }
+if ($res.before -in 1005, 1009) {
+    $res.via = 'ja-fora'
+} elseif ($res.members_before.Count -gt 0 -and $res.members_before -notcontains $hid) {
+    $res.via = 'fora-da-convergencia'
+} elseif ($res.before -in 1006, 1007, 1008, 1013) {
+    try {
+        $r = Invoke-CimMethod -InputObject $n[0] -MethodName DrainStop -ErrorAction Stop
+        $res.via = 'wmi'; $res.rc = $r.ReturnValue
+    } catch { $res.output = "wmi: $($_.Exception.Message)".Trim() }
+    Start-Sleep -Seconds 5
+} else {
+    $res.output = "o WMI deste no nao enxerga o estado do alvo (StatusCode 0): controle remoto do NLB desligado?"
+}
+$n = @(Get-Alvo)
+if ($n.Count -gt 0 -and [int]$n[0].StatusCode -gt 0) { $res.after = [int]$n[0].StatusCode }
+$res.members_after = @(Get-Membros)
+[pscustomobject]$res | ConvertTo-Json -Compress
+"""
+
+
+def nlb_target(target: str) -> tuple[str, int] | None:
+    """("10.10.10.228", 5) de "10.10.10.228:5"; None se nao for IP:host_id valido."""
+    import ipaddress
+    ip, _, hid = (target or "").rpartition(":")
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if not hid.isdigit() or not 1 <= int(hid) <= 32:
+        return None
+    return ip, int(hid)
+
+
+def interpretar_drenagem_remota(data: dict, host_id: int) -> tuple[bool, str]:
+    """Le o JSON do _PS_NLB_REMOTO: o alvo saiu (ou ja estava fora) do NLB?
+
+    Confirmado quando o WMI do vizinho mostra o alvo drenando/parado, ou quando
+    ele some da lista de hosts convergidos. So o comando enviado, sem uma das
+    duas provas, conta como falha - a acao e repetida no proximo retry.
+    """
+    via, antes, depois = data.get("via"), data.get("before"), data.get("after")
+    membros = [int(x) for x in (data.get("members_after") or []) if str(x).isdigit()]
+    saida = str(data.get("output") or "")[:160]
+    if via == "ja-fora":
+        return True, f"ja estava fora do NLB (estado {antes})"
+    if via == "fora-da-convergencia":
+        return True, (f"host {host_id} ja fora da convergencia "
+                      f"(convergidos: {', '.join(map(str, data.get('members_before') or []))})")
+    if not via:
+        return False, saida or "o vizinho nao conseguiu agir no alvo"
+    resumo = f"{via} rc={data.get('rc')}, estado {antes} -> {depois}"
+    if depois in NLB_OK_AFTER["drain"]:
+        return True, resumo
+    if membros and host_id not in membros:
+        return True, f"{resumo}; fora da convergencia ({', '.join(map(str, membros))})"
+    return False, f"{resumo}; sem confirmacao de saida{'; ' + saida if saida else ''}"
+
+
+def nlb_remote_drain(relay: ServerConfig, wc: WinRMConfig, target: str) -> tuple[bool, str]:
+    """drainstop do host `target` ("<ip do cluster>:<host_id>") rodado no vizinho `relay`."""
+    alvo = nlb_target(target)
+    if alvo is None:
+        return False, f"alvo invalido: {target!r}"
+    user, pw = credential_for(relay.cred)
+    if not user or not pw:
+        return False, f"sem credencial (perfil '{relay.cred}')"
+    ip, hid = alvo
+    script = _PS_NLB_REMOTO.replace("__ALVO__", f"{ip}:{hid}").replace("__HID__", str(hid))
+    try:
+        r = _run_ps_resilient(relay.host, wc, user, pw, script, attempts=1, budget_sec=60)
+        if r.status_code != 0:
+            return False, _decode(r.std_err)[:300] or "WinRM status != 0"
+        data = json.loads(_decode(r.std_out) or "{}")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    return interpretar_drenagem_remota(data, hid)
 
 
 # Negociacao do RDP (X.224 Connection Request + RDP_NEG_REQ pedindo TLS): o que

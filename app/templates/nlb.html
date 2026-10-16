@@ -18,6 +18,11 @@
   {{ cfg.min_active_remaining }} no(s) ativo(s) nem menos de {{ cfg.min_healthy_remaining }}
   saudavel(is); uma drenagem por cluster a cada {{ cfg.cooldown_min }}min; no maximo
   {{ cfg.max_drains_day }} por no em 24h.
+  {% if cfg.unreachable_drain %}
+  <br><b>No sem contato</b> (WinRM) por {{ cfg.unreachable_cycles }} coletas seguidas sai do NLB
+  pelas maos de um vizinho (controle remoto do NLB) e volta quando responder de novo e estiver
+  apto &mdash; respeitando o mesmo piso.
+  {% endif %}
 </div>
 {% elif cfg.mode == 'alert' %}
 <div class="alert info small">
@@ -53,6 +58,8 @@
         </td>
         <td class="small">
           {% if not n.reachable %}<span class="muted">{{ n.error }}</span>
+            {% if n.st.unreach %}<div><span class="pill red">sem contato ha {{ n.st.unreach }} coleta(s)</span>
+              {% if cfg.unreachable_drain and not n.st.owned and n.st.unreach < cfg.unreachable_cycles %}<span class="muted">sai do NLB na {{ cfg.unreachable_cycles }}&ordf;</span>{% endif %}</div>{% endif %}
           {% elif n.sinais %}{% for s in n.sinais %}<div><span class="pill red">doente</span> {{ s }}</div>{% endfor %}
           {% elif n.fora %}
             {% if n.st.rejoin_gaps %}{% for g in n.st.rejoin_gaps %}<div class="muted">falta: {{ g }}</div>{% endfor %}
@@ -73,7 +80,7 @@
         <td class="mono small">{% if n.jobrunner_gb is not none %}{{ n.jobrunner_gb }} GB<div class="muted">PID {{ n.jobrunner_pid }}</div>{% else %}-{% endif %}</td>
         <td class="small">
           {% if n.hold %}<span class="pill amber">manutencao</span>{% endif %}
-          {% if n.st.owned %}<span class="pill blue">drenado pelo RMon</span>{% endif %}
+          {% if n.st.owned %}<span class="pill blue">drenado pelo RMon{% if n.st.drain_reason == 'unreachable' %} (sem contato){% endif %}</span>{% endif %}
           {% if n.st.last_action %}
           <div class="muted">ultima acao: {{ n.st.last_action.action }} {{ 'ok' if n.st.last_action.ok else 'FALHOU' }}
             ({{ n.st.last_action.by }}, {{ n.st.last_action.ts | dt }})</div>
@@ -122,7 +129,7 @@
       <tr>
         <td class="muted small">{{ a.ts | dt }}</td>
         <td>{{ a.server }}</td>
-        <td><span class="pill {{ 'red' if a.problem in ('drain', 'failed', 'unreachable_sick', 'blocked') else ('green' if a.problem in ('rejoin', 'recovered') else 'amber') }}">{{ a.label }}</span></td>
+        <td><span class="pill {{ 'red' if a.problem in ('drain', 'drain_unreachable', 'failed', 'unreachable_sick', 'blocked') else ('green' if a.problem in ('rejoin', 'recovered') else 'amber') }}">{{ a.label }}</span></td>
         <td class="small">{{ a.message }}</td>
       </tr>
     {% endfor %}

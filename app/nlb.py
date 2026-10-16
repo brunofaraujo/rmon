@@ -92,6 +92,15 @@ DEFAULTS: dict[str, Any] = {
     "rejoin_unowned": False,
     # Nos que o RMon nunca toca (manutencao). Tambem pode ser ligado na tela.
     "hold": [],
+    # No ATIVO no NLB que fica sem contato (WinRM) por `unreachable_cycles`
+    # coletas seguidas sai do NLB enquanto durar a falta de contato. Como ele
+    # nao responde, a drenagem e feita por um VIZINHO do cluster, pelo
+    # controle remoto do NLB (incidente do .188 em 16/10: voltou ao NLB sozinho
+    # no boot e recebeu usuarios por 10 min sem estar pronto). Volta pelas
+    # regras normais de reingresso quando o contato voltar. Nao passa pelo
+    # cooldown nem pelo limite de flapping, so pelo piso do cluster.
+    "unreachable_drain": True,
+    "unreachable_cycles": 3,
 }
 
 # Uma avaliacao por vez: o ciclo de coleta e os botoes da tela mexem no mesmo estado.
@@ -107,6 +116,7 @@ def settings_for(defaults: dict[str, Any] | None) -> dict[str, Any]:
     # nunca deixar o cluster sem nenhum no saudavel, nem por configuracao
     cfg["min_healthy_remaining"] = max(1, int(cfg.get("min_healthy_remaining") or 1))
     cfg["min_active_remaining"] = max(1, int(cfg.get("min_active_remaining") or 1))
+    cfg["unreachable_cycles"] = max(1, int(cfg.get("unreachable_cycles") or 1))
     cfg["hold"] = [str(x) for x in (cfg.get("hold") or [])]
     return cfg
 
@@ -235,8 +245,13 @@ def sick_reasons(v: dict, vistas: list[dict], cfg: dict, st: dict | None = None,
     return motivos
 
 
-def rejoin_gaps(v: dict, st: dict, cfg: dict) -> list[str]:
-    """O que ainda falta para o no fora do NLB voltar (lista vazia = apto)."""
+def rejoin_gaps(v: dict, st: dict, cfg: dict, cluster_vazio: bool = False) -> list[str]:
+    """O que ainda falta para o no fora do NLB voltar (lista vazia = apto).
+
+    `cluster_vazio`: nenhum no do cluster esta ativo (queda de energia, os tres
+    subiram parados). Ai esperar o Windows assentar deixa o servico inteiro
+    fora do ar: basta o RM.Host no ar e o commit normal.
+    """
     falta: list[str] = []
     if not v["reachable"]:
         return ["sem contato (WinRM)"]
@@ -246,12 +261,14 @@ def rejoin_gaps(v: dict, st: dict, cfg: dict) -> list[str]:
     if commit is None or commit >= cfg["commit_ok_pct"]:
         falta.append(f"commit em {commit}% (precisa < {cfg['commit_ok_pct']}%)")
     up = v.get("uptime_min")
-    if up is None or up < cfg["min_uptime_min"]:
+    if not cluster_vazio and (up is None or up < cfg["min_uptime_min"]):
         falta.append(f"Windows no ar ha menos de {cfg['min_uptime_min']}min")
-    # Quem o RMon drenou tem de PROVAR que mudou: ou reiniciou depois da
-    # drenagem, ou criou sessao de novo (RDP direto pelo IP, de teste). Sem
-    # isso, o no que nao criava sessao voltaria ao balanceamento igual.
-    if st.get("owned") and st.get("drained_at"):
+    # Quem o RMon drenou por DOENCA tem de PROVAR que mudou: ou reiniciou
+    # depois da drenagem, ou criou sessao de novo (RDP direto pelo IP, de
+    # teste). Sem isso, o no que nao criava sessao voltaria ao balanceamento
+    # igual. Quem saiu por falta de contato prova o bastante voltando a
+    # responder com o RM.Host no ar.
+    if st.get("owned") and st.get("drained_at") and st.get("drain_reason") != "unreachable":
         reiniciou = v.get("boot_ts") is not None and v["boot_ts"] > st["drained_at"]
         if not reiniciou and not (v.get("sess") or 0):
             falta.append("sem reboot nem sessao RDP nova desde a drenagem")
@@ -317,8 +334,12 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
     decisoes: list[dict] = []
 
     doentes: list[tuple[dict, list[str]]] = []
+    mudos: list[dict] = []
     aptos: list[dict] = []
     saude: dict[str, bool] = {}
+    # clusters com algum no ativo e alcancavel: sem nenhum, o reingresso nao espera
+    com_ativo = {v.get("cluster") for v in vistas
+                 if v["reachable"] and v.get("status") in ATIVOS}
 
     def em_hold(nome: str) -> bool:
         return bool(nodes[nome].get("hold")) or nome in hold_cfg
@@ -330,9 +351,17 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             st["last_status"] = v["status"]
         if v.get("cluster"):
             st["cluster"] = v["cluster"]
+        if v.get("host_id") is not None:
+            st["host_id"] = v["host_id"]
 
         if not v["reachable"]:
             st["good_since"] = None
+            st["unreach"] = int(st.get("unreach") or 0) + 1
+            if cfg.get("unreachable_drain"):
+                # ainda no NLB (pelo que se sabia) e mudo ha coletas suficientes
+                if st["unreach"] >= cfg["unreachable_cycles"] and st.get("last_status") in ATIVOS:
+                    mudos.append(v)
+                continue
             if st.get("bad_since") and st.get("last_status") in ATIVOS:
                 # Doente e agora sem WinRM: e o pior caso (commit esgotado) e o
                 # RMon nao tem como drenar. Mantem bad_since: quando o WinRM
@@ -343,6 +372,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
                         "no doente e sem contato por WinRM: o RMon nao consegue drena-lo. "
                         "Drene pelo console (nlb.exe drainstop) ou reinicie o servidor."))
             continue
+        st["unreach"] = 0
+        _clear(st, "unreach")
 
         status = v.get("status")
         if status is None:
@@ -360,6 +391,7 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
                 # voltou ao NLB por fora (alguem deu start na mao)
                 st["owned"] = False
                 st["drained_at"] = None
+                st["drain_reason"] = None
             motivos = sick_reasons(v, vistas, cfg, st, now)
             saude[v["name"]] = not motivos
             if motivos:
@@ -383,7 +415,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         if em_hold(v["name"]):
             st["good_since"] = None
             continue
-        falta = rejoin_gaps(v, st, cfg)
+        vazio = v.get("cluster") not in com_ativo
+        falta = rejoin_gaps(v, st, cfg, cluster_vazio=vazio)
         st["rejoin_gaps"] = falta
         dono = bool(st.get("owned"))
         if not dono and not cfg.get("rejoin_unowned") and _note(st, "out", "unowned"):
@@ -397,15 +430,61 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             _clear(st, "rejoin")
             continue
         st["good_since"] = st.get("good_since") or now
-        if now - st["good_since"] >= rejoin_after and (dono or cfg.get("rejoin_unowned")):
+        if (now - st["good_since"] >= rejoin_after or vazio) and (dono or cfg.get("rejoin_unowned")):
             aptos.append(v)
+
+    retirados: set[str] = set()
+    agiu: set[str] = set()
+
+    # ---- sem contato: sai do NLB pelas maos de um vizinho, o mais antigo
+    # primeiro. So o piso do cluster segura: no sem contato nao conta como
+    # ativo, entao com dois mudos ao mesmo tempo nenhum sai (pode ser a rede
+    # do proprio RMon, e drenar sobrecarregaria o unico no que sobra).
+    mudos.sort(key=lambda x: -nodes[x["name"]]["unreach"])
+    for v in mudos:
+        st = nodes[v["name"]]
+        if em_hold(v["name"]):
+            continue
+        vv = {**v, "cluster": st.get("cluster")}
+        cl = vv["cluster"] or "-"
+        resumo = f"sem contato (WinRM) ha {st['unreach']} coletas seguidas"
+        if st.get("host_id") is None or not st.get("cluster"):
+            if _note(st, "unreach", "no_id"):
+                decisoes.append(_decision(
+                    vv, "blocked",
+                    f"{resumo}, mas o RMon nao sabe o host_id dele no NLB: "
+                    "drene pelo console (nlb.exe drainstop)"))
+            continue
+        ativos, saudaveis = _floor(vv, vistas, saude, retirados)
+        if len(saudaveis) < cfg["min_healthy_remaining"] or len(ativos) < cfg["min_active_remaining"]:
+            if _note(st, "unreach", f"floor:{len(ativos)}:{len(saudaveis)}"):
+                decisoes.append(_decision(
+                    vv, "blocked",
+                    f"{resumo}, mas drenar deixaria {len(ativos)} no(s) ativo(s) e "
+                    f"{len(saudaveis)} saudavel(is) (minimos {cfg['min_active_remaining']} e "
+                    f"{cfg['min_healthy_remaining']}): fica no NLB"))
+            continue
+        retirados.add(v["name"])
+        # o vizinho saudavel primeiro; qualquer ativo alcancavel serve
+        relays = [p["name"] for p in sorted(ativos, key=lambda p: not saude.get(p["name"]))]
+        if auto:
+            agiu.add(cl)
+            if st.get("last_try") and now - st["last_try"] < retry:
+                continue
+            decisoes.append({
+                **_decision(vv, "drain_unreachable",
+                            f"{resumo}: sai do NLB enquanto nao responder",
+                            action="drain_remote", new=_note(st, "unreach", "draining")),
+                "target": f"{st['cluster']}:{st['host_id']}", "relays": relays})
+        elif _note(st, "unreach", "would"):
+            decisoes.append(_decision(
+                vv, "would_drain",
+                f"[modo alerta] drenaria agora, pelo vizinho {relays[0]}: {resumo}"))
 
     # ---- drenagem: o doente mais antigo primeiro. No modo auto sai no maximo
     # uma por cluster por ciclo; no modo alerta a simulacao continua, contando
     # os ja "drenados" para mostrar o que o piso faria com o segundo doente.
     doentes.sort(key=lambda x: nodes[x[0]["name"]]["bad_since"])
-    retirados: set[str] = set()
-    agiu: set[str] = set()
     for v, motivos in doentes:
         st = nodes[v["name"]]
         cl = v.get("cluster") or "-"
@@ -498,13 +577,22 @@ def apply_result(state: dict, d: dict, ok: bool, now: float,
     if d["action"] == "drain":
         st["owned"] = True
         st["drained_at"] = now
+        st["drain_reason"] = "sick"
         st["drains"] = (st.get("drains") or []) + [now]
         _note(st, "sick", "drained")
         if d.get("cluster") and not d.get("by"):
             st_all.setdefault("clusters", {}).setdefault(d["cluster"], {})["last_auto"] = now
+    elif d["action"] == "drain_remote":
+        # nao entra na conta do flapping nem do cooldown: e outra causa
+        st["owned"] = True
+        st["drained_at"] = now
+        st["drain_reason"] = "unreachable"
+        st["last_status"] = 1009     # o proprio no nao e lido enquanto estiver mudo
+        _note(st, "unreach", "drained")
     elif d["action"] == "rejoin":
         st["owned"] = False
         st["drained_at"] = None
+        st["drain_reason"] = None
         st["good_since"] = None
         st["joined_at"] = now
         _clear(st, "out", "rejoin", "sick")
@@ -528,7 +616,8 @@ def floor_ok(vistas: list[dict], alvo: str, cfg: dict) -> tuple[bool, str]:
 
 # ---------------------------------------------------------------- adaptador
 
-ICON = {"drain": "\U0001F500", "rejoin": "✅", "would_drain": "\U0001F7E0",
+ICON = {"drain": "\U0001F500", "drain_unreachable": "\U0001F500", "rejoin": "✅",
+        "would_drain": "\U0001F7E0",
         "would_rejoin": "\U0001F7E2", "blocked": "⛔", "unreachable_sick": "\U0001F534",
         "out_unowned": "⚠️", "recovered": "\U0001F7E2", "nlb_error": "⚠️",
         "failed": "❌"}
@@ -575,6 +664,20 @@ def execute(server, wc, action: str) -> tuple[bool, str]:
     return nlb_action(server, wc, action)
 
 
+def execute_remote(servidores: dict, wc, d: dict) -> tuple[bool, str]:
+    """drainstop do no mudo pelos vizinhos de `d["relays"]`, ate um conseguir."""
+    from .collector import nlb_remote_drain
+    tentativas = []
+    for nome in (d.get("relays") or [])[:2]:
+        if nome not in servidores:
+            continue
+        ok, det = nlb_remote_drain(servidores[nome], wc, d["target"])
+        if ok:
+            return True, f"via {nome}: {det}"
+        tentativas.append(f"{nome}: {det}")
+    return False, " | ".join(tentativas) or "nenhum vizinho alcancavel"
+
+
 def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
               hold: Iterable[str] = ()) -> list[dict]:
     """Chamado ao fim de cada poll_all, com as coletas que acabaram de chegar.
@@ -593,10 +696,15 @@ def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
         decisoes, state = evaluate(vistas, state, cfg, now, hold)
         for d in decisoes:
             if d.get("action"):
-                ok, detalhe = execute(servidores[d["server"]], inv.winrm, d["action"])
+                if d["action"] == "drain_remote":
+                    ok, detalhe = execute_remote(servidores, inv.winrm, d)
+                else:
+                    ok, detalhe = execute(servidores[d["server"]], inv.winrm, d["action"])
                 state, falha_nova = apply_result(state, d, ok, now, detalhe)
                 if not ok:
                     d = {**d, "msg": f"{d['action']} FALHOU: {detalhe[:200]}"}
+                elif d["action"] == "drain_remote":
+                    d = {**d, "msg": f"{d['msg']}; drenado pelo vizinho ({detalhe[:160]})"}
                 elif d["action"] == "drain":
                     d = {**d, "msg": "drenado (nlb.exe drainstop): " + d["msg"].split(": ", 1)[-1]}
                 else:
