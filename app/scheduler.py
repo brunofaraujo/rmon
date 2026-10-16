@@ -11,7 +11,7 @@ from typing import Iterable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
-from .collector import collect_server, subir_servicos
+from .collector import SEM_RESPOSTA, collect_server, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
@@ -67,8 +67,8 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   "boot_janela_min": 30,
                   # guardiao (iniciar_automatico): servico monitorado parado volta
                   # sozinho, a qualquer hora, sem limite de tentativas. Nada antes
-                  # de boot_iniciar_min de uptime (0 desliga: so avisa); o intervalo
-                  # entre tentativas cresce boot_iniciar_min por vez ate o teto.
+                  # de boot_iniciar_min de uptime (0 desliga: so avisa); entre as
+                  # tentativas, 2, 5, 10, 15 min e dai de teto em teto.
                   "boot_iniciar_min": 10, "autocorrecao_teto_min": 30}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
@@ -383,6 +383,17 @@ def _tentativas(nome: str, chave: str, boot: float) -> list[float]:
 # cada tantas depois (as outras ficam so na linha do tempo, sem afogar ninguem).
 _AVISAR_ATE = 3
 _AVISAR_CADA = 6
+# Espera depois da n-esima tentativa que falhou (min); a ultima se repete, limitada
+# pelo teto (autocorrecao_teto_min).
+_ESCADA_MIN = (2, 5, 10, 15, 30)
+# Servico em transicao (StopPending/StartPending) e deixado assentar; preso nisso
+# por mais que tanto, e reiniciado (o restart mata o processo travado).
+_PENDENTE_S = 5 * 60
+
+
+def _espera_s(n: int, teto_s: float) -> float:
+    """Espera antes da proxima tentativa, depois de `n` tentativas feitas."""
+    return min(_ESCADA_MIN[min(max(n, 1), len(_ESCADA_MIN)) - 1] * 60, teto_s)
 
 
 def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: float,
@@ -401,10 +412,12 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
 
     Fica de fora so o que foi desligado de proposito (Desabilitado), o que nem
     existe no host e o host em manutencao (quem chama ja pula). Nada antes de
-    `apos_s` de uptime, para o boot assentar. NAO desiste: a 1a tentativa e na
-    hora, e cada nova espera `apos_s` a mais que a anterior, ate `teto_s` (10,
-    20, 30, 30... min). O que travou por uma hora no boot (o .188 em 16/10) volta
-    na primeira tentativa depois que o host liberar.
+    `apos_s` de uptime, para o boot assentar. Servico em transicao (parando ou
+    subindo) e deixado assentar; preso nisso por 5 min, e reiniciado. NAO
+    desiste: a 1a tentativa e na hora e as seguintes esperam 2, 5, 10, 15 min e
+    dai `teto_s` (30) - o que travou por uma hora no boot (o .188 em 16/10) volta
+    logo que o host liberar. Host que nao respondeu ao comando nao conta
+    tentativa: repete no ciclo seguinte.
 
     Todos os alvos do host vao numa chamada so (collector.subir_servicos), que
     dispara e confere sem prender a coleta. Cada tentativa vai para a linha do
@@ -427,13 +440,20 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
                           f"no ar, mas sem mandar dados ao Elastic desde {manutencao.hora(ref)}"))
         elif (service_down(s) and s.get("status") not in ("NOT_FOUND", None)
               and not inicio.startswith("disab")):
+            st = str(s.get("status"))
+            acao = "start"
+            if "Pending" in st:
+                if agora - desde.get(chave, agora) < _PENDENTE_S:
+                    continue         # o Windows ainda esta mexendo nele
+                acao = "restart"
             if s.get("nao_subiu"):
                 ref = float(s["nao_subiu"])
                 motivo = f"nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])}"
             else:
                 ref = desde.get(chave, agora)
-                motivo = f"parado desde {manutencao.hora(ref)}"
-            alvos.append((s, chave, "start", ref, motivo))
+                motivo = (f"preso em {st} desde {manutencao.hora(ref)}" if acao == "restart"
+                          else f"parado desde {manutencao.hora(ref)}")
+            alvos.append((s, chave, acao, ref, motivo))
     agora_vai = []
     for s, chave, acao, ref, motivo in alvos:
         try:
@@ -441,7 +461,7 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
         except Exception:  # noqa: BLE001 - sem saber o que ja foi feito, nao tenta
             log.exception("guardiao: sem como ler as tentativas de %s/%s", server.name, chave)
             continue
-        if feitas and agora - feitas[-1] < min(apos_s * len(feitas), teto_s):
+        if feitas and agora - feitas[-1] < _espera_s(len(feitas), teto_s):
             continue
         _tentado[(server.name, chave)].append(agora)
         agora_vai.append((s, chave, acao, motivo, len(feitas) + 1))
@@ -451,11 +471,16 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
                                allowed=vistos)
     msgs = []
     for s, chave, acao, motivo, n in agora_vai:
-        ok, retorno = resultado.get(s["name"], (False, "sem resposta"))
+        ok, retorno = resultado.get(s["name"], (False, SEM_RESPOSTA + "?"))
+        if retorno.startswith(SEM_RESPOSTA):
+            # o host nao respondeu: nada foi tentado, repete no proximo ciclo
+            _tentado[(server.name, chave)].pop()
+            log.info("guardiao %s/%s: %s (repete no proximo ciclo)", server.name, s["name"], retorno)
+            continue
         verbo = "reiniciando" if acao == "restart" else "iniciando"
         texto = f"{verbo} {s['name']} sozinho ({n}a tentativa; {motivo}): {retorno}"
         if not ok:
-            texto += f" - tento de novo em {int(min(apos_s * n, teto_s) // 60)} min, sem desistir"
+            texto += f" - tento de novo em {int(_espera_s(n, teto_s) // 60)} min, sem desistir"
         db.record_alert(server.name, "acao", chave, texto)
         log.info("guardiao %s/%s %s #%d -> %s (%s)", server.name, s["name"], acao, n, ok, retorno)
         if ok or n <= _AVISAR_ATE or n % _AVISAR_CADA == 0:

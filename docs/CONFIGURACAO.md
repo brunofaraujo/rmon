@@ -41,7 +41,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
     boot_janela_min: 30            # serviço automático parado cujo alerta abriu até 30 min após o boot = "não subiu após o reboot"
     boot_iniciar_min: 10           # guardião: serviço monitorado parado volta sozinho a qualquer hora, a partir de 10 min de uptime (0 desliga: só avisa)
-    autocorrecao_teto_min: 30      # guardião nunca desiste: espera 10, 20, 30, 30... min entre tentativas (teto)
+    autocorrecao_teto_min: 30      # guardião nunca desiste: espera 2, 5, 10, 15 e daí 30 min entre tentativas (teto)
   jobrunner:                       # medição dos processos que executam os jobs do RM
     enabled: true
     process: RM.Host.JobRunner     # nome do processo (sem .exe)

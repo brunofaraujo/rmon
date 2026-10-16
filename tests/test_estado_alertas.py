@@ -412,20 +412,19 @@ def test_guardiao_nunca_desiste(ambiente, partidas):
     # depois do boot e o limite antigo de 3 tentativas ja tinha desistido
     partidas.resposta[0] = (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
     up, minutos, canal, t0 = 700, [], [], ambiente.relogio[0]
-    for _ in range(14 * 6):                  # 14 h de coleta a cada 10 min
+    for i in range(6 * 60):                  # 6 h de coleta a cada minuto
         antes = len(partidas.chamadas)
         msgs = ambiente.ciclo(**boot(up))
         if len(partidas.chamadas) > antes:
             minutos.append(round((ambiente.relogio[0] - t0) / 60))
             canal.append(any("iniciando RM.Host.Service sozinho" in m for m in msgs))
-        if minutos and len(minutos) == 5:
-            ambiente.reiniciar()             # deploy do RMon no meio: a conta continua
-        ambiente.passar(10 / 60)
-        up += 600
-    # 1a na hora; depois espera 10, 20, 30 e fica de 30 em 30 min, sem parar
-    assert minutos[:5] == [0, 10, 30, 60, 90]
-    assert all(b - a == 30 for a, b in zip(minutos[3:], minutos[4:]))
-    assert len(minutos) >= 28
+            if len(minutos) == 4:
+                ambiente.reiniciar()         # deploy do RMon no meio: a conta continua
+        ambiente.passar(1 / 60)
+        up += 60
+    # 1a na hora; depois espera 2, 5, 10, 15 e fica de 30 em 30 min, sem parar
+    assert minutos[:7] == [0, 2, 7, 17, 32, 62, 92]
+    assert len(minutos) >= 15
     textos = [m for _, k, _, m in ambiente.banco.alertas if k == "acao"]
     assert len(textos) == len(minutos) and not any("desisti " in t for t in textos)
     # canal: as 3 primeiras e uma a cada 6 (o resto fica so na linha do tempo)
@@ -435,7 +434,33 @@ def test_guardiao_nunca_desiste(ambiente, partidas):
 def test_texto_da_falha_diz_quando_tenta_de_novo(ambiente, partidas):
     partidas.resposta[0] = (False, "nao subiu (Stopped)")
     msgs = ambiente.ciclo(**boot(700))
-    assert any("(1a tentativa;" in m and "tento de novo em 10 min, sem desistir" in m for m in msgs)
+    assert any("(1a tentativa;" in m and "tento de novo em 2 min, sem desistir" in m for m in msgs)
+
+
+def test_host_que_nao_respondeu_repete_no_ciclo_seguinte(ambiente, partidas):
+    # .188, 16/10 11:13: ReadTimeout do WinRM contou como tentativa e a proxima
+    # ficou para dali a 10 min
+    partidas.resposta[0] = (False, "sem resposta do host: ReadTimeout: read timeout=30")
+    ambiente.ciclo(**boot(700))
+    assert ("acao", "svc:RM.Host.Service") not in kinds(ambiente.banco)
+    partidas.resposta[0] = (True, "subiu")
+    ambiente.passar(1 / 60)
+    msgs = ambiente.ciclo(**boot(760))
+    assert partidas.chamadas == ["RM.Host.Service"] * 2
+    assert any("(1a tentativa;" in m and m.endswith(": subiu") for m in msgs)
+
+
+def test_servico_em_transicao_espera_e_preso_e_reiniciado(ambiente, partidas):
+    parando = ok(uptime_sec=5 * HORA, services=[
+        {"name": "Elastic Agent", "status": "StopPending", "src": "agente", "start": "Auto"}])
+    ambiente.ciclo(**parando)
+    ambiente.passar(4 / 60)
+    ambiente.ciclo(**parando)
+    assert partidas.chamadas == []           # deixa o Windows terminar de parar
+    ambiente.passar(2 / 60)
+    msgs = ambiente.ciclo(**parando)
+    assert partidas.chamadas == ["restart:Elastic Agent"]
+    assert any("reiniciando Elastic Agent sozinho (1a tentativa; preso em StopPending desde" in m for m in msgs)
 
 
 def test_partida_desligada_so_avisa(ambiente, partidas):
@@ -473,8 +498,8 @@ def test_todos_do_host_vao_numa_chamada_so(ambiente, partidas):
         {"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto"},
         {"name": "RM.Host.Service1", "status": "StartPending", "src": "auto", "start": "Auto"},
         {"name": "Elastic Agent", "status": "Stopped", "src": "agente", "start": "Auto"}]))
-    assert partidas.lotes == [[("start", "RM.Host.Service"), ("start", "RM.Host.Service1"),
-                               ("start", "Elastic Agent")]]
+    # o que ja esta subindo (StartPending) e deixado assentar
+    assert partidas.lotes == [[("start", "RM.Host.Service"), ("start", "Elastic Agent")]]
 
 
 def test_sem_partida_automatica_durante_manutencao(ambiente, partidas):
@@ -514,8 +539,8 @@ def test_agente_que_nao_sobe_segue_sendo_tentado(ambiente, partidas):
     for i in range(12):
         ambiente.ciclo(**com_agente(5 * HORA + i * 600))
         ambiente.passar(10 / 60)
-    # minutos 0, 10, 30, 60, 90: nada de parar na 3a
-    assert partidas.chamadas == ["Elastic Agent"] * 5
+    # minutos 0, 10, 20, 30, 50, 80, 110: nada de parar na 3a
+    assert partidas.chamadas == ["Elastic Agent"] * 7
 
 
 def test_agente_mudo_para_o_elastic_e_reiniciado(ambiente, partidas, monkeypatch):
@@ -526,8 +551,8 @@ def test_agente_mudo_para_o_elastic_e_reiniciado(ambiente, partidas, monkeypatch
     assert any("reiniciando Elastic Agent sozinho (1a tentativa; no ar, mas sem mandar dados" in m
                for m in msgs)
     assert ("acao", "PADRAO:elastic") in kinds(ambiente.banco)
-    ambiente.passar(5 / 60)
-    ambiente.ciclo(**com_agente(5 * HORA + 300, "Running"))
+    ambiente.passar(1 / 60)
+    ambiente.ciclo(**com_agente(5 * HORA + 60, "Running"))
     assert len(partidas.chamadas) == 1       # espera o intervalo antes de tentar de novo
 
 
@@ -568,4 +593,5 @@ def test_subir_servicos_winrm_fora_vira_falha_de_todos(monkeypatch):
     monkeypatch.setattr(collector, "credential_for", lambda cred: ("u", "p"))
     r = collector.subir_servicos(ServerConfig(name="x", host="h"), WinRMConfig(), [("start", "A"), ("start", "B")],
                                  allowed=["A", "B"])
-    assert r == {"A": (False, "WinRMOperationTimeoutError: "), "B": (False, "WinRMOperationTimeoutError: ")}
+    assert r == {"A": (False, "sem resposta do host: WinRMOperationTimeoutError: "),
+                 "B": (False, "sem resposta do host: WinRMOperationTimeoutError: ")}
