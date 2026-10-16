@@ -579,7 +579,7 @@ def test_subir_servicos_le_o_estado_de_cada_um(monkeypatch):
     assert r["Elastic Agent"] == (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
     assert r["Outro"][0] is False and "nao monitorado" in r["Outro"][1]
     assert r["x'; Stop-Computer"][0] is False             # nome fora do padrao nao chega ao script
-    assert len(scripts) == 1 and "@('restart', 'Elastic Agent')" in scripts[0]
+    assert len(scripts) == 1 and "[void]$itens.Add(@('restart', 'Elastic Agent'))" in scripts[0]
     assert "Stop-Computer" not in scripts[0] and "Start-Service" not in scripts[0]
 
 

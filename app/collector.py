@@ -639,7 +639,10 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
 # por todos e devolve o estado de cada um com o motivo do Windows quando nao
 # subiu (eventos do SCM: 7000/7009 estourou o tempo, 7023/7024 erro...).
 _PS_SUBIR = r"""
-$itens = @(__ITENS__)
+# ArrayList e nao @(@(..)): com UM item so, o PowerShell achata a lista e
+# $i[1] vira a 2a letra do nome (o guardiao do .188 em 16/10, "nao subiu (?)")
+$itens = New-Object System.Collections.ArrayList
+__ITENS__
 $t0 = Get-Date
 foreach ($i in $itens) {
     if ($i[0] -ne 'restart') { continue }
@@ -707,7 +710,7 @@ def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str,
     user, pw = credential_for(server.cred)
     if not user or not pw:
         return {**out, **{n: (False, f"sem credencial (perfil '{server.cred}')") for _, n in validos}}
-    lista = ", ".join(f"@({_ps_str(a)}, {_ps_str(n)})" for a, n in validos)
+    lista = "\n".join(f"[void]$itens.Add(@({_ps_str(a)}, {_ps_str(n)}))" for a, n in validos)
     script = _PS_SUBIR.replace("__ITENS__", lista).replace("__ESPERA__", str(int(espera_s)))
     try:
         # 2 tentativas: o WinRM dos app servers engasga 30 s+ de vez em quando
