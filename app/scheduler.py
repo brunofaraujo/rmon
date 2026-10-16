@@ -820,20 +820,20 @@ def _fechar_manutencao(nome: str, host: str, janela: dict, agora: float) -> None
 # Camada de seguranca do RDP (RDP-Tcp\SecurityLayer) e NLA, para o texto.
 _SECURITY_LAYER = {0: "RDP nativo, sem TLS", 1: "Negociar", 2: "TLS"}
 _NLA = {0: "desligada", 1: "ligada"}
+_CRIPTO = {1: "Baixo", 2: "Compativel com o cliente", 3: "Alto", 4: "FIPS"}
 # Agente do Elastic calado ha mais que isso (a consulta de batimento olha 15 min)
 _ELASTIC_MUDO_S = 15 * 60
 
 
-def _texto_nao_releu(n: dict) -> str:
-    sl = n.get("security_layer")
-    no_ar = n.get("rdp_servico_min")
-    desde = ""
-    if isinstance(no_ar, int):
-        desde = (f" (no ar ha {no_ar // 1440} dia(s))" if no_ar >= 1440 else f" (no ar ha {no_ar} min)")
-    return (f"o registro ja diz SecurityLayer do RDP = {sl} ({_SECURITY_LAYER.get(sl, '?')}), mas o RDP "
-            f"deste no ainda recusa TLS (testado na porta 3389): o servico de RDP{desde} nao releu a "
-            "troca feita no registro. Para valer: reaplicar pelo WMI (Win32_TSGeneralSetting, "
-            "SetSecurityLayer) ou reiniciar o servico de Area de Trabalho Remota fora do horario")
+def _texto_tls_recusado(n: dict) -> str:
+    sl, cripto = n.get("security_layer"), n.get("min_encryption")
+    texto = (f"o SecurityLayer do RDP ja e {sl} ({_SECURITY_LAYER.get(sl, '?')}), mas o RDP deste no "
+             "recusa TLS (testado na porta 3389)")
+    if cripto == 1:
+        return texto + (": o nivel de criptografia do RDP e 1 (Baixo), e com ele o Windows so oferece o "
+                        "RDP nativo. Subir para 2 (Compativel com o cliente), como nos outros nos: WMI "
+                        "Win32_TSGeneralSetting, SetEncryptionLevel(2) - vale na hora, sem derrubar sessao")
+    return texto + ": conferir o nivel de criptografia e o certificado do RDP deste no"
 
 
 def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = None,
@@ -848,8 +848,8 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
     notifica uma vez e fica na tela ate ser corrigida):
 
     * nos do NLB, por cluster: SecurityLayer e NLA do RDP diferentes da maioria;
-      SecurityLayer certo no registro mas o RDP ainda recusando TLS (servico
-      nao releu a troca - o .188 em 15-16/10);
+      criptografia do RDP diferente; SecurityLayer certo mas o RDP recusando TLS
+      na porta 3389 (o .188 em 15-16/10: criptografia 1, Baixa);
       no ativo no NLB que nao grava o 1149 ha 7 dias enquanto um par gravou nas
       ultimas 24h (fim de semana sem logon em nenhum no nao acusa ninguem);
     * Elastic ligado: agente de um servidor calado enquanto os outros mandam
@@ -870,7 +870,8 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
         if len(nos) < 2:
             continue
         for campo, rotulo, explica in (("security_layer", "SecurityLayer do RDP", _SECURITY_LAYER),
-                                       ("nla", "NLA do RDP", _NLA)):
+                                       ("nla", "NLA do RDP", _NLA),
+                                       ("min_encryption", "Criptografia do RDP", _CRIPTO)):
             valores = [n.get(campo) for _, n in nos if n.get(campo) is not None]
             if len(valores) < 2:
                 continue
@@ -886,11 +887,12 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                     marcar(nome, f"PADRAO:{campo}",
                            f"{rotulo} = {v} ({explica.get(v, '?')}), diferente dos outros nos do "
                            f"cluster {cluster} ({maioria}, {explica.get(maioria, '?')})")
-        # Registro ja no padrao, mas o servico de RDP rodando com o valor antigo
-        # (troca direto no registro, sem o servico reler): conta como fora.
+        # SecurityLayer certo, mas o RDP recusando TLS de verdade na porta: conta
+        # como fora (a criptografia diferente vai junto, num aviso so).
         for nome, n in nos:
             if n.get("security_layer") in (1, 2) and n.get("rdp_tls") is False:
-                marcar(nome, "PADRAO:security_layer", _texto_nao_releu(n))
+                (out.get(nome) or {}).pop("PADRAO:min_encryption", None)
+                marcar(nome, "PADRAO:rdp_tls", _texto_tls_recusado(n))
         ativos = [(nome, n) for nome, n in nos if n.get("status") in nlb.ATIVOS]
         gravam = [nome for nome, n in ativos
                   if n.get("ultimo_1149_min") is not None and n["ultimo_1149_min"] <= 24 * 60]
@@ -902,9 +904,10 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                 texto = (f"nao grava o evento 1149 (RDP autenticado), que {', '.join(gravam)} grava: o "
                          "NLB nao consegue ver se este no autentica sem abrir sessao")
                 sl = n.get("security_layer")
+                tls = (out.get(nome) or {}).pop("PADRAO:rdp_tls", None)
                 causa = (out.get(nome) or {}).pop("PADRAO:security_layer", None)
-                if causa is not None and sl in (1, 2):
-                    texto += ". Causa: " + causa
+                if tls is not None:
+                    texto += ". Causa: " + tls
                 elif causa is not None:
                     texto += (f". Causa: SecurityLayer do RDP = {sl} "
                               f"({_SECURITY_LAYER.get(sl, '?')}); com 1 (Negociar), "

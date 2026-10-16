@@ -714,7 +714,8 @@ def _problema_label(chave: str) -> str:
         return "Broker " + chave[7:]
     if chave.startswith("PADRAO:"):
         return "Fora do padrao: " + {"security_layer": "SecurityLayer do RDP", "nla": "NLA do RDP",
-                                     "1149": "evento 1149", "elastic": "agente do Elastic"}.get(chave[7:], chave[7:])
+                                     "1149": "evento 1149", "elastic": "agente do Elastic",
+                                     "rdp_tls": "TLS do RDP", "min_encryption": "criptografia do RDP"}.get(chave[7:], chave[7:])
     if chave.startswith("jobrunner-kill:"):
         return "JobRunner encerrado (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner-crit:"):
