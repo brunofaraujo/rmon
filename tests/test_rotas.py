@@ -105,6 +105,29 @@ def test_linha_do_tempo_mostra_os_tipos_novos(app_falso):
     assert "JobRunner encerrado (PID 4242)" in html
 
 
+def test_servico_que_nao_subiu_apos_o_reboot_aparece_na_tela(app_falso):
+    # rh-web-248, 15/10/2026: RM.Host.Service parado desde o boot do Windows Update
+    boot = int(AGORA - 3600)
+    app_falso.estado.coletas = [coleta(uptime_sec=3600, services=[
+        {"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto",
+         "nao_subiu": boot}])]
+    app_falso.entrar()
+    marca = "nao subiu apos o reboot de " + manutencao.hora(boot)
+    assert marca in app_falso.c.get("/server/app-34").text
+    assert "nao subiu apos o reboot" in app_falso.c.get("/").text
+    main._TV_CACHE.update(ts=0.0, data=None)
+    assert marca in app_falso.c.get("/tv").text
+
+
+def test_admin_guarda_a_partida_pos_boot(app_falso):
+    app_falso.entrar()
+    assert 'name="boot_iniciar_min"' in app_falso.c.get("/admin").text
+    app_falso.c.post("/admin/config", data={"boot_iniciar_min": "10", "boot_janela_min": "45"},
+                     follow_redirects=False)
+    alerts = app_falso.estado.config["alerts"]
+    assert alerts["boot_iniciar_min"] == 10 and alerts["boot_janela_min"] == 45
+
+
 def test_admin_tem_os_limiares_novos(app_falso):
     app_falso.entrar()
     html = app_falso.c.get("/admin").text

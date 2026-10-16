@@ -57,6 +57,11 @@ class Banco:
         self.alertas.append((server, kind, problem, message))
         self.ts.append(self.relogio[0])
 
+    def ultima_acao(self, server, problem):
+        tss = [ts for (s, k, p, _), ts in zip(self.alertas, self.ts)
+               if s == server and p == problem and k == "acao"]
+        return max(tss) if tss else None
+
     def insert_check(self, server, result):
         self.checks.setdefault(server, []).insert(0, bool(result.get("reachable")))
 
@@ -84,7 +89,7 @@ def ambiente(monkeypatch):
     # vez de ficar esperando um PostgreSQL que nao existe
     monkeypatch.setattr(db, "_conn", _sem_banco_de_verdade)
     for nome in ("open_alerts", "open_alerts_tempos", "record_alert", "insert_check",
-                 "fail_streak", "get_config", "set_config"):
+                 "fail_streak", "get_config", "set_config", "ultima_acao"):
         monkeypatch.setattr(db, nome, getattr(banco, nome))
     monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
     monkeypatch.setattr(db, "broker_estado", lambda dias=1: {})
@@ -107,6 +112,8 @@ def ambiente(monkeypatch):
         monkeypatch.setattr(scheduler, "_last", {})
         monkeypatch.setattr(scheduler, "_desde", {})
         monkeypatch.setattr(scheduler, "_avisado", {})
+        monkeypatch.setattr(scheduler, "_tentado", {})
+        monkeypatch.setattr(scheduler, "_boot", {})
         monkeypatch.setattr(scheduler, "_restaurado", False)
 
     def ciclo(**r):
@@ -357,3 +364,82 @@ def test_elastic_sem_resposta_nao_resolve_agente_parado(ambiente, monkeypatch):
     assert ambiente.ciclo(**ok()) == []
     vistos.update({"h34": ambiente.relogio[0], "outro": ambiente.relogio[0]})
     assert "resolvido" in ambiente.ciclo(**ok())[0]
+
+
+# ------------------------------------------------------------ servico que nao subiu no boot
+
+def boot(uptime, status="Stopped"):
+    """O rh-web-248 depois do reboot do Windows Update de 15/10/2026."""
+    return ok(uptime_sec=uptime, services=[
+        {"name": "RM.Host.Service", "status": status, "src": "auto", "start": "Auto"}])
+
+
+@pytest.fixture
+def partidas(monkeypatch):
+    chamadas: list[str] = []
+    resposta = [(True, "start")]
+
+    def falso(server, wc, nome, acao="restart", allowed=None):
+        assert acao == "start" and nome in (allowed or [])
+        chamadas.append(nome)
+        return resposta[0]
+    monkeypatch.setattr(scheduler, "service_action", falso)
+    return SimpleNamespace(chamadas=chamadas, resposta=resposta)
+
+
+def test_incidente_248_alerta_diz_que_nao_subiu_apos_o_reboot(ambiente, partidas):
+    msgs = ambiente.ciclo(**boot(228))
+    assert len(msgs) == 1 and "nao subiu apos o reboot de" in msgs[0]
+    ambiente.passar(4.1)
+    lembrete = ambiente.ciclo(**boot(228 + 4.1 * HORA))
+    assert "segue aberto ha 4h" in lembrete[0] and "nao subiu apos o reboot" in lembrete[0]
+    assert partidas.chamadas == []           # partida automatica vem desligada
+
+
+def test_partida_automatica_tenta_uma_vez_por_boot(ambiente, partidas):
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+    ambiente.ciclo(**boot(228))
+    assert partidas.chamadas == []           # cedo demais: o boot ainda esta assentando
+    ambiente.passar(0.15)
+    msgs = ambiente.ciclo(**boot(228 + 540))
+    assert partidas.chamadas == ["RM.Host.Service"]
+    assert any("tentativa automatica de iniciar RM.Host.Service" in m for m in msgs)
+    assert ("acao", "svc:RM.Host.Service") in kinds(ambiente.banco)
+    ambiente.passar(0.02)
+    ambiente.ciclo(**boot(228 + 600))
+    ambiente.reiniciar()                     # deploy do RMon no meio: nao tenta de novo
+    ambiente.ciclo(**boot(228 + 700))
+    assert partidas.chamadas == ["RM.Host.Service"]
+
+
+def test_partida_que_falha_fica_registrada_e_nao_repete(ambiente, partidas):
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+    partidas.resposta[0] = (False, "Service cannot be started")
+    msgs = ambiente.ciclo(**boot(700))
+    assert "falhou: Service cannot be started" in msgs[0] + "".join(msgs)
+    ambiente.passar(0.5)
+    ambiente.ciclo(**boot(700 + 1800))
+    assert partidas.chamadas == ["RM.Host.Service"]
+
+
+def test_novo_boot_ganha_nova_tentativa(ambiente, partidas):
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+    ambiente.ciclo(**boot(700))
+    ambiente.passar(2)
+    ambiente.ciclo(**boot(700))              # reiniciou de novo e o servico segue parado
+    assert partidas.chamadas == ["RM.Host.Service", "RM.Host.Service"]
+
+
+def test_servico_que_caiu_longe_do_boot_nao_e_iniciado_sozinho(ambiente, partidas):
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+    ambiente.ciclo(**boot(5 * HORA, status="Running"))
+    msgs = ambiente.ciclo(**boot(5 * HORA + 60))
+    assert partidas.chamadas == [] and "reboot" not in msgs[0]
+
+
+def test_sem_partida_automatica_durante_manutencao(ambiente, partidas):
+    from app import manutencao
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+    manutencao.iniciar("app-34", 120, "reboot planejado", "bruno", agora=ambiente.relogio[0])
+    ambiente.ciclo(**boot(700))
+    assert partidas.chamadas == []

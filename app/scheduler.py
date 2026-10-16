@@ -11,7 +11,7 @@ from typing import Iterable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
-from .collector import collect_server
+from .collector import collect_server, service_action
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
@@ -28,6 +28,10 @@ _restaurado = False
 # vez (o 'raised' ou o lembrete). Restaurados junto com _last.
 _desde: dict[str, dict[str, float]] = {}
 _avisado: dict[str, dict[str, float]] = {}
+# Ultima partida automatica pos-boot de cada (servidor, problema): uma por boot
+_tentado: dict[tuple[str, str], float] = {}
+# Boot de cada servidor visto no ciclo anterior (epoch), para a hora nao oscilar
+_boot: dict[str, float] = {}
 
 
 def _agora() -> float:
@@ -57,7 +61,13 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # critico ainda aberto e lembrado a cada tantas horas (0 desliga)
                   "lembrete_h": 4,
                   # hora do resumo diario dos alertas (-1 desliga)
-                  "resumo_hora": 8}
+                  "resumo_hora": 8,
+                  # servico automatico parado cujo alerta abriu ate tantos min
+                  # depois do boot "nao subiu apos o reboot" (ver marcar_pos_boot)
+                  "boot_janela_min": 30,
+                  # tentar UMA vez iniciar esse servico, tantos min apos o boot
+                  # (0 desliga - o padrao: so avisa)
+                  "boot_iniciar_min": 0}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -231,6 +241,55 @@ def service_groups(services: list[dict] | None) -> list[dict]:
     return sorted(saida, key=lambda g: g["family"].lower())
 
 
+def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: float,
+                    boot_anterior: float | None = None) -> float | None:
+    """Marca na coleta (`nao_subiu` = epoch do boot) o servico automatico que
+    nao subiu depois do reboot.
+
+    rh-web-248, 15/10/2026: o Windows Update reiniciou o host e, no boot, o
+    RM.Host.Service estourou os 30 s que o Windows da para um servico partir.
+    A recuperacao do servico (reiniciar) so age quando ele trava depois de
+    rodar, nunca em falha de partida - entao ficou parado a noite toda, e o
+    alerta dizia so "= Stopped".
+
+    Conta como "nao subiu" o servico com inicio automatico, fora do ar, cujo
+    alerta abriu antes do boot ou ate `janela_s` depois dele (`desde`, o
+    'raised' de cada problema; quem nao tem alerta ainda abre agora). O que
+    caiu horas depois do boot e outra historia e fica sem a marca. A marca vai
+    gravada com a coleta para painel, mural e alerta dizerem a mesma coisa.
+
+    O uptime e lido no inicio da coleta e `agora` vem no fim do ciclo, entao a
+    conta oscila alguns segundos. Com `boot_anterior` a menos de 5 min, vale o
+    anterior: senao o "18:24" do alerta viraria "18:25" no ciclo seguinte.
+    Devolve o boot usado (None sem contato ou sem uptime).
+    """
+    up = r.get("uptime_sec")
+    if not r.get("reachable") or up is None:
+        return None
+    try:
+        boot = agora - float(up)
+    except (TypeError, ValueError):
+        return None
+    if boot_anterior is not None and abs(boot - boot_anterior) < 300:
+        boot = boot_anterior
+    servicos = []
+    for s in r.get("services") or []:
+        automatico = str(s.get("start") or "").strip().lower().startswith("auto")
+        if (automatico and service_down(s)
+                and desde.get(f"svc:{s.get('name')}", agora) <= boot + janela_s):
+            s = {**s, "nao_subiu": int(boot)}
+        servicos.append(s)
+    r["services"] = servicos
+    return boot
+
+
+def texto_servico(s: dict) -> str:
+    texto = f"servico {s['name']} = {s.get('status')}"
+    if s.get("nao_subiu"):
+        texto += f" (inicio automatico: nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])})"
+    return texto
+
+
 def problems(r: dict, th: dict, fail_streak: int | None = None,
              broker_ref: dict[str, int] | None = None,
              broker_estavel: dict[str, bool] | None = None,
@@ -261,7 +320,7 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         return p
     for s in r.get("services") or []:
         if service_down(s):
-            p[f"svc:{s['name']}"] = f"servico {s['name']} = {s.get('status')}"
+            p[f"svc:{s['name']}"] = texto_servico(s)
     if r.get("app_ok") is False:
         p["APP"] = "app_health (HTTP) falhou"
     mem = r.get("mem_pct")
@@ -284,6 +343,55 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
     if isinstance(r.get("padrao"), dict):
         p.update({k: str(v) for k, v in r["padrao"].items() if str(k).startswith("PADRAO:")})
     return p
+
+
+def _minutos(th: dict, chave: str) -> float:
+    try:
+        return max(0.0, float(th.get(chave) or 0))
+    except (TypeError, ValueError):
+        return float(DEFAULT_ALERTS[chave])
+
+
+def _ja_tentou(nome: str, chave: str, boot: float) -> bool:
+    """Ja houve partida automatica deste servico depois deste boot?"""
+    t = _tentado.get((nome, chave))
+    if t is None:
+        try:
+            t = db.ultima_acao(nome, chave)
+        except Exception:  # noqa: BLE001 - sem banco, melhor nao tentar
+            log.exception("partida pos-boot: sem como saber se %s/%s ja foi tentado", nome, chave)
+            return True
+        if t is not None:
+            _tentado[(nome, chave)] = t
+    return t is not None and t >= boot
+
+
+def iniciar_pos_boot(server, inv: Inventory, r: dict, apos_s: float, agora: float) -> list[str]:
+    """Tenta UMA vez por boot iniciar o servico marcado por marcar_pos_boot.
+
+    Desligado com `boot_iniciar_min` = 0 (o padrao). Espera tantos minutos de
+    uptime para o boot assentar: no .248 o que estourou o tempo foi o boot
+    pesado depois da atualizacao, e o mesmo Start-Service no meio dele
+    falharia igual. Uma tentativa so, registrada como 'acao' na linha do
+    tempo - se nao subir, o alerta continua aberto e alguem precisa olhar.
+    """
+    if apos_s <= 0 or not r.get("reachable") or float(r.get("uptime_sec") or 0) < apos_s:
+        return []
+    vistos = [s.get("name") for s in r.get("services") or [] if s.get("name")]
+    msgs = []
+    for s in r.get("services") or []:
+        boot = s.get("nao_subiu")
+        chave = f"svc:{s.get('name')}"
+        if not boot or _ja_tentou(server.name, chave, boot):
+            continue
+        _tentado[(server.name, chave)] = agora
+        ok, retorno = service_action(server, inv.winrm, s["name"], "start", allowed=vistos)
+        texto = (f"tentativa automatica de iniciar {s['name']} (nao subiu apos o reboot de "
+                 f"{manutencao.hora(boot)}): " + ("comando aceito" if ok else f"falhou: {retorno}"))
+        db.record_alert(server.name, "acao", chave, texto)
+        log.info("partida pos-boot %s/%s -> %s (%s)", server.name, s["name"], ok, retorno)
+        msgs.append("🔧 " + texto)
+    return msgs
 
 
 def _gb_limiar(th: dict, chave: str) -> float:
@@ -807,6 +915,12 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         fontes.registrar_padrao({s.name: r["padrao"] for s, r in coletas})
         for server, result in coletas:
             _identificar_jobrunners(result.get("jobrunners"), th)
+        janela_boot = _minutos(th, "boot_janela_min") * 60
+        for server, result in coletas:
+            boot = marcar_pos_boot(result, _desde.get(server.name) or {}, _agora(), janela_boot,
+                                   _boot.get(server.name))
+            if boot is not None:
+                _boot[server.name] = boot
 
         for server, result in coletas:
             db.insert_check(server.name, result)
@@ -865,6 +979,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 db.record_alert(nome, "reminder", k, f"segue aberto ha {aberto}: {atual[k]}")
                 avisado[k] = agora
                 msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
+            msgs += iniciar_pos_boot(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora)
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
 
