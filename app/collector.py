@@ -225,20 +225,16 @@ if (__NLB__) {
     # Padronizacao entre os nos (scheduler.padrao_cluster): a camada de seguranca
     # do RDP decide se o 1149 e gravado - com SecurityLayer=0 (RDP nativo) o
     # Windows nao grava, e o no fica sem o sinal "autentica sem abrir sessao".
-    $nlb.security_layer = $null; $nlb.nla = $null; $nlb.ultimo_1149_min = $null
+    $nlb.security_layer = $null; $nlb.nla = $null; $nlb.min_encryption = $null; $nlb.ultimo_1149_min = $null
     try {
         $rdpTcp = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop
         $nlb.security_layer = $rdpTcp.SecurityLayer; $nlb.nla = $rdpTcp.UserAuthentication
+        # Criptografia 1 (Baixa) faz o RDP so oferecer o modo nativo, sem TLS,
+        # mesmo com SecurityLayer=1: era isso no .188 (16/10)
+        $nlb.min_encryption = $rdpTcp.MinEncryptionLevel
     } catch { }
     $u1149 = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'; Id = 1149 } -MaxEvents 1 -ErrorAction SilentlyContinue
     if ($u1149) { $nlb.ultimo_1149_min = [int]((Get-Date) - $u1149.TimeCreated).TotalMinutes }
-    # Ha quanto tempo o servico de RDP esta no ar: troca feita direto no
-    # registro so vale quando ele rele a configuracao (o .188 em 15-16/10).
-    $nlb.rdp_servico_min = $null
-    try {
-        $tsvc = Get-CimInstance Win32_Service -Filter "Name='TermService'" -ErrorAction Stop
-        $nlb.rdp_servico_min = [int]((Get-Date) - (Get-Process -Id $tsvc.ProcessId -ErrorAction Stop).StartTime).TotalMinutes
-    } catch { }
     $nlb = [pscustomobject]$nlb
 }
 [pscustomobject]@{
@@ -769,8 +765,8 @@ def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool
 
 # Negociacao do RDP (X.224 Connection Request + RDP_NEG_REQ pedindo TLS): o que
 # o servico de RDP do no aceita DE VERDADE, nao o que o registro diz. O .188
-# ficou com SecurityLayer=1 no registro desde 15/10 e continuou recusando TLS
-# (o servico, no ar desde 08/10, nao releu a chave) - e o 1149 nao vinha.
+# ficou com SecurityLayer=1 desde 15/10 e continuou recusando TLS (nem o
+# reboot resolveu: era a criptografia em 1, Baixa) - e o 1149 nao vinha.
 _RDP_NEG_TLS = struct.pack(">BBH", 3, 0, 19) + bytes([14, 0xE0, 0, 0, 0, 0, 0]) + struct.pack("<BBHI", 1, 0, 8, 1)
 # Cada teste e uma conexao no listener (evento 261 num log circular de 1 MB):
 # basta de hora em hora, ou logo que o registro mudar.

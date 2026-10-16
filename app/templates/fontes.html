@@ -44,7 +44,7 @@
           <td class="{{ 'txt-red' if n.rdp_tls == false and n.security_layer in (1, 2) else '' }}">
             {% if n.rdp_tls is none or n.rdp_tls is not defined %}<span class="faint">-</span>
             {% elif n.rdp_tls %}aceita
-            {% else %}<b>recusa</b>{% if n.security_layer in (1, 2) %} <span class="small">(servico de RDP nao releu o registro)</span>{% endif %}{% endif %}</td>
+            {% else %}<b>recusa</b>{% if n.min_encryption == 1 %} <span class="small">(criptografia 1, Baixo: so RDP nativo)</span>{% endif %}{% endif %}</td>
           <td class="{{ 'txt-red' if 'PADRAO:nla' in fora else '' }}">{% if n.nla is none %}<span class="faint">-</span>{% else %}{{ 'ligada' if n.nla == 1 else 'desligada' }}{% endif %}</td>
           <td class="{{ 'txt-red' if 'PADRAO:1149' in fora else '' }}">
             {% if 'ultimo_1149_min' not in n %}<span class="faint">aguardando coleta</span>

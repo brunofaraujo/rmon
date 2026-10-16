@@ -42,22 +42,28 @@ def test_188_ja_corrigido_sem_teste_da_porta():
     assert "ainda nao conseguiu testar" in texto and "some sozinho" not in texto
 
 
-def test_188_registro_trocado_mas_rdp_nao_releu():
-    # 16/10: SecurityLayer=1 no registro desde a vespera, 248 conexoes e nenhum
-    # 1149 - o servico de RDP (no ar desde 08/10) seguia recusando TLS
-    p = scheduler.padrao_cluster([no("app-34", rdp_tls=True),
-                                  no("app-188", u1149=None, rdp_tls=False, rdp_servico_min=8 * 1440 + 30),
-                                  no("app-190", u1149=40, rdp_tls=True)])
+def test_188_tls_recusado_pela_criptografia_baixa():
+    # 16/10: SecurityLayer=1 desde a vespera, 248 conexoes e nenhum 1149; nem o
+    # reboot resolveu - a criptografia 1 (Baixa) deixava so o RDP nativo
+    p = scheduler.padrao_cluster([no("app-34", rdp_tls=True, min_encryption=2),
+                                  no("app-188", u1149=None, rdp_tls=False, min_encryption=1),
+                                  no("app-190", u1149=40, rdp_tls=True, min_encryption=2)])
     assert set(p) == {"app-188"} and set(p["app-188"]) == {"PADRAO:1149"}
     texto = p["app-188"]["PADRAO:1149"]
-    assert "Causa: o registro ja diz SecurityLayer do RDP = 1 (Negociar)" in texto
-    assert "ainda recusa TLS" in texto and "no ar ha 8 dia(s)" in texto and "nao releu" in texto
+    assert "Causa: o SecurityLayer do RDP ja e 1 (Negociar), mas o RDP deste no recusa TLS" in texto
+    assert "criptografia do RDP e 1 (Baixo)" in texto and "SetEncryptionLevel(2)" in texto
     assert "some sozinho" not in texto
 
 
-def test_registro_trocado_sem_releitura_acusa_mesmo_gravando_1149():
+def test_criptografia_diferente_sem_tls_recusado():
+    p = scheduler.padrao_cluster([no("a", min_encryption=2), no("b", min_encryption=1), no("c", min_encryption=2)])
+    assert set(p) == {"b"} and "Criptografia do RDP = 1 (Baixo)" in p["b"]["PADRAO:min_encryption"]
+
+
+def test_tls_recusado_acusa_mesmo_gravando_1149():
     p = scheduler.padrao_cluster([no("a", rdp_tls=True), no("b", rdp_tls=False), no("c")])
-    assert set(p) == {"b"} and "ainda recusa TLS" in p["b"]["PADRAO:security_layer"]
+    assert set(p) == {"b"} and "recusa TLS" in p["b"]["PADRAO:rdp_tls"]
+    assert "certificado" in p["b"]["PADRAO:rdp_tls"]
 
 
 def test_corrigido_e_em_vigor_aguarda_o_primeiro_logon():
@@ -142,12 +148,12 @@ def test_pagina_mostra_tls_recusado(app_falso):  # noqa: F811
     srv = main.STATE["inv"].servers[0]
     srv.nlb = True
     app_falso.estado.coletas = [coleta(nlb={"status": 1008, "cluster": "vip", "security_layer": 1, "nla": 0,
-                                            "ultimo_1149_min": None, "rdp_tls": False},
+                                            "ultimo_1149_min": None, "rdp_tls": False, "min_encryption": 1},
                                        padrao={"PADRAO:1149": "nao grava o evento 1149"})]
     app_falso.entrar()
     html = app_falso.c.get("/fontes").text
     assert "TLS em vigor (porta 3389)" in html
-    assert "<b>recusa</b> <span class=\"small\">(servico de RDP nao releu o registro)</span>" in html
+    assert "<b>recusa</b> <span class=\"small\">(criptografia 1, Baixo: so RDP nativo)</span>" in html
 
 
 class _Sock:
