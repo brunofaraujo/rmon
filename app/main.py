@@ -19,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb,
-               notify, packages, scheduler)
+from . import (__version__, db, elastic, execution, fontes, incus, inventory, jobstats, manutencao,
+               nlb, notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -692,6 +692,9 @@ PROBLEMA_LABEL = {
     # decisoes do NLB (alerts_log.kind = "nlb")
     "drain": "NLB: drenado", "rejoin": "NLB: reingressado",
     "drain_unreachable": "NLB: sem contato, drenado",
+    "reset_unreachable": "NLB: sem contato, VM reiniciada",
+    "would_reset": "NLB: reiniciaria a VM", "unreachable_crit": "NLB: sem contato, sem saida",
+    "unreachable_alive": "NLB: so o WinRM travou",
     "would_drain": "NLB: drenaria", "would_rejoin": "NLB: reingressaria",
     "blocked": "NLB: drenagem bloqueada", "unreachable_sick": "NLB: doente sem WinRM",
     "out_unowned": "NLB: fora do cluster", "recovered": "NLB: recuperado",
@@ -831,7 +834,8 @@ def nlb_page(request: Request):
     agora = time.time()
     coletas = {r["server"]: r for r in db.latest_per_server()}
     vistas = nlb.views_from(inv, coletas, agora)
-    estado = (nlb.load_state() or {}).get("nodes", {})
+    estado_nlb = nlb.load_state() or {}
+    estado = estado_nlb.get("nodes", {})
     em_manut = manutencao.ativas(agora)
     nos = []
     for v in vistas:
@@ -851,6 +855,7 @@ def nlb_page(request: Request):
     return templates.TemplateResponse(
         "nlb.html",
         {"request": request, "nos": nos, "cfg": cfg, "hist": hist[:80],
+         "incus": estado_nlb.get("incus"), "incus_on": incus.configurado(cfg),
          "flash": request.session.pop("nflash", None), "version": __version__})
 
 

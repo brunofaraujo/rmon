@@ -27,11 +27,13 @@ def no(nome, status=1007, users=10, auth=6, sess=6, commit=30.0, reach=True,
                        if jr is not None else None),
         "error": None if reach else "WinRMOperationTimeoutError",
     }
-    return nlb.view(nome, "10.0.0." + nome[-1], r, now)
+    return nlb.view(nome, "10.0.0." + nome[-1], r, now, incus_vm="vm-" + nome,
+                    es={"ok": True, "ts": now})
 
 
 def cfg(**kw):
-    return nlb.settings_for({"nlb": kw})
+    """Canal do Incus configurado por padrao; cada no e a VM "vm-<nome>"."""
+    return nlb.settings_for({"nlb": {"incus_ssh": "rmon-reset@hv", **kw}})
 
 
 def rodar(vistas, state, c, now):
@@ -357,21 +359,26 @@ def test_view_le_o_maior_jobrunner_da_medicao_jobrunners():
 
 
 # ------------------------------------------------------------- no sem contato (16/10)
-# .188 em 16/10: parou de responder ao WinRM as 10:01 e voltou ao NLB sozinho as
-# 10:05:58, sem estar pronto; ate 10:16 recebeu usuarios sem criar sessao nenhuma.
+# .188 em 16/10: parou de responder ao WinRM as 10:01 (o Elastic ficou mudo no
+# mesmo minuto) e voltou ao NLB sozinho as 10:05:58, sem estar pronto; ate 10:16
+# recebeu usuarios sem criar sessao nenhuma. Um vizinho nao consegue drena-lo no
+# Server 2016: a saida e reiniciar a VM pelo Incus.
 
-def mudo(nome, now=T0):
-    """Coleta que falhou: e assim que a vista de um no sem WinRM chega."""
+def mudo(nome, now=T0, es_ok=True, es_ts=None, vm=True):
+    """Coleta que falhou: e assim que a vista de um no sem WinRM chega.
+
+    Por padrao o Elastic respondeu e nao tem nada do host em 15 min."""
     return nlb.view(nome, "10.0.0." + nome[-1],
-                    {"reachable": False, "error": "WinRMOperationTimeoutError"}, now)
+                    {"reachable": False, "error": "WinRMOperationTimeoutError"}, now,
+                    incus_vm=("vm-" + nome) if vm else "", es={"ok": es_ok, "ts": es_ts})
 
 
-def ciclos_sem_contato(c, st, inicio, n, alvo="n1"):
+def ciclos_sem_contato(c, st, inicio, n, alvo="n1", **kw):
     """`n` coletas seguidas com `alvo` mudo e os outros dois saudaveis."""
     d = []
     for i in range(n):
         t = inicio + i * MIN
-        vistas = [mudo(alvo, t) if x == alvo else no(x, users=17, sess=8, now=t)
+        vistas = [mudo(alvo, t, **kw) if x == alvo else no(x, users=17, sess=8, now=t)
                   for x in ("n1", "n2", "n3")]
         d, st = rodar(vistas, st, c, t)
         if i < n - 1:
@@ -379,44 +386,104 @@ def ciclos_sem_contato(c, st, inicio, n, alvo="n1"):
     return d, st
 
 
-def test_sem_contato_drena_pelo_vizinho_na_terceira_coleta():
+def conhecido(c):
+    """Uma coleta boa antes: o RMon sabe o cluster e viu o host no Elastic em T0."""
+    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
+    return st
+
+
+def test_sem_contato_e_elastic_mudo_reinicia_a_vm_na_terceira_coleta():
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)        # sabe que n1 e o host 1
-    d, st = ciclos_sem_contato(c, st, T0 + MIN, 3)
-    assert kinds(d) == ["drain_unreachable"] and d[0]["action"] == "drain_remote"
-    assert d[0]["server"] == "n1" and d[0]["target"] == "vip:1"
-    assert d[0]["relays"] == ["n2", "n3"]
-    assert "sem contato" in d[0]["msg"] and d[0]["notify"]
+    d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
+    assert kinds(d) == ["reset_unreachable"] and d[0]["action"] == "reset"
+    assert d[0]["server"] == "n1" and d[0]["vm"] == "vm-n1" and d[0]["notify"]
+    assert "sem contato" in d[0]["msg"] and "nada ha 3min" in d[0]["msg"]
 
 
 def test_sem_contato_respeita_a_janela_configurada():
     c = cfg(mode="auto", unreachable_cycles=5)
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d, _ = ciclos_sem_contato(c, st, T0 + MIN, 5)
-    assert kinds(d) == ["drain_unreachable"]
+    d, _ = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 5)
+    assert kinds(d) == ["reset_unreachable"]
+
+
+def test_elastic_ainda_recebendo_dados_nao_reinicia():
+    """So o WinRM travou (engasgo do WinRM nos app servers RM): o Windows esta de pe."""
+    c = cfg(mode="auto")
+    st = conhecido(c)
+    d = []
+    for i in range(4):
+        t = T0 + (i + 1) * MIN
+        d_i, st = rodar([mudo("n1", t, es_ts=t - 20)] + saudaveis(t), st, c, t)
+        d += d_i
+    assert kinds(d) == ["unreachable_alive"] and d[0]["action"] is None
+    assert "so o WinRM travou" in d[0]["msg"]
+
+
+def test_elastic_fora_do_ar_nao_autoriza_reset():
+    c = cfg(mode="auto")
+    d, _ = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3, es_ok=False)
+    assert kinds(d) == ["unreachable_crit"] and d[0]["action"] is None
+    assert "sem a confirmacao do Elastic" in d[0]["msg"]
+
+
+def test_host_que_o_elastic_nunca_viu_nao_e_reiniciado():
+    """Nome errado no Elastic ou agente nunca instalado: "sem dados" nao prova nada."""
+    c = cfg(mode="auto")
+    st = {"nodes": {"n1": {"last_status": 1007, "cluster": "vip", "host_id": 1}}}
+    d, _ = ciclos_sem_contato(c, st, T0, 3)
+    assert kinds(d) == ["unreachable_crit"] and "nunca recebeu dados" in d[0]["msg"]
+
+
+def test_servidor_fisico_so_gera_alerta_critico():
+    """.34 (HPE fisico, iLO sem rede): nao ha como reinicia-lo."""
+    c = cfg(mode="auto")
+    d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3, vm=False)
+    assert kinds(d) == ["unreachable_crit"] and "servidor fisico" in d[0]["msg"]
+    t = T0 + 4 * MIN
+    d, _ = rodar([mudo("n1", t, vm=False)] + saudaveis(t), st, c, t)
+    assert d == []                                       # avisa uma vez por episodio
+
+
+def test_sem_canal_do_incus_so_gera_alerta_critico():
+    c = cfg(mode="auto", incus_ssh="")
+    d, _ = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
+    assert kinds(d) == ["unreachable_crit"] and "sem hypervisor" in d[0]["msg"]
+
+
+def test_limite_de_resets_por_dia():
+    c = cfg(mode="auto")
+    st = conhecido(c)
+    st["nodes"]["n1"]["resets"] = [T0 - 3600, T0 - 7200]
+    d, _ = ciclos_sem_contato(c, st, T0 + MIN, 3)
+    assert kinds(d) == ["unreachable_crit"] and "2x em 24h" in d[0]["msg"]
+    # reset de mais de 24h atras nao conta
+    st = conhecido(c)
+    st["nodes"]["n1"]["resets"] = [T0 - 90000]
+    d, _ = ciclos_sem_contato(c, st, T0 + MIN, 3)
+    assert kinds(d) == ["reset_unreachable"]
 
 
 def test_sem_contato_no_modo_alerta_so_avisa_uma_vez():
     c = cfg()
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d, st = ciclos_sem_contato(c, st, T0 + MIN, 3)
-    assert kinds(d) == ["would_drain"] and d[0]["action"] is None
-    assert "sem contato" in d[0]["msg"]
-    d, st = rodar([mudo("n1", T0 + 5 * MIN)] + saudaveis(T0 + 5 * MIN), st, c, T0 + 5 * MIN)
+    d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
+    assert kinds(d) == ["would_reset"] and d[0]["action"] is None
+    assert "reiniciaria a VM vm-n1" in d[0]["msg"]
+    t = T0 + 5 * MIN
+    d, st = rodar([mudo("n1", t)] + saudaveis(t), st, c, t)
     assert d == []
 
 
 def test_volta_do_contato_zera_a_contagem():
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
+    st = conhecido(c)
     _, st = rodar([mudo("n1", T0 + MIN)] + saudaveis(), st, c, T0 + MIN)
     _, st = rodar([mudo("n1", T0 + 2 * MIN)] + saudaveis(), st, c, T0 + 2 * MIN)
-    _, st = rodar([no("n1")] + saudaveis(), st, c, T0 + 3 * MIN)   # um engasgo so
+    _, st = rodar([no("n1", now=T0 + 3 * MIN)] + saudaveis(), st, c, T0 + 3 * MIN)   # um engasgo so
     d, st = rodar([mudo("n1", T0 + 4 * MIN)] + saudaveis(), st, c, T0 + 4 * MIN)
     assert d == [] and st["nodes"]["n1"]["unreach"] == 1
 
 
-def test_sem_contato_que_ja_estava_fora_do_nlb_nao_e_drenado():
+def test_sem_contato_que_ja_estava_fora_do_nlb_nao_e_tocado():
     c = cfg(mode="auto")
     v = no("n1", status=1005, users=0, auth=0, sess=0)
     _, st = rodar([v] + saudaveis(), {}, c, T0)
@@ -424,22 +491,13 @@ def test_sem_contato_que_ja_estava_fora_do_nlb_nao_e_drenado():
     assert d == []
 
 
-def test_sem_contato_sem_host_id_conhecido_avisa_que_nao_da():
-    """Estado anterior ao RMon guardar o host_id: avisa, nao chuta o alvo."""
-    c = cfg(mode="auto")
-    st = {"nodes": {"n1": {"last_status": 1007, "cluster": "vip"}}}
-    d, _ = ciclos_sem_contato(c, st, T0, 3)
-    assert kinds(d) == ["blocked"] and "host_id" in d[0]["msg"]
-
-
 def test_sem_contato_em_manutencao_nao_e_tocado():
     c = cfg(mode="auto", hold=["n1"])
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d, _ = ciclos_sem_contato(c, st, T0 + MIN, 4)
+    d, _ = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 4)
     assert d == []
 
 
-def test_dois_sem_contato_nenhum_e_drenado_pelo_piso():
+def test_dois_sem_contato_nenhum_e_reiniciado_pelo_piso():
     """Sobraria 1 no ativo: o problema pode ser a rede do RMon, nao os nos."""
     c = cfg(mode="auto")
     _, st = rodar([no("n1"), no("n2"), no("n3")], {}, c, T0)
@@ -451,61 +509,142 @@ def test_dois_sem_contato_nenhum_e_drenado_pelo_piso():
     assert all("deixaria 1 no(s) ativo(s)" in x["msg"] for x in d)
 
 
-def test_sem_contato_nao_depende_de_cooldown_nem_de_flapping():
+def test_sem_contato_nao_depende_de_cooldown_nem_de_flapping_da_drenagem():
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
+    st = conhecido(c)
     st["clusters"] = {"vip": {"last_auto": T0}}
     st["nodes"]["n1"]["drains"] = [T0 - 3600, T0 - 7200]
     d, _ = ciclos_sem_contato(c, st, T0 + MIN, 3)
-    assert kinds(d) == ["drain_unreachable"]
+    assert kinds(d) == ["reset_unreachable"]
 
 
-def test_drenado_por_falta_de_contato_volta_sem_exigir_reboot():
+def test_vm_reiniciada_volta_fora_do_nlb_e_e_reingressada():
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d, st = ciclos_sem_contato(c, st, T0 + MIN, 3)
+    d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
     t = T0 + 3 * MIN
-    st, _ = nlb.apply_result(st, d[0], True, t, "via n2: 1007 -> 1009")
+    st, _ = nlb.apply_result(st, d[0], True, t, "vm-n1 reiniciada")
     n1 = st["nodes"]["n1"]
-    assert n1["owned"] and n1["drain_reason"] == "unreachable" and n1["last_status"] == 1009
-    # continua mudo: nada de novo
-    d, st = rodar([mudo("n1", t + MIN)] + saudaveis(t + MIN), st, c, t + MIN)
-    assert d == []
-    # voltou sem reiniciar, drenando e apto: espera os 10 min e reingressa
-    t2 = t + 20 * MIN
-    volta = no("n1", status=1009, users=0, auth=0, sess=0, uptime_min=3000, commit=20, now=t2)
+    assert n1["owned"] and n1["drain_reason"] == "reset" and n1["last_status"] == 1005
+    assert n1["resets"] == [t]
+    # bootando, ainda mudo: nada de novo (nao reinicia de novo)
+    for k in range(1, 6):
+        d, st = rodar([mudo("n1", t + k * MIN)] + saudaveis(t + k * MIN), st, c, t + k * MIN)
+        assert d == []
+    # subiu parado (ClusterModeOnStart=0): espera o Windows assentar e reingressa
+    t2 = t + 8 * MIN
+    volta = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=4, commit=20, now=t2)
     d, st = rodar([volta] + saudaveis(t2), st, c, t2)
-    assert d == [] and st["nodes"]["n1"]["rejoin_gaps"] == []
-    t3 = t2 + 10 * MIN
-    volta = no("n1", status=1009, users=0, auth=0, sess=0, uptime_min=3010, commit=20, now=t3)
+    assert d == [] and "Windows no ar ha menos de 10min" in st["nodes"]["n1"]["rejoin_gaps"][0]
+    t3 = t2 + 20 * MIN
+    volta = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=24, commit=20, now=t3)
     d, st = rodar([volta] + saudaveis(t3), st, c, t3)
+    assert d == [] and st["nodes"]["n1"]["rejoin_gaps"] == []
+    t4 = t3 + 10 * MIN
+    volta = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=34, commit=20, now=t4)
+    d, st = rodar([volta] + saudaveis(t4), st, c, t4)
     assert kinds(d) == ["rejoin"]
 
 
-def test_drenagem_remota_que_falhou_tenta_de_novo_e_avisa_uma_vez():
+def test_reset_que_falhou_tenta_de_novo_e_avisa_uma_vez():
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d, st = ciclos_sem_contato(c, st, T0 + MIN, 3)
+    d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
     t = T0 + 3 * MIN
-    st, nova = nlb.apply_result(st, d[0], False, t, "controle remoto desligado")
-    assert nova
+    st, nova = nlb.apply_result(st, d[0], False, t, "Permission denied (publickey)")
+    assert nova and not st["nodes"]["n1"].get("resets")
     d, st = rodar([mudo("n1", t + MIN)] + saudaveis(t + MIN), st, c, t + MIN)
     assert d == []                                     # dentro do retry_min
     d, st = rodar([mudo("n1", t + 5 * MIN)] + saudaveis(t + 5 * MIN), st, c, t + 5 * MIN)
-    assert kinds(d) == ["drain_unreachable"]
+    assert kinds(d) == ["reset_unreachable"]
     st, nova = nlb.apply_result(st, d[0], False, t + 5 * MIN, "de novo")
     assert not nova
 
 
-def test_vizinho_saudavel_e_tentado_primeiro():
+def test_relogio_adiantado_do_host_conta_como_vivo():
+    """sistemafiep anda ~45 s a frente do Elastic: metrica "do futuro" e fresca."""
     c = cfg(mode="auto")
-    _, st = rodar([no("n1")] + saudaveis(), {}, c, T0)
-    d = []
+    st = {"nodes": {"n1": {}}}
+    v = mudo("n1", T0, es_ts=T0 + 45)
+    assert nlb.elastic_confirma(v, st["nodes"]["n1"], c, T0)[0] == "vivo"
+
+
+# ------------------------------------------------------------- canal com o Incus (app/incus.py)
+
+def test_lista_do_comando_forcado():
+    from app import incus
+    vms = incus.ler_lista("WIN2016 RUNNING 10:66:6a:cc:09:90\nWIN2016-2 STOPPED\nlixo\n; rm -rf / x\n")
+    assert vms == {"WIN2016": {"estado": "RUNNING", "mac": "10:66:6a:cc:09:90"},
+                   "WIN2016-2": {"estado": "STOPPED", "mac": ""}}
+
+
+def test_checar_aponta_vm_do_inventario_nao_liberada(monkeypatch):
+    from app import incus
+    monkeypatch.setattr(incus, "_ssh", lambda cfg, args, timeout: (True, "WIN2016 RUNNING m"))
+    r = incus.checar({"incus_ssh": "u@h"}, {"n1": "WIN2016", "n2": "WIN2016-2"})
+    assert not r["ok"] and "n2 (WIN2016-2)" in r["detail"]
+    r = incus.checar({"incus_ssh": "u@h"}, {"n1": "WIN2016"})
+    assert r["ok"] and r["vms"]["WIN2016"]["estado"] == "RUNNING"
+    monkeypatch.setattr(incus, "_ssh", lambda cfg, args, timeout: (False, "Permission denied"))
+    r = incus.checar({"incus_ssh": "u@h"}, {"n1": "WIN2016"})
+    assert not r["ok"] and r["detail"] == "Permission denied"
+
+
+def test_reset_so_aceita_nome_de_instancia(monkeypatch):
+    from app import incus
+    chamadas = []
+    monkeypatch.setattr(incus, "_ssh", lambda cfg, args, timeout: chamadas.append(args) or (True, "ok"))
+    for ruim in ("", "a b", "x;reboot", "-rf", "$(id)", "a" * 70):
+        ok, msg = incus.reset({"incus_ssh": "u@h"}, ruim)
+        assert not ok and "invalida" in msg, ruim
+    assert chamadas == []
+    assert incus.reset({"incus_ssh": "u@h"}, "WIN2016-2") == (True, "ok")
+    assert chamadas == [["reset", "WIN2016-2"]]
+
+
+def test_ssh_sem_destino_nao_roda_nada():
+    from app import incus
+    assert incus.reset({"incus_ssh": ""}, "WIN2016") == (False, "defaults.nlb.incus_ssh vazio")
+
+
+def test_canal_conferido_de_hora_em_hora_e_em_10_min_se_falhou():
+    from app import incus
+    assert incus.devido(None, T0)
+    assert not incus.devido({"ok": True, "ts": T0}, T0 + 3000)
+    assert incus.devido({"ok": True, "ts": T0}, T0 + 3600)
+    assert incus.devido({"ok": False, "ts": T0}, T0 + 600)
+
+
+def test_run_cycle_reinicia_pelo_incus_e_registra(monkeypatch):
+    """O adaptador: decisao de reset -> incus.reset -> estado, alerta e auditoria."""
+    from types import SimpleNamespace
+
+    from app import config, db, incus
+    estado = {"nlb_state": conhecido(cfg(mode="auto"))}
+    registros, resets = [], []
+    monkeypatch.setattr(db, "get_config", lambda k, d=None: estado.get(k, d))
+    monkeypatch.setattr(db, "set_config", lambda k, v: estado.__setitem__(k, v))
+    monkeypatch.setattr(db, "record_alert", lambda *a: registros.append(a))
+    monkeypatch.setattr(db, "audit", lambda *a: registros.append(a))
+    monkeypatch.setattr(incus, "reset", lambda c, vm: resets.append(vm) or (True, "reiniciada"))
+    monkeypatch.setattr(incus, "checar", lambda c, vms: {"ok": True, "detail": "2", "vms": {}})
+    from app import notify
+    monkeypatch.setattr(notify, "enabled", lambda: False)
+    srv = [config.ServerConfig(name=x, host="10.0.0." + x[-1], nlb=True,
+                               incus_vm="vm-" + x if x != "n3" else "") for x in ("n1", "n2", "n3")]
+    inv = SimpleNamespace(servers=srv, winrm=None,
+                          defaults={"nlb": {"mode": "auto", "incus_ssh": "rmon-reset@hv"}})
+    vivo = {"reachable": True, "users_count": 17, "commit_pct": 30, "uptime_sec": 180000,
+            "services": [{"name": "RM.Host.Service", "status": "Running"}],
+            "nlb": {"status": 1007, "cluster": "vip", "host_id": 2, "auth": 8, "sess": 8}}
     for i in range(3):
         t = T0 + (i + 1) * MIN
-        d, st = rodar([mudo("n1", t), no("n2", rm=False, now=t), no("n3", users=17, sess=8, now=t)],
-                      st, c, t)
-    assert d[0]["relays"] == ["n3", "n2"]
+        es = {"n1": {"ok": True, "ts": None}, "n2": {"ok": True, "ts": t}, "n3": {"ok": True, "ts": t}}
+        d = nlb.run_cycle(inv, {"n1": {"reachable": False}, "n2": vivo,
+                                "n3": {**vivo, "nlb": {**vivo["nlb"], "host_id": 3}}}, now=t, es=es)
+    assert resets == ["vm-n1"] and kinds(d) == ["reset_unreachable"]
+    n1 = estado["nlb_state"]["nodes"]["n1"]
+    assert n1["drain_reason"] == "reset" and n1["last_action"]["ok"]
+    assert any("VM reiniciada" in str(r) for r in registros)
+    assert estado["nlb_state"]["incus"]["ok"]
 
 
 # ------------------------------------------------------------- cluster vazio (ClusterModeOnStart=0)
@@ -532,46 +671,3 @@ def test_reboot_com_outros_no_ar_espera_o_normal():
     v = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=4, commit=10)
     d, _ = rodar([v] + saudaveis(), {}, c, T0)
     assert d == []
-
-
-# ------------------------------------------------------------- drenagem pelo vizinho (collector)
-
-def test_alvo_da_drenagem_remota_e_validado():
-    from app import collector
-    assert collector.nlb_target("10.10.10.228:5") == ("10.10.10.228", 5)
-    for ruim in ("", "10.10.10.228", "vip:1", "10.10.10.228:0", "10.10.10.228:5'; rm", "1.2.3.4:x"):
-        assert collector.nlb_target(ruim) is None, ruim
-
-
-def test_interpretacao_da_drenagem_remota():
-    from app.collector import interpretar_drenagem_remota as ler
-    assert ler({"via": "wmi", "before": 1007, "after": 1009, "members_after": [1, 2, 5]}, 5)[0]
-    ok, msg = ler({"via": "wmi", "rc": 1000, "after": None, "members_after": [1, 2]}, 5)
-    assert ok and "fora da convergencia" in msg
-    ok, msg = ler({"via": "wmi", "rc": 1000, "after": None, "members_after": [1, 2, 5]}, 5)
-    assert not ok and "sem confirmacao" in msg
-    assert ler({"via": "ja-fora", "before": 1005}, 5)[0]
-    assert ler({"via": "fora-da-convergencia", "members_before": [1, 2]}, 5)[0]
-    ok, msg = ler({"via": None, "output": "o WMI deste no nao enxerga o estado do alvo"}, 5)
-    assert not ok and "nao enxerga" in msg
-
-
-def test_drenagem_remota_tenta_o_segundo_vizinho(monkeypatch):
-    from app import collector
-    chamados = []
-
-    def falso(relay, wc, target):
-        chamados.append(relay.name)
-        return (relay.name == "n3"), f"resposta de {relay.name}"
-
-    monkeypatch.setattr(collector, "nlb_remote_drain", falso)
-
-    class S:
-        def __init__(self, nome):
-            self.name = nome
-
-    servidores = {x: S(x) for x in ("n1", "n2", "n3")}
-    ok, det = nlb.execute_remote(servidores, None, {"target": "vip:1", "relays": ["n2", "n3"]})
-    assert ok and det.startswith("via n3") and chamados == ["n2", "n3"]
-    ok, det = nlb.execute_remote(servidores, None, {"target": "vip:1", "relays": []})
-    assert not ok and "nenhum vizinho" in det

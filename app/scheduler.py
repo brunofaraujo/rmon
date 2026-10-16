@@ -988,6 +988,22 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
     return {k: v for k, v in out.items() if v}
 
 
+def batimento_nlb(inv: Inventory, nomes_es: dict, vistos_es: dict,
+                  es_ativo: bool) -> dict[str, dict] | None:
+    """Ultima metrica de cada no do NLB no Elastic, para o reset do no sem contato.
+
+    `ok` so quando a consulta deste ciclo respondeu: Elastic fora do ar nao pode
+    parecer "host mudo" e autorizar um reset. None com o Elastic desligado.
+    """
+    if not es_ativo:
+        return None
+    # respondeu AGORA: sucesso recente e nenhum erro depois dele
+    ok = (elastic.erro_atual() is None
+          and time.time() - float(elastic.saude().get("ok_ts") or 0) < 120)
+    return {s.name: {"ok": ok, "ts": vistos_es.get(nomes_es.get(s.name) or "")}
+            for s in inv.servers if getattr(s, "nlb", False)}
+
+
 def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
@@ -1120,7 +1136,8 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         # manutencao fica em hold: a automacao nao mexe em quem esta sendo mexido.
         try:
             nlb.run_cycle(inv, {s.name: r for s, r in coletas},
-                          hold=manutencao.ativas(agora, janelas))
+                          hold=manutencao.ativas(agora, janelas),
+                          es=batimento_nlb(inv, nomes_es, vistos_es, es_ativo))
         except Exception:  # noqa: BLE001
             log.exception("NLB: falha no ciclo de avaliacao")
 

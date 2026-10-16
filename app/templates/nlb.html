@@ -19,9 +19,10 @@
   saudavel(is); uma drenagem por cluster a cada {{ cfg.cooldown_min }}min; no maximo
   {{ cfg.max_drains_day }} por no em 24h.
   {% if cfg.unreachable_drain %}
-  <br><b>No sem contato</b> (WinRM) por {{ cfg.unreachable_cycles }} coletas seguidas sai do NLB
-  pelas maos de um vizinho (controle remoto do NLB) e volta quando responder de novo e estiver
-  apto &mdash; respeitando o mesmo piso.
+  <br><b>No sem contato</b> (WinRM) por {{ cfg.unreachable_cycles }} coletas seguidas e sem dados
+  no Elastic ha {{ (cfg.reset_elastic_mudo_sec / 60) | round | int }}min: a VM e reiniciada pelo
+  Incus, volta fora do NLB e o RMon a reingressa quando estiver apta &mdash; respeitando o mesmo
+  piso, no maximo {{ cfg.reset_max_day }} reset(s) por no em 24h. Servidor fisico: alerta critico.
   {% endif %}
 </div>
 {% elif cfg.mode == 'alert' %}
@@ -59,7 +60,7 @@
         <td class="small">
           {% if not n.reachable %}<span class="muted">{{ n.error }}</span>
             {% if n.st.unreach %}<div><span class="pill red">sem contato ha {{ n.st.unreach }} coleta(s)</span>
-              {% if cfg.unreachable_drain and not n.st.owned and n.st.unreach < cfg.unreachable_cycles %}<span class="muted">sai do NLB na {{ cfg.unreachable_cycles }}&ordf;</span>{% endif %}</div>{% endif %}
+              {% if cfg.unreachable_drain and not n.st.owned and n.st.unreach < cfg.unreachable_cycles %}<span class="muted">age na {{ cfg.unreachable_cycles }}&ordf; (se o Elastic tambem estiver mudo)</span>{% endif %}</div>{% endif %}
           {% elif n.sinais %}{% for s in n.sinais %}<div><span class="pill red">doente</span> {{ s }}</div>{% endfor %}
           {% elif n.fora %}
             {% if n.st.rejoin_gaps %}{% for g in n.st.rejoin_gaps %}<div class="muted">falta: {{ g }}</div>{% endfor %}
@@ -80,12 +81,20 @@
         <td class="mono small">{% if n.jobrunner_gb is not none %}{{ n.jobrunner_gb }} GB<div class="muted">PID {{ n.jobrunner_pid }}</div>{% else %}-{% endif %}</td>
         <td class="small">
           {% if n.hold %}<span class="pill amber">manutencao</span>{% endif %}
-          {% if n.st.owned %}<span class="pill blue">drenado pelo RMon{% if n.st.drain_reason == 'unreachable' %} (sem contato){% endif %}</span>{% endif %}
+          {% if n.st.owned %}<span class="pill blue">drenado pelo RMon{% if n.st.drain_reason == 'reset' %} (VM reiniciada, sem contato){% elif n.st.drain_reason == 'unreachable' %} (sem contato){% endif %}</span>{% endif %}
           {% if n.st.last_action %}
           <div class="muted">ultima acao: {{ n.st.last_action.action }} {{ 'ok' if n.st.last_action.ok else 'FALHOU' }}
             ({{ n.st.last_action.by }}, {{ n.st.last_action.ts | dt }})</div>
           {% endif %}
           {% if n.st.drains %}<div class="muted">{{ n.st.drains | length }} drenagem(ns) em 24h</div>{% endif %}
+          {% if n.st.resets %}<div class="muted">{{ n.st.resets | length }} reset(s) da VM registrados</div>{% endif %}
+          {% if cfg.unreachable_drain %}
+          <div class="small" title="O que o RMon faz se este no ficar sem contato e mudo no Elastic">
+            {% if n.incus_vm and incus_on %}<span class="pill blue">se travar: reset da VM {{ n.incus_vm }}</span>
+            {% elif n.incus_vm %}<span class="pill amber">se travar: so alerta (canal do Incus nao configurado)</span>
+            {% else %}<span class="pill amber">se travar: so alerta critico (fisico)</span>{% endif %}
+          </div>
+          {% endif %}
         </td>
         <td>
           <form method="post" action="/nlb/acao" class="toolbar">
@@ -119,6 +128,40 @@
   {% endif %}
 </div>
 
+{% if cfg.unreachable_drain %}
+<div class="panel">
+  <h2>No sem contato: reset pelo hypervisor</h2>
+  <div class="small">
+    {% if not incus_on %}
+      <span class="pill amber">canal nao configurado</span>
+      Falta <code>defaults.nlb.incus_ssh</code> no inventario e o usuario restrito no hypervisor
+      (<code>deploy/incus/instalar-no-hypervisor.sh</code>). Ate la, no travado gera so alerta critico.
+    {% elif not incus %}
+      <span class="pill amber">canal ainda nao conferido</span>
+      {{ cfg.incus_ssh }} &mdash; nenhum no tem <code>incus_vm</code> no inventario, ou a primeira
+      conferencia ainda nao rodou.
+    {% elif incus.ok %}
+      <span class="pill green">canal OK</span> <span class="mono">{{ incus.destino }}</span>
+      &middot; {{ incus.detail }} &middot; conferido {{ incus.ts | dt }}
+    {% else %}
+      <span class="pill red">canal FALHOU</span> <span class="mono">{{ incus.destino }}</span>
+      &middot; conferido {{ incus.ts | dt }}: <span class="mono">{{ incus.detail }}</span>
+      <div class="muted">Enquanto falhar, no travado gera so alerta critico. Nova tentativa a cada 10 min.</div>
+    {% endif %}
+    {% if incus and incus.vms %}
+    <div class="muted">Liberadas no hypervisor:
+      {% for nome, i in incus.vms.items() %}<span class="mono">{{ nome }}</span> ({{ i.estado }}){% if not loop.last %}, {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+    <div class="muted">
+      Um vizinho do cluster nao consegue drenar outro no no Windows Server 2016 (o WMI do NLB so age
+      no proprio no). Por isso o no travado sai pelo hypervisor: reset forcado da VM, que sobe fora do
+      NLB. Exige o Elastic confirmando que o Windows parou (so o WinRM travado nao reinicia nada).
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="panel">
   <h2>Historico (7 dias)</h2>
   {% if not hist %}<div class="muted small">Nada registrado.</div>{% else %}
@@ -129,7 +172,7 @@
       <tr>
         <td class="muted small">{{ a.ts | dt }}</td>
         <td>{{ a.server }}</td>
-        <td><span class="pill {{ 'red' if a.problem in ('drain', 'drain_unreachable', 'failed', 'unreachable_sick', 'blocked') else ('green' if a.problem in ('rejoin', 'recovered') else 'amber') }}">{{ a.label }}</span></td>
+        <td><span class="pill {{ 'red' if a.problem in ('drain', 'drain_unreachable', 'reset_unreachable', 'unreachable_crit', 'failed', 'unreachable_sick', 'blocked') else ('green' if a.problem in ('rejoin', 'recovered') else 'amber') }}">{{ a.label }}</span></td>
         <td class="small">{{ a.message }}</td>
       </tr>
     {% endfor %}

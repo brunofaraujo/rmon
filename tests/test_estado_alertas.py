@@ -97,7 +97,7 @@ def ambiente(monkeypatch):
         {"server": s, "kind": k, "problem": p, "message": m}
         for (s, k, p, m), ts in zip(banco.alertas, banco.ts) if relogio[0] - ts <= h * HORA])
     monkeypatch.setattr(nlb, "run_cycle",
-                        lambda inv, res, now=None, hold=(): holds.append(set(hold)))
+                        lambda inv, res, now=None, hold=(), es=None: holds.append(set(hold)))
     monkeypatch.setattr(notify, "enabled", lambda: True)
     monkeypatch.setattr(notify, "send", lambda texto: enviadas.append(texto) or True)
     monkeypatch.setattr(scheduler, "_agora", lambda: relogio[0])
