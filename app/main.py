@@ -691,6 +691,7 @@ PROBLEMA_LABEL = {
     "JOBQUEUE": "Fila de jobs", "JOBFAIL": "Jobs falhando em bloco",
     # decisoes do NLB (alerts_log.kind = "nlb")
     "drain": "NLB: drenado", "rejoin": "NLB: reingressado",
+    "drain_unreachable": "NLB: sem contato, drenado",
     "would_drain": "NLB: drenaria", "would_rejoin": "NLB: reingressaria",
     "blocked": "NLB: drenagem bloqueada", "unreachable_sick": "NLB: doente sem WinRM",
     "out_unowned": "NLB: fora do cluster", "recovered": "NLB: recuperado",

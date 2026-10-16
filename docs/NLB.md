@@ -20,8 +20,8 @@ O RMon olha a saúde de **aplicação** de cada nó e tira do balanceamento o n�
 
 Duas lições moldaram o desenho:
 
-1. **Na fase aguda o WinRM do nó doente não responde** — nada consegue drená-lo
-   remotamente. O que chega a tempo ali é o **aviso precoce** (o JobRunner cresce devagar
+1. **Na fase aguda o WinRM do nó doente não responde** — o próprio nó não consegue ser
+   drenado (desde 16/10 um vizinho faz isso, ver "Nó sem contato"). O que chega a tempo ali é o **aviso precoce** (o JobRunner cresce devagar
    por horas antes de explodir: alertas `jobrunner:<pid>` e `jobrunner-crit:<pid>`, ver
    CONFIGURACAO.md).
 2. **A falha longa é a que dá para automatizar**: o nó "vivo" que não cria sessão.
@@ -78,9 +78,54 @@ Na ordem em que são checadas:
 4. **Cooldown** — uma drenagem automática por cluster a cada `cooldown_min` (30 min).
 5. **Uma ação por cluster por ciclo**, o doente mais antigo primeiro.
 
-Nó doente que perdeu o WinRM gera o aviso "doente e sem contato: drene pelo console" —
-e a contagem de tempo doente continua; se o WinRM voltar com o nó ainda doente, a drenagem
-sai no mesmo ciclo.
+Com `unreachable_drain: false`, nó doente que perdeu o WinRM gera o aviso "doente e sem
+contato: drene pelo console" — e a contagem de tempo doente continua; se o WinRM voltar com o
+nó ainda doente, a drenagem sai no mesmo ciclo. Com `unreachable_drain: true` (padrão) vale a
+regra da seção seguinte.
+
+## Nó sem contato
+
+Incidente de 16/10/2026: o .188 parou de responder ao WinRM às 10:01, reiniciou, **voltou ao
+NLB sozinho às 10:05:58** (`ClusterModeOnStart` ligado) e recebeu usuários até 10:16 sem
+criar sessão nenhuma. O driver do NLB sobe e converge muito antes de o Windows estar pronto,
+e o mesmo vale para um nó travado: o driver segue respondendo ao cluster enquanto o resto morre.
+
+A regra: nó **ativo no NLB** (pelo último estado lido) que fica **sem contato por
+`unreachable_cycles` (3) coletas seguidas** sai do NLB enquanto durar a falta de contato.
+
+- **Quem drena é um vizinho.** O próprio nó não responde, então o RMon chama
+  `MicrosoftNLB_Node.DrainStop` na instância do alvo pelo provedor WMI `root/MicrosoftNLB`
+  de um nó alcançável e ativo do mesmo cluster (o saudável primeiro, até dois tentados).
+  Esse provedor fala com o **driver** do alvo pelo **controle remoto do NLB**, e o driver
+  segue vivo com o Windows engasgado. Sem controle remoto, o WMI do vizinho mostra os
+  outros nós com `StatusCode` 0 e não age neles. O `nlb.exe` não serve: no Windows 2016 ele
+  não tem mais `/PASSW`, e com `<cluster>:<host>` fala por WMI/DCOM com o Windows do alvo —
+  exatamente o que travou.
+- **Confirmação:** o WMI do vizinho mostra o alvo drenando/parado, ou o alvo some da lista de
+  hosts convergidos do `nlb query`. Sem uma das duas, conta como falha e é tentado de novo a
+  cada `retry_min`.
+- **Piso:** o mesmo da drenagem por doença. Nó sem contato não conta como ativo, então com
+  dois nós mudos ao mesmo tempo **nenhum** sai — pode ser a rede do próprio RMon, e drenar
+  jogaria todo mundo no único nó que sobra. Não passa por cooldown nem pelo limite de flapping.
+- **Volta:** quando o nó responde de novo, segue o reingresso normal (RM.Host no ar, commit
+  normal, Windows no ar há 10 min, apto por 10 min), sem exigir reboot nem sessão nova.
+- Precisa do `host_id` do nó no NLB, que o RMon guarda da última coleta boa. Manutenção
+  (hold ou janela) não é tocada. No modo `alert` só avisa "drenaria".
+
+### Pré-requisitos no cluster
+
+1. **Controle remoto do NLB ligado, com senha**, nos três nós (`RemoteControlEnabled`; a
+   senha é a `RMON_NLB_RC_PASSWORD` do `.env`, gravada por `SetPassword` e entregue ao nó por
+   variável de ambiente do shell WinRM, fora do log de script do PowerShell). É parâmetro de
+   cluster e só vale depois de recarregar o NLB em cada nó (reconvergência de segundos):
+   aplicado fora do horário por `deploy/nlb_controle_remoto.py ligar`, um nó por vez. O
+   cluster está em unicast com `UnicastInterHostCommSupport = 1`, então os nós conversam
+   entre si. `nlb_controle_remoto.py checar` mostra se cada nó lê o estado dos vizinhos.
+2. **Nó sobe fora do NLB depois de reboot** (`ClusterModeOnStart = 0`, chave em
+   `HKLM\SYSTEM\CurrentControlSet\Services\WLBS\Parameters\Interface\{GUID}`). Lido só no
+   boot; não precisa recarregar. Quem devolve o nó ao NLB é o RMon (`rejoin_unowned: true`).
+   Se o **cluster inteiro** estiver parado (queda de energia), o primeiro nó com RM.Host no ar
+   volta sem esperar os 10 min.
 
 ## Reingresso
 
@@ -160,6 +205,8 @@ defaults:
     retry_min: 5
     rejoin_unowned: false
     hold: []
+    unreachable_drain: true   # no sem contato sai do NLB pelas maos de um vizinho
+    unreachable_cycles: 3
 
 servers:
   - name: rm-app-01
@@ -206,10 +253,11 @@ abra uma conexão RDP direto no IP do nó.
 
 ## Limitações conhecidas
 
-- **Nó sem WinRM não é drenado.** No pico da falha (commit esgotado) é exatamente o que
-  acontece. Alternativa avaliada e *não* adotada: habilitar o "controle remoto" do NLB
-  (`nlb.exe drainstop <cluster>:<host>` a partir de outro nó), que abre UDP 2504 com
-  senha fraca e é desaconselhado pela Microsoft.
+- **O controle remoto do NLB abre a UDP 2504 do cluster** a comandos protegidos só por
+  senha, e a Microsoft o desaconselha. Foi adotado em 16/10/2026, com OK do Bruno, porque é
+  o único jeito de tirar do NLB um nó que não responde. A senha fica só no `.env` do RMon.
+- Com `ClusterModeOnStart = 0`, se o RMon estiver fora do ar, nó reiniciado fica fora do NLB
+  até alguém dar `nlb.exe start` nele.
 - `drainstop` mantém as conexões existentes até elas fecharem; o nó só fica *parado*
   quando a última sessão RDP cai. Para o objetivo (parar de mandar gente nova), drenando
   já basta.

@@ -123,6 +123,8 @@ defaults:
     cooldown_min: 30         # uma drenagem automatica por cluster nesse intervalo
     max_drains_day: 2        # mais que isso por no em 24h = flapping: so avisa
     rejoin_unowned: false    # reingressar no que saiu do NLB sem ser pelo RMon?
+    unreachable_drain: true  # no sem contato (WinRM) sai do NLB por um vizinho
+    unreachable_cycles: 3    # ...depois de tantas coletas seguidas sem contato
     hold: []                 # nos que o RMon nunca toca (manutencao)
 
   # Execucao de instalacoes (pagina /pacotes/tarefas). DESARMADA por padrao:
