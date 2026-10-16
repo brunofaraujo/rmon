@@ -671,3 +671,12 @@ def test_reboot_com_outros_no_ar_espera_o_normal():
     v = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=4, commit=10)
     d, _ = rodar([v] + saudaveis(), {}, c, T0)
     assert d == []
+
+
+def test_agente_do_elastic_ja_parado_antes_nao_confirma_reset():
+    """Agente mudo ha dias + WinRM engasgado agora: o silencio do Elastic nao prova nada."""
+    c = cfg(mode="auto")
+    st = {"nodes": {"n1": {"last_status": 1007, "cluster": "vip", "host_id": 1,
+                           "es_last": T0 - 3 * 86400}}}
+    d, _ = ciclos_sem_contato(c, st, T0, 3)
+    assert kinds(d) == ["unreachable_crit"] and "ja nao recebia dados" in d[0]["msg"]

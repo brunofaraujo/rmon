@@ -333,6 +333,11 @@ def _floor(v: dict, vistas: list[dict], saude: dict[str, bool],
     return ativos, [p for p in ativos if saude.get(p["name"])]
 
 
+# Folga entre a ultima metrica do Elastic e a 1a coleta sem contato: o WinRM pode
+# ter morrido um ciclo antes de o RMon perceber, e o agente manda a cada ~10 s.
+ES_FOLGA_S = 600
+
+
 def elastic_confirma(v: dict, st: dict, cfg: dict, now: float) -> tuple[str, str]:
     """O Elastic confirma que o Windows do no mudo parou? ("mudo"|"vivo"|"sem_leitura", texto).
 
@@ -346,6 +351,12 @@ def elastic_confirma(v: dict, st: dict, cfg: dict, now: float) -> tuple[str, str
     ultimo = es.get("ts") or st.get("es_last")
     if not ultimo:
         return "sem_leitura", "o Elastic nunca recebeu dados deste host"
+    # o agente tem de estar mandando dados quando o WinRM caiu: agente parado ha
+    # dias nao prova que o Windows travou agora
+    desde = st.get("mudo_desde")
+    if desde and float(ultimo) < float(desde) - ES_FOLGA_S:
+        return "sem_leitura", (f"o Elastic ja nao recebia dados deste host "
+                               f"{int((float(desde) - float(ultimo)) // 60)}min antes da falta de contato")
     idade = now - float(ultimo)
     if idade < cfg["reset_elastic_mudo_sec"]:
         return "vivo", f"ultimo dado ha {max(0, int(idade))}s"
@@ -400,6 +411,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         if not v["reachable"]:
             st["good_since"] = None
             st["unreach"] = int(st.get("unreach") or 0) + 1
+            if st["unreach"] == 1:
+                st["mudo_desde"] = now
             if cfg.get("unreachable_drain"):
                 # ainda no NLB (pelo que se sabia) e mudo ha coletas suficientes
                 if st["unreach"] >= cfg["unreachable_cycles"] and st.get("last_status") in ATIVOS:
