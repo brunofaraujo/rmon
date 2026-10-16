@@ -76,3 +76,15 @@ def test_tempos_do_aberto_contam_o_ultimo_lembrete(banco):
     # lembrete do episodio anterior nao conta
     assert t["svc:X"]["aviso"] == t["svc:X"]["desde"]
     assert t["DOWN"]["aviso"] - t["DOWN"]["desde"] == pytest.approx(0.25 * 86400, abs=5)
+
+
+def test_ultima_acao_e_a_mais_recente_do_mesmo_problema(banco):
+    assert banco.ultima_acao("a", "svc:RM.Host.Service") is None
+    gravar("a", "acao", "svc:RM.Host.Service", "tentativa automatica", dias=2)
+    gravar("a", "acao", "svc:RM.Host.Service", "tentativa automatica", dias=1)
+    gravar("a", "raised", "svc:RM.Host.Service", "parado")      # outro tipo nao conta
+    gravar("a", "acao", "svc:W3SVC", "outro servico")           # outro problema nao conta
+    gravar("b", "acao", "svc:RM.Host.Service", "outro host")    # outro host nao conta
+    with db._conn() as c:
+        esperado = c.execute("SELECT extract(epoch FROM now() - interval '1 day') AS t").fetchone()["t"]
+    assert banco.ultima_acao("a", "svc:RM.Host.Service") == pytest.approx(float(esperado), abs=5)

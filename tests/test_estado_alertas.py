@@ -113,6 +113,7 @@ def ambiente(monkeypatch):
         monkeypatch.setattr(scheduler, "_desde", {})
         monkeypatch.setattr(scheduler, "_avisado", {})
         monkeypatch.setattr(scheduler, "_tentado", {})
+        monkeypatch.setattr(scheduler, "_boot", {})
         monkeypatch.setattr(scheduler, "_restaurado", False)
 
     def ciclo(**r):

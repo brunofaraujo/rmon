@@ -30,6 +30,8 @@ _desde: dict[str, dict[str, float]] = {}
 _avisado: dict[str, dict[str, float]] = {}
 # Ultima partida automatica pos-boot de cada (servidor, problema): uma por boot
 _tentado: dict[tuple[str, str], float] = {}
+# Boot de cada servidor visto no ciclo anterior (epoch), para a hora nao oscilar
+_boot: dict[str, float] = {}
 
 
 def _agora() -> float:
@@ -239,7 +241,8 @@ def service_groups(services: list[dict] | None) -> list[dict]:
     return sorted(saida, key=lambda g: g["family"].lower())
 
 
-def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: float) -> None:
+def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: float,
+                    boot_anterior: float | None = None) -> float | None:
     """Marca na coleta (`nao_subiu` = epoch do boot) o servico automatico que
     nao subiu depois do reboot.
 
@@ -254,14 +257,21 @@ def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: fl
     'raised' de cada problema; quem nao tem alerta ainda abre agora). O que
     caiu horas depois do boot e outra historia e fica sem a marca. A marca vai
     gravada com a coleta para painel, mural e alerta dizerem a mesma coisa.
+
+    O uptime e lido no inicio da coleta e `agora` vem no fim do ciclo, entao a
+    conta oscila alguns segundos. Com `boot_anterior` a menos de 5 min, vale o
+    anterior: senao o "18:24" do alerta viraria "18:25" no ciclo seguinte.
+    Devolve o boot usado (None sem contato ou sem uptime).
     """
     up = r.get("uptime_sec")
     if not r.get("reachable") or up is None:
-        return
+        return None
     try:
         boot = agora - float(up)
     except (TypeError, ValueError):
-        return
+        return None
+    if boot_anterior is not None and abs(boot - boot_anterior) < 300:
+        boot = boot_anterior
     servicos = []
     for s in r.get("services") or []:
         automatico = str(s.get("start") or "").strip().lower().startswith("auto")
@@ -270,6 +280,7 @@ def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: fl
             s = {**s, "nao_subiu": int(boot)}
         servicos.append(s)
     r["services"] = servicos
+    return boot
 
 
 def texto_servico(s: dict) -> str:
@@ -906,7 +917,10 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
             _identificar_jobrunners(result.get("jobrunners"), th)
         janela_boot = _minutos(th, "boot_janela_min") * 60
         for server, result in coletas:
-            marcar_pos_boot(result, _desde.get(server.name) or {}, _agora(), janela_boot)
+            boot = marcar_pos_boot(result, _desde.get(server.name) or {}, _agora(), janela_boot,
+                                   _boot.get(server.name))
+            if boot is not None:
+                _boot[server.name] = boot
 
         for server, result in coletas:
             db.insert_check(server.name, result)

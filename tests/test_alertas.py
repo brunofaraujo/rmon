@@ -324,3 +324,14 @@ def test_sem_uptime_ou_sem_contato_nada_e_marcado():
               {"reachable": False, "uptime_sec": 60, "services": [rm_parado()]}):
         scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
         assert "nao_subiu" not in r["services"][0]
+
+
+def test_hora_do_boot_nao_oscila_entre_ciclos():
+    r = coleta(uptime_sec=300, services=[rm_parado()])
+    boot = scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
+    r2 = coleta(uptime_sec=360, services=[rm_parado()])
+    # o ciclo seguinte terminou 40 s mais tarde em relacao a leitura do uptime
+    assert scheduler.marcar_pos_boot(r2, {}, AGORA + 100, 30 * 60, boot) == boot
+    assert r2["services"][0]["nao_subiu"] == int(boot)
+    r3 = coleta(uptime_sec=60, services=[rm_parado()])   # reiniciou de novo
+    assert scheduler.marcar_pos_boot(r3, {}, AGORA + 3600, 30 * 60, boot) == AGORA + 3540
