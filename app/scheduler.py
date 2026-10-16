@@ -28,8 +28,8 @@ _restaurado = False
 # vez (o 'raised' ou o lembrete). Restaurados junto com _last.
 _desde: dict[str, dict[str, float]] = {}
 _avisado: dict[str, dict[str, float]] = {}
-# Ultima partida automatica pos-boot de cada (servidor, problema): uma por boot
-_tentado: dict[tuple[str, str], float] = {}
+# Partidas automaticas pos-boot de cada (servidor, problema), epoch de cada uma
+_tentado: dict[tuple[str, str], list[float]] = {}
 # Boot de cada servidor visto no ciclo anterior (epoch), para a hora nao oscilar
 _boot: dict[str, float] = {}
 
@@ -65,9 +65,9 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # servico automatico parado cujo alerta abriu ate tantos min
                   # depois do boot "nao subiu apos o reboot" (ver marcar_pos_boot)
                   "boot_janela_min": 30,
-                  # tentar UMA vez iniciar esse servico, tantos min apos o boot
-                  # (0 desliga - o padrao: so avisa)
-                  "boot_iniciar_min": 0}
+                  # iniciar sozinho esse servico com tantos min de uptime e repetir
+                  # no mesmo intervalo, ate boot_tentativas vezes (0 desliga)
+                  "boot_iniciar_min": 10, "boot_tentativas": 3}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -352,44 +352,54 @@ def _minutos(th: dict, chave: str) -> float:
         return float(DEFAULT_ALERTS[chave])
 
 
-def _ja_tentou(nome: str, chave: str, boot: float) -> bool:
-    """Ja houve partida automatica deste servico depois deste boot?"""
-    t = _tentado.get((nome, chave))
-    if t is None:
-        try:
-            t = db.ultima_acao(nome, chave)
-        except Exception:  # noqa: BLE001 - sem banco, melhor nao tentar
-            log.exception("partida pos-boot: sem como saber se %s/%s ja foi tentado", nome, chave)
-            return True
-        if t is not None:
-            _tentado[(nome, chave)] = t
-    return t is not None and t >= boot
+def _tentativas(nome: str, chave: str, boot: float) -> list[float]:
+    """Partidas automaticas deste servico feitas depois deste boot."""
+    feitas = _tentado.get((nome, chave))
+    if feitas is None:
+        feitas = db.acoes_desde(nome, chave, boot)
+        _tentado[(nome, chave)] = feitas
+    return [t for t in feitas if t >= boot]
 
 
-def iniciar_pos_boot(server, inv: Inventory, r: dict, apos_s: float, agora: float) -> list[str]:
-    """Tenta UMA vez por boot iniciar o servico marcado por marcar_pos_boot.
+def iniciar_pos_boot(server, inv: Inventory, r: dict, apos_s: float, agora: float,
+                     maximo: int = 3) -> list[str]:
+    """Inicia sozinho o servico marcado por marcar_pos_boot.
 
-    Desligado com `boot_iniciar_min` = 0 (o padrao). Espera tantos minutos de
-    uptime para o boot assentar: no .248 o que estourou o tempo foi o boot
-    pesado depois da atualizacao, e o mesmo Start-Service no meio dele
-    falharia igual. Uma tentativa so, registrada como 'acao' na linha do
-    tempo - se nao subir, o alerta continua aberto e alguem precisa olhar.
+    O Windows nao faz isso: a recuperacao do servico ("reiniciar") so age
+    quando ele trava depois de rodar, nunca quando estoura o tempo na
+    partida. A 1a tentativa espera `apos_s` de uptime para o boot assentar
+    (no .248 o que estourou foi o boot pesado depois da atualizacao, e um
+    Start-Service no meio dele falharia igual); as seguintes vem a cada
+    `apos_s`, ate `maximo`. Cada uma vai para a linha do tempo como 'acao'
+    e para o canal. Esgotadas as tentativas, o alerta segue aberto: ai e
+    defeito do servico, nao do boot, e alguem precisa olhar.
     """
-    if apos_s <= 0 or not r.get("reachable") or float(r.get("uptime_sec") or 0) < apos_s:
+    if apos_s <= 0 or maximo <= 0 or not r.get("reachable")             or float(r.get("uptime_sec") or 0) < apos_s:
         return []
     vistos = [s.get("name") for s in r.get("services") or [] if s.get("name")]
     msgs = []
     for s in r.get("services") or []:
         boot = s.get("nao_subiu")
         chave = f"svc:{s.get('name')}"
-        if not boot or _ja_tentou(server.name, chave, boot):
+        if not boot:
             continue
-        _tentado[(server.name, chave)] = agora
+        try:
+            feitas = _tentativas(server.name, chave, boot)
+        except Exception:  # noqa: BLE001 - sem saber o que ja foi feito, nao tenta
+            log.exception("partida pos-boot: sem como ler as tentativas de %s/%s", server.name, chave)
+            continue
+        if len(feitas) >= maximo or (feitas and agora - feitas[-1] < apos_s):
+            continue
+        _tentado[(server.name, chave)].append(agora)
+        n = len(feitas) + 1
         ok, retorno = service_action(server, inv.winrm, s["name"], "start", allowed=vistos)
-        texto = (f"tentativa automatica de iniciar {s['name']} (nao subiu apos o reboot de "
-                 f"{manutencao.hora(boot)}): " + ("comando aceito" if ok else f"falhou: {retorno}"))
+        texto = (f"iniciando {s['name']} sozinho ({n}a de {maximo} tentativas; nao subiu apos o "
+                 f"reboot de {manutencao.hora(boot)}): "
+                 + ("comando aceito" if ok else f"falhou: {retorno}"))
+        if not ok and n >= maximo:
+            texto += " - desisti, precisa de alguem olhar"
         db.record_alert(server.name, "acao", chave, texto)
-        log.info("partida pos-boot %s/%s -> %s (%s)", server.name, s["name"], ok, retorno)
+        log.info("partida pos-boot %s/%s %d/%d -> %s (%s)", server.name, s["name"], n, maximo, ok, retorno)
         msgs.append("🔧 " + texto)
     return msgs
 
@@ -979,7 +989,8 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 db.record_alert(nome, "reminder", k, f"segue aberto ha {aberto}: {atual[k]}")
                 avisado[k] = agora
                 msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
-            msgs += iniciar_pos_boot(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora)
+            msgs += iniciar_pos_boot(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
+                                     int(_minutos(th, "boot_tentativas")))
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
 

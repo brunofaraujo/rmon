@@ -122,10 +122,12 @@ def test_servico_que_nao_subiu_apos_o_reboot_aparece_na_tela(app_falso):
 def test_admin_guarda_a_partida_pos_boot(app_falso):
     app_falso.entrar()
     assert 'name="boot_iniciar_min"' in app_falso.c.get("/admin").text
-    app_falso.c.post("/admin/config", data={"boot_iniciar_min": "10", "boot_janela_min": "45"},
+    assert 'name="boot_tentativas"' in app_falso.c.get("/admin").text
+    app_falso.c.post("/admin/config", data={"boot_iniciar_min": "0", "boot_janela_min": "45"},
                      follow_redirects=False)
     alerts = app_falso.estado.config["alerts"]
-    assert alerts["boot_iniciar_min"] == 10 and alerts["boot_janela_min"] == 45
+    assert alerts["boot_iniciar_min"] == 0 and alerts["boot_janela_min"] == 45
+    assert alerts["boot_tentativas"] == 3      # campo ausente fica no padrao
 
 
 def test_admin_tem_os_limiares_novos(app_falso):

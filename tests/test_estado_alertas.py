@@ -57,10 +57,9 @@ class Banco:
         self.alertas.append((server, kind, problem, message))
         self.ts.append(self.relogio[0])
 
-    def ultima_acao(self, server, problem):
-        tss = [ts for (s, k, p, _), ts in zip(self.alertas, self.ts)
-               if s == server and p == problem and k == "acao"]
-        return max(tss) if tss else None
+    def acoes_desde(self, server, problem, desde):
+        return [ts for (s, k, p, _), ts in zip(self.alertas, self.ts)
+                if s == server and p == problem and k == "acao" and ts >= desde]
 
     def insert_check(self, server, result):
         self.checks.setdefault(server, []).insert(0, bool(result.get("reachable")))
@@ -89,7 +88,7 @@ def ambiente(monkeypatch):
     # vez de ficar esperando um PostgreSQL que nao existe
     monkeypatch.setattr(db, "_conn", _sem_banco_de_verdade)
     for nome in ("open_alerts", "open_alerts_tempos", "record_alert", "insert_check",
-                 "fail_streak", "get_config", "set_config", "ultima_acao"):
+                 "fail_streak", "get_config", "set_config", "acoes_desde"):
         monkeypatch.setattr(db, nome, getattr(banco, nome))
     monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
     monkeypatch.setattr(db, "broker_estado", lambda dias=1: {})
@@ -387,43 +386,48 @@ def partidas(monkeypatch):
     return SimpleNamespace(chamadas=chamadas, resposta=resposta)
 
 
-def test_incidente_248_alerta_diz_que_nao_subiu_apos_o_reboot(ambiente, partidas):
+def test_incidente_248_sobe_sozinho_sem_ninguem_clicar(ambiente, partidas):
+    # padrao: ligado, 10 min de uptime, ate 3 tentativas
     msgs = ambiente.ciclo(**boot(228))
     assert len(msgs) == 1 and "nao subiu apos o reboot de" in msgs[0]
-    ambiente.passar(4.1)
-    lembrete = ambiente.ciclo(**boot(228 + 4.1 * HORA))
-    assert "segue aberto ha 4h" in lembrete[0] and "nao subiu apos o reboot" in lembrete[0]
-    assert partidas.chamadas == []           # partida automatica vem desligada
-
-
-def test_partida_automatica_tenta_uma_vez_por_boot(ambiente, partidas):
-    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
-    ambiente.ciclo(**boot(228))
     assert partidas.chamadas == []           # cedo demais: o boot ainda esta assentando
     ambiente.passar(0.15)
     msgs = ambiente.ciclo(**boot(228 + 540))
     assert partidas.chamadas == ["RM.Host.Service"]
-    assert any("tentativa automatica de iniciar RM.Host.Service" in m for m in msgs)
+    assert any("iniciando RM.Host.Service sozinho (1a de 3 tentativas" in m for m in msgs)
     assert ("acao", "svc:RM.Host.Service") in kinds(ambiente.banco)
     ambiente.passar(0.02)
-    ambiente.ciclo(**boot(228 + 600))
-    ambiente.reiniciar()                     # deploy do RMon no meio: nao tenta de novo
-    ambiente.ciclo(**boot(228 + 700))
-    assert partidas.chamadas == ["RM.Host.Service"]
+    msgs = ambiente.ciclo(**boot(228 + 600, status="Running"))
+    assert "resolvido" in msgs[0]
 
 
-def test_partida_que_falha_fica_registrada_e_nao_repete(ambiente, partidas):
-    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
+def test_partida_que_falha_e_repetida_ate_desistir(ambiente, partidas):
     partidas.resposta[0] = (False, "Service cannot be started")
     msgs = ambiente.ciclo(**boot(700))
-    assert "falhou: Service cannot be started" in msgs[0] + "".join(msgs)
-    ambiente.passar(0.5)
-    ambiente.ciclo(**boot(700 + 1800))
-    assert partidas.chamadas == ["RM.Host.Service"]
+    assert any("1a de 3 tentativas" in m and "falhou: Service cannot be started" in m for m in msgs)
+    ambiente.passar(5 / 60)
+    ambiente.ciclo(**boot(700 + 300))        # antes do intervalo: espera
+    assert len(partidas.chamadas) == 1
+    ambiente.passar(5 / 60)
+    ambiente.ciclo(**boot(700 + 600))
+    ambiente.reiniciar()                     # deploy do RMon no meio: a conta continua
+    ambiente.passar(10 / 60)
+    msgs = ambiente.ciclo(**boot(700 + 1200))
+    assert len(partidas.chamadas) == 3 and any("desisti" in m for m in msgs)
+    ambiente.passar(1)
+    ambiente.ciclo(**boot(700 + 4800))
+    assert len(partidas.chamadas) == 3
+
+
+def test_partida_desligada_so_avisa(ambiente, partidas):
+    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 0}
+    ambiente.ciclo(**boot(700))
+    ambiente.passar(2)
+    ambiente.ciclo(**boot(700 + 7200))
+    assert partidas.chamadas == []
 
 
 def test_novo_boot_ganha_nova_tentativa(ambiente, partidas):
-    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
     ambiente.ciclo(**boot(700))
     ambiente.passar(2)
     ambiente.ciclo(**boot(700))              # reiniciou de novo e o servico segue parado
@@ -431,7 +435,6 @@ def test_novo_boot_ganha_nova_tentativa(ambiente, partidas):
 
 
 def test_servico_que_caiu_longe_do_boot_nao_e_iniciado_sozinho(ambiente, partidas):
-    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
     ambiente.ciclo(**boot(5 * HORA, status="Running"))
     msgs = ambiente.ciclo(**boot(5 * HORA + 60))
     assert partidas.chamadas == [] and "reboot" not in msgs[0]
@@ -439,7 +442,6 @@ def test_servico_que_caiu_longe_do_boot_nao_e_iniciado_sozinho(ambiente, partida
 
 def test_sem_partida_automatica_durante_manutencao(ambiente, partidas):
     from app import manutencao
-    ambiente.banco.config["alerts"] = {"boot_iniciar_min": 10}
     manutencao.iniciar("app-34", 120, "reboot planejado", "bruno", agora=ambiente.relogio[0])
     ambiente.ciclo(**boot(700))
     assert partidas.chamadas == []

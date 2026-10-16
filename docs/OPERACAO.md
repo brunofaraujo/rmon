@@ -212,10 +212,16 @@ boot ou até `boot_janela_min` (30) minutos depois dele. O alerta passa a dizer
 vermelha **nao subiu apos o reboot** no painel e na tela do servidor. Serviço que caiu horas
 depois do boot fica sem a marca.
 
-Com `boot_iniciar_min` > 0 (em /admin, "Iniciar servico apos boot"), o RMon tenta **uma vez
-por boot** iniciar o serviço marcado quando o host completar esse uptime. A tentativa e o
-resultado vão para a linha do tempo (tipo `acao`) e para o canal. Se não subir, o alerta
-segue aberto. Host em manutenção não recebe a tentativa. O padrão é 0: só avisa.
+**O RMon sobe esse serviço sozinho.** Com `boot_iniciar_min` minutos de uptime (padrão 10)
+ele dá `Start-Service`, e repete a cada `boot_iniciar_min` se não subir, até
+`boot_tentativas` vezes (padrão 3). Cada tentativa vai para a linha do tempo (tipo `acao`) e
+para o canal; a última que falha diz "desisti". Daí em diante é defeito do serviço, não do
+boot, e o alerta segue aberto para alguém olhar. A conta das tentativas fica no banco, então
+um restart do RMon não recomeça do zero. Host em manutenção não recebe tentativa.
+`boot_iniciar_min: 0` (em /admin) volta a só avisar.
+
+Só entra nisso o serviço que o RMon monitora no host (os fixos do `servers.yaml` e os
+descobertos por padrão, como `RM.Host*`).
 
 ### Lembrete de crítico aberto
 

@@ -40,7 +40,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     lembrete_h: 4                  # crítico (vermelho) ainda aberto é notificado de novo a cada 4h (0 desliga)
     resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
     boot_janela_min: 30            # serviço automático parado cujo alerta abriu até 30 min após o boot = "não subiu após o reboot"
-    boot_iniciar_min: 0            # tentar UMA vez iniciar esse serviço com tantos min de uptime (0 desliga: só avisa)
+    boot_iniciar_min: 10           # o RMon inicia sozinho esse serviço com 10 min de uptime e repete a cada 10 min (0 desliga: só avisa)
+    boot_tentativas: 3             # tentativas por boot antes de desistir e deixar o alerta para alguém olhar
   jobrunner:                       # medição dos processos que executam os jobs do RM
     enabled: true
     process: RM.Host.JobRunner     # nome do processo (sem .exe)
