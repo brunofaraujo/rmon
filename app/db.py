@@ -486,15 +486,16 @@ def open_alerts_tempos() -> dict[str, dict[str, dict[str, float]]]:
     return tempos
 
 
-def ultima_acao(server: str, problem: str) -> float | None:
-    """Quando foi a ultima 'acao' registrada para este problema (epoch), ou None.
-    E o que impede a partida automatica pos-boot de se repetir depois de um
-    restart do RMon."""
+def acoes_desde(server: str, problem: str, desde: float) -> list[float]:
+    """Epoch de cada 'acao' registrada para este problema a partir de `desde`,
+    da mais velha para a mais nova. E o que faz a partida automatica pos-boot
+    contar as tentativas certo depois de um restart do RMon."""
     with _conn() as c:
-        row = c.execute("""SELECT extract(epoch FROM max(ts)) AS ts FROM alerts_log
-                            WHERE server = %s AND problem = %s AND kind = 'acao'""",
-                        (server, problem)).fetchone()
-    return float(row["ts"]) if row and row["ts"] is not None else None
+        rows = c.execute("""SELECT extract(epoch FROM ts) AS ts FROM alerts_log
+                             WHERE server = %s AND problem = %s AND kind = 'acao'
+                               AND ts >= to_timestamp(%s) ORDER BY ts""",
+                         (server, problem, float(desde))).fetchall()
+    return [float(r["ts"]) for r in rows]
 
 
 def recent_alerts(hours: int = 48, limit: int = 500, server: str | None = None) -> list[dict]:
