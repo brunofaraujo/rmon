@@ -119,6 +119,15 @@ def test_servico_que_nao_subiu_apos_o_reboot_aparece_na_tela(app_falso):
     assert marca in app_falso.c.get("/tv").text
 
 
+def test_agente_parado_aparece_ambar_nas_telas(app_falso):
+    app_falso.estado.coletas = [coleta(services=[
+        {"name": "Elastic Agent", "status": "Stopped", "src": "agente", "start": "Auto"}])]
+    app_falso.entrar()
+    for rota in ("/server/app-34", "/"):
+        html = app_falso.c.get(rota).text
+        assert re.search(r'class="pill amber" title="agente de coleta', html), rota
+
+
 def test_admin_guarda_a_partida_pos_boot(app_falso):
     app_falso.entrar()
     assert 'name="boot_iniciar_min"' in app_falso.c.get("/admin").text

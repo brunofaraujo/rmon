@@ -47,7 +47,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     process: RM.Host.JobRunner     # nome do processo (sem .exe)
     top: 5                         # quantos dos maiores vão para o payload
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
-  service_patterns: ["RM.Host*"]   # descoberta automática (curinga) — ver abaixo
+  service_patterns: ["RM.Host*"]
+  agent_patterns: ["Elastic Agent"]   # agentes de coleta: âmbar quando parados, o RMon sobe sozinho ([] desliga)   # descoberta automática (curinga) — ver abaixo
   service_exclude: ["RM.Host.Clean*"]   # casam no curinga, mas ficam fora do monitor
   eventlog:
     logs: [System, Application]

@@ -445,3 +445,53 @@ def test_sem_partida_automatica_durante_manutencao(ambiente, partidas):
     manutencao.iniciar("app-34", 120, "reboot planejado", "bruno", agora=ambiente.relogio[0])
     ambiente.ciclo(**boot(700))
     assert partidas.chamadas == []
+
+
+# ------------------------------------------------------------ agentes de coleta
+
+def com_agente(uptime, status="Stopped"):
+    return ok(uptime_sec=uptime, services=[
+        {"name": "RM.Host.Service", "status": "Running", "src": "auto", "start": "Auto"},
+        {"name": "Elastic Agent", "status": status, "src": "agente", "start": "Auto"}])
+
+
+def test_agente_parado_a_qualquer_hora_sobe_sozinho(ambiente, partidas):
+    msgs = ambiente.ciclo(**com_agente(5 * HORA))
+    assert partidas.chamadas == ["Elastic Agent"]
+    assert any("agente de coleta Elastic Agent = Stopped" in m for m in msgs)
+    assert any("iniciando Elastic Agent sozinho (1a de 3 tentativas; parado desde" in m for m in msgs)
+    ambiente.passar(1 / 60)
+    assert "resolvido" in ambiente.ciclo(**com_agente(5 * HORA + 60, "Running"))[0]
+
+
+def test_agente_logo_apos_o_boot_espera_assentar(ambiente, partidas):
+    ambiente.ciclo(**com_agente(120))        # partida atrasada do Windows ainda nao veio
+    assert partidas.chamadas == []
+    ambiente.passar(10 / 60)
+    ambiente.ciclo(**com_agente(720))
+    assert partidas.chamadas == ["Elastic Agent"]
+
+
+def test_agente_que_nao_sobe_tem_tres_tentativas(ambiente, partidas):
+    partidas.resposta[0] = (False, "Cannot start service")
+    for i in range(6):
+        ambiente.ciclo(**com_agente(5 * HORA + i * 600))
+        ambiente.passar(10 / 60)
+    assert partidas.chamadas == ["Elastic Agent"] * 3
+
+
+def test_agente_mudo_para_o_elastic_e_reiniciado(ambiente, partidas, monkeypatch):
+    acoes = []
+    monkeypatch.setattr(scheduler, "service_action",
+                        lambda server, wc, nome, acao="restart", allowed=None:
+                        acoes.append((nome, acao)) or (True, acao))
+    monkeypatch.setattr(scheduler, "padrao_cluster", lambda *a, **k: {
+        "app-34": {"PADRAO:elastic": "agente do Elastic (h34) sem mandar dados nos ultimos 15 min"}})
+    msgs = ambiente.ciclo(**com_agente(5 * HORA, "Running"))
+    assert acoes == [("Elastic Agent", "restart")]
+    assert any("reiniciando Elastic Agent sozinho (1a de 3 tentativas; no ar, mas sem mandar dados" in m
+               for m in msgs)
+    assert ("acao", "PADRAO:elastic") in kinds(ambiente.banco)
+    ambiente.passar(5 / 60)
+    ambiente.ciclo(**com_agente(5 * HORA + 300, "Running"))
+    assert len(acoes) == 1                   # espera o intervalo antes de tentar de novo

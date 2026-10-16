@@ -188,9 +188,16 @@ def service_down(s: dict) -> bool:
     """
     if (s.get("status") or "") == "Running":
         return False
-    if s.get("src") == "auto":
+    if s.get("src") in ("auto", "agente"):
         return str(s.get("start") or "").strip().lower().startswith("auto")
     return True
+
+
+def chave_servico(s: dict) -> str:
+    """Chave do problema de um servico fora do ar. Agente de coleta (Elastic
+    Agent) tem chave propria: e ambar - o RM segue funcionando sem ele, so o
+    historico do Elastic fica cego - e o RMon o sobe sozinho a qualquer hora."""
+    return ("agente:" if s.get("src") == "agente" else "svc:") + str(s.get("name"))
 
 
 # Sufixo de instancia: separador opcional + numero no fim do nome
@@ -276,7 +283,7 @@ def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: fl
     for s in r.get("services") or []:
         automatico = str(s.get("start") or "").strip().lower().startswith("auto")
         if (automatico and service_down(s)
-                and desde.get(f"svc:{s.get('name')}", agora) <= boot + janela_s):
+                and desde.get(chave_servico(s), agora) <= boot + janela_s):
             s = {**s, "nao_subiu": int(boot)}
         servicos.append(s)
     r["services"] = servicos
@@ -284,7 +291,8 @@ def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: fl
 
 
 def texto_servico(s: dict) -> str:
-    texto = f"servico {s['name']} = {s.get('status')}"
+    tipo = "agente de coleta" if s.get("src") == "agente" else "servico"
+    texto = f"{tipo} {s['name']} = {s.get('status')}"
     if s.get("nao_subiu"):
         texto += f" (inicio automatico: nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])})"
     return texto
@@ -320,7 +328,7 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         return p
     for s in r.get("services") or []:
         if service_down(s):
-            p[f"svc:{s['name']}"] = texto_servico(s)
+            p[chave_servico(s)] = texto_servico(s)
     if r.get("app_ok") is False:
         p["APP"] = "app_health (HTTP) falhou"
     mem = r.get("mem_pct")
@@ -361,45 +369,64 @@ def _tentativas(nome: str, chave: str, boot: float) -> list[float]:
     return [t for t in feitas if t >= boot]
 
 
-def iniciar_pos_boot(server, inv: Inventory, r: dict, apos_s: float, agora: float,
-                     maximo: int = 3) -> list[str]:
-    """Inicia sozinho o servico marcado por marcar_pos_boot.
+def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: float,
+                       maximo: int = 3, desde: dict[str, float] | None = None,
+                       atual: dict[str, str] | None = None) -> list[str]:
+    """Sobe sozinho o que tem correcao segura. Tres casos:
 
-    O Windows nao faz isso: a recuperacao do servico ("reiniciar") so age
-    quando ele trava depois de rodar, nunca quando estoura o tempo na
-    partida. A 1a tentativa espera `apos_s` de uptime para o boot assentar
-    (no .248 o que estourou foi o boot pesado depois da atualizacao, e um
-    Start-Service no meio dele falharia igual); as seguintes vem a cada
-    `apos_s`, ate `maximo`. Cada uma vai para a linha do tempo como 'acao'
-    e para o canal. Esgotadas as tentativas, o alerta segue aberto: ai e
-    defeito do servico, nao do boot, e alguem precisa olhar.
+    - servico marcado por marcar_pos_boot (qualquer um: RM.Host, IIS...). O
+      Windows nao faz isso: a recuperacao do servico ("reiniciar") so age
+      quando ele trava depois de rodar, nunca quando estoura o tempo na
+      partida - foi o que deixou o .248 sem RM.Host na noite de 15/10;
+    - agente de coleta (Elastic Agent) parado, a qualquer hora: ninguem o
+      para de proposito, e sem ele o historico do Elastic fica cego;
+    - agente no ar mas mudo para o Elastic (PADRAO:elastic aberto): reinicia.
+
+    Nada antes de `apos_s` de uptime, para o boot assentar (um Start-Service
+    no meio do boot pesado falharia igual), e no maximo `maximo` tentativas
+    por episodio, a cada `apos_s`. Cada uma vai para a linha do tempo como
+    'acao' e para o canal. Esgotadas, o alerta segue aberto: ai e defeito do
+    servico, nao do boot, e alguem precisa olhar.
     """
     if apos_s <= 0 or maximo <= 0 or not r.get("reachable")             or float(r.get("uptime_sec") or 0) < apos_s:
         return []
-    vistos = [s.get("name") for s in r.get("services") or [] if s.get("name")]
+    desde = desde or {}
+    atual = atual or {}
+    servicos = [s for s in r.get("services") or [] if s.get("name")]
+    vistos = [s["name"] for s in servicos]
+    alvos = []   # (servico, chave, acao, referencia do episodio, motivo)
+    for s in servicos:
+        chave = chave_servico(s)
+        if s.get("nao_subiu"):
+            alvos.append((s, chave, "start", float(s["nao_subiu"]),
+                          f"nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])}"))
+        elif s.get("src") == "agente" and service_down(s):
+            ref = desde.get(chave, agora)
+            alvos.append((s, chave, "start", ref, f"parado desde {manutencao.hora(ref)}"))
+        elif s.get("src") == "agente" and s.get("status") == "Running" and "PADRAO:elastic" in atual:
+            ref = desde.get("PADRAO:elastic", agora)
+            alvos.append((s, "PADRAO:elastic", "restart", ref,
+                          f"no ar, mas sem mandar dados ao Elastic desde {manutencao.hora(ref)}"))
     msgs = []
-    for s in r.get("services") or []:
-        boot = s.get("nao_subiu")
-        chave = f"svc:{s.get('name')}"
-        if not boot:
-            continue
+    for s, chave, acao, ref, motivo in alvos:
         try:
-            feitas = _tentativas(server.name, chave, boot)
+            feitas = _tentativas(server.name, chave, ref)
         except Exception:  # noqa: BLE001 - sem saber o que ja foi feito, nao tenta
-            log.exception("partida pos-boot: sem como ler as tentativas de %s/%s", server.name, chave)
+            log.exception("partida automatica: sem como ler as tentativas de %s/%s", server.name, chave)
             continue
         if len(feitas) >= maximo or (feitas and agora - feitas[-1] < apos_s):
             continue
         _tentado[(server.name, chave)].append(agora)
         n = len(feitas) + 1
-        ok, retorno = service_action(server, inv.winrm, s["name"], "start", allowed=vistos)
-        texto = (f"iniciando {s['name']} sozinho ({n}a de {maximo} tentativas; nao subiu apos o "
-                 f"reboot de {manutencao.hora(boot)}): "
+        ok, retorno = service_action(server, inv.winrm, s["name"], acao, allowed=vistos)
+        verbo = "reiniciando" if acao == "restart" else "iniciando"
+        texto = (f"{verbo} {s['name']} sozinho ({n}a de {maximo} tentativas; {motivo}): "
                  + ("comando aceito" if ok else f"falhou: {retorno}"))
         if not ok and n >= maximo:
             texto += " - desisti, precisa de alguem olhar"
         db.record_alert(server.name, "acao", chave, texto)
-        log.info("partida pos-boot %s/%s %d/%d -> %s (%s)", server.name, s["name"], n, maximo, ok, retorno)
+        log.info("partida automatica %s/%s %s %d/%d -> %s (%s)",
+                 server.name, s["name"], acao, n, maximo, ok, retorno)
         msgs.append("🔧 " + texto)
     return msgs
 
@@ -697,9 +724,9 @@ def fora_do_monitoramento(chave: str, r: dict) -> bool:
     nao aparece mais na coleta. O alerta dele tem de fechar, mas "resolvido"
     no celular seria mentira: ninguem consertou nada.
     """
-    if not chave.startswith("svc:") or not r.get("reachable"):
+    if not chave.startswith(("svc:", "agente:")) or not r.get("reachable"):
         return False
-    return chave[4:] not in {s.get("name") for s in (r.get("services") or [])}
+    return chave.split(":", 1)[1] not in {s.get("name") for s in (r.get("services") or [])}
 
 
 def _restaurar_estado(servidores: Iterable[str]) -> None:
@@ -989,8 +1016,8 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 db.record_alert(nome, "reminder", k, f"segue aberto ha {aberto}: {atual[k]}")
                 avisado[k] = agora
                 msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
-            msgs += iniciar_pos_boot(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
-                                     int(_minutos(th, "boot_tentativas")))
+            msgs += iniciar_automatico(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
+                                       int(_minutos(th, "boot_tentativas")), desde, atual)
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
 
