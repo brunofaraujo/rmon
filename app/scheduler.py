@@ -11,7 +11,7 @@ from typing import Iterable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
-from .collector import collect_server, service_action
+from .collector import collect_server, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
@@ -65,9 +65,11 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # servico automatico parado cujo alerta abriu ate tantos min
                   # depois do boot "nao subiu apos o reboot" (ver marcar_pos_boot)
                   "boot_janela_min": 30,
-                  # iniciar sozinho esse servico com tantos min de uptime e repetir
-                  # no mesmo intervalo, ate boot_tentativas vezes (0 desliga)
-                  "boot_iniciar_min": 10, "boot_tentativas": 3}
+                  # guardiao (iniciar_automatico): servico monitorado parado volta
+                  # sozinho, a qualquer hora, sem limite de tentativas. Nada antes
+                  # de boot_iniciar_min de uptime (0 desliga: so avisa); o intervalo
+                  # entre tentativas cresce boot_iniciar_min por vez ate o teto.
+                  "boot_iniciar_min": 10, "autocorrecao_teto_min": 30}
 
 # Problemas que existem para serem VISTOS no painel, nao empurrados no celular.
 # Job que termina com erro e validacao/regra de negocio da aplicacao (dado
@@ -377,26 +379,39 @@ def _tentativas(nome: str, chave: str, boot: float) -> list[float]:
     return [t for t in feitas if t >= boot]
 
 
+# Tentativas que vao para o canal: as primeiras, as que deram certo e uma a
+# cada tantas depois (as outras ficam so na linha do tempo, sem afogar ninguem).
+_AVISAR_ATE = 3
+_AVISAR_CADA = 6
+
+
 def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: float,
-                       maximo: int = 3, desde: dict[str, float] | None = None,
+                       teto_s: float = 1800, desde: dict[str, float] | None = None,
                        atual: dict[str, str] | None = None) -> list[str]:
-    """Sobe sozinho o que tem correcao segura. Tres casos:
+    """Guardiao: todo servico monitorado fora do ar volta sozinho.
 
-    - servico marcado por marcar_pos_boot (qualquer um: RM.Host, IIS...). O
-      Windows nao faz isso: a recuperacao do servico ("reiniciar") so age
-      quando ele trava depois de rodar, nunca quando estoura o tempo na
-      partida - foi o que deixou o .248 sem RM.Host na noite de 15/10;
-    - agente de coleta (Elastic Agent) parado, a qualquer hora: ninguem o
-      para de proposito, e sem ele o historico do Elastic fica cego;
-    - agente no ar mas mudo para o Elastic (PADRAO:elastic aberto): reinicia.
+    Vale para qualquer servico que o RMon vigia no host (fixos do inventario,
+    RM.Host* descobertos, Elastic Agent), a QUALQUER hora - depois de reboot,
+    de queda, de alguem ter parado sem janela de manutencao. Ninguem depende do
+    Windows para isso: a recuperacao do servico ("reiniciar") nao age quando
+    ele estoura os 30 s na partida (.248 em 15/10, .188 em 16/10).
 
-    Nada antes de `apos_s` de uptime, para o boot assentar (um Start-Service
-    no meio do boot pesado falharia igual), e no maximo `maximo` tentativas
-    por episodio, a cada `apos_s`. Cada uma vai para a linha do tempo como
-    'acao' e para o canal. Esgotadas, o alerta segue aberto: ai e defeito do
-    servico, nao do boot, e alguem precisa olhar.
+    - parado (inicio automatico ou servico fixo do inventario): start;
+    - agente no ar mas mudo para o Elastic (PADRAO:elastic): restart.
+
+    Fica de fora so o que foi desligado de proposito (Desabilitado), o que nem
+    existe no host e o host em manutencao (quem chama ja pula). Nada antes de
+    `apos_s` de uptime, para o boot assentar. NAO desiste: a 1a tentativa e na
+    hora, e cada nova espera `apos_s` a mais que a anterior, ate `teto_s` (10,
+    20, 30, 30... min). O que travou por uma hora no boot (o .188 em 16/10) volta
+    na primeira tentativa depois que o host liberar.
+
+    Todos os alvos do host vao numa chamada so (collector.subir_servicos), que
+    dispara e confere sem prender a coleta. Cada tentativa vai para a linha do
+    tempo ('acao'); para o canal, as 3 primeiras, as que deram certo e uma a
+    cada 6.
     """
-    if apos_s <= 0 or maximo <= 0 or not r.get("reachable")             or float(r.get("uptime_sec") or 0) < apos_s:
+    if apos_s <= 0 or not r.get("reachable") or float(r.get("uptime_sec") or 0) < apos_s:
         return []
     desde = desde or {}
     atual = atual or {}
@@ -405,37 +420,46 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
     alvos = []   # (servico, chave, acao, referencia do episodio, motivo)
     for s in servicos:
         chave = chave_servico(s)
-        if s.get("nao_subiu"):
-            alvos.append((s, chave, "start", float(s["nao_subiu"]),
-                          f"nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])}"))
-        elif s.get("src") == "agente" and service_down(s):
-            ref = desde.get(chave, agora)
-            alvos.append((s, chave, "start", ref, f"parado desde {manutencao.hora(ref)}"))
-        elif s.get("src") == "agente" and s.get("status") == "Running" and "PADRAO:elastic" in atual:
+        inicio = str(s.get("start") or "").strip().lower()
+        if s.get("src") == "agente" and s.get("status") == "Running" and "PADRAO:elastic" in atual:
             ref = desde.get("PADRAO:elastic", agora)
             alvos.append((s, "PADRAO:elastic", "restart", ref,
                           f"no ar, mas sem mandar dados ao Elastic desde {manutencao.hora(ref)}"))
-    msgs = []
+        elif (service_down(s) and s.get("status") not in ("NOT_FOUND", None)
+              and not inicio.startswith("disab")):
+            if s.get("nao_subiu"):
+                ref = float(s["nao_subiu"])
+                motivo = f"nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])}"
+            else:
+                ref = desde.get(chave, agora)
+                motivo = f"parado desde {manutencao.hora(ref)}"
+            alvos.append((s, chave, "start", ref, motivo))
+    agora_vai = []
     for s, chave, acao, ref, motivo in alvos:
         try:
             feitas = _tentativas(server.name, chave, ref)
         except Exception:  # noqa: BLE001 - sem saber o que ja foi feito, nao tenta
-            log.exception("partida automatica: sem como ler as tentativas de %s/%s", server.name, chave)
+            log.exception("guardiao: sem como ler as tentativas de %s/%s", server.name, chave)
             continue
-        if len(feitas) >= maximo or (feitas and agora - feitas[-1] < apos_s):
+        if feitas and agora - feitas[-1] < min(apos_s * len(feitas), teto_s):
             continue
         _tentado[(server.name, chave)].append(agora)
-        n = len(feitas) + 1
-        ok, retorno = service_action(server, inv.winrm, s["name"], acao, allowed=vistos)
+        agora_vai.append((s, chave, acao, motivo, len(feitas) + 1))
+    if not agora_vai:
+        return []
+    resultado = subir_servicos(server, inv.winrm, [(acao, s["name"]) for s, _, acao, _, _ in agora_vai],
+                               allowed=vistos)
+    msgs = []
+    for s, chave, acao, motivo, n in agora_vai:
+        ok, retorno = resultado.get(s["name"], (False, "sem resposta"))
         verbo = "reiniciando" if acao == "restart" else "iniciando"
-        texto = (f"{verbo} {s['name']} sozinho ({n}a de {maximo} tentativas; {motivo}): "
-                 + ("comando aceito" if ok else f"falhou: {retorno}"))
-        if not ok and n >= maximo:
-            texto += " - desisti, precisa de alguem olhar"
+        texto = f"{verbo} {s['name']} sozinho ({n}a tentativa; {motivo}): {retorno}"
+        if not ok:
+            texto += f" - tento de novo em {int(min(apos_s * n, teto_s) // 60)} min, sem desistir"
         db.record_alert(server.name, "acao", chave, texto)
-        log.info("partida automatica %s/%s %s %d/%d -> %s (%s)",
-                 server.name, s["name"], acao, n, maximo, ok, retorno)
-        msgs.append("🔧 " + texto)
+        log.info("guardiao %s/%s %s #%d -> %s (%s)", server.name, s["name"], acao, n, ok, retorno)
+        if ok or n <= _AVISAR_ATE or n % _AVISAR_CADA == 0:
+            msgs.append("🔧 " + texto)
     return msgs
 
 
@@ -1054,7 +1078,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                 avisado[k] = agora
                 msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
             msgs += iniciar_automatico(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
-                                       int(_minutos(th, "boot_tentativas")), desde, atual)
+                                       _minutos(th, "autocorrecao_teto_min") * 60, desde, atual)
             if msgs and notify.enabled():
                 notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
 

@@ -631,6 +631,99 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
         return False, f"{type(exc).__name__}: {exc}"[:200]
 
 
+# --- Guardiao: subir de volta servicos monitorados (scheduler.iniciar_automatico) ---
+# Tudo de um host numa chamada so, e sem Start-Service: ele espera o servico
+# chegar a Running sem prazo, e num host lento o WinRM estourava antes - a
+# tentativa contava como falha mesmo quando o Windows ainda estava subindo
+# (.188, 16/10/2026). Aqui o sc.exe so dispara, o script espera ate __ESPERA__ s
+# por todos e devolve o estado de cada um com o motivo do Windows quando nao
+# subiu (eventos do SCM: 7000/7009 estourou o tempo, 7023/7024 erro...).
+_PS_SUBIR = r"""
+$itens = @(__ITENS__)
+$t0 = Get-Date
+foreach ($i in $itens) {
+    if ($i[0] -ne 'restart') { continue }
+    $w = Get-CimInstance Win32_Service -Filter ("Name='" + $i[1] + "'")
+    if (-not $w -or $w.State -eq 'Stopped') { continue }
+    Stop-Service -Name $i[1] -Force -NoWait -ErrorAction SilentlyContinue
+    $f = (Get-Date).AddSeconds(20)
+    while ("$((Get-Service -Name $i[1]).Status)" -ne 'Stopped' -and (Get-Date) -lt $f) { Start-Sleep 1 }
+    if ("$((Get-Service -Name $i[1]).Status)" -ne 'Stopped' -and $w.ProcessId) {
+        # travado no stop: mata o processo do servico (nunca um svchost compartilhado)
+        $p = Get-Process -Id $w.ProcessId -ErrorAction SilentlyContinue
+        if ($p -and $p.ProcessName -ne 'svchost') { Stop-Process -Id $w.ProcessId -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
+    }
+}
+foreach ($i in $itens) {
+    if ("$((Get-Service -Name $i[1] -ErrorAction SilentlyContinue).Status)" -eq 'Stopped') {
+        Start-Process -FilePath "$env:windir\System32\sc.exe" -ArgumentList ('start "' + $i[1] + '"') -WindowStyle Hidden
+    }
+}
+$fim = $t0.AddSeconds(__ESPERA__)
+do {
+    Start-Sleep 2
+    $pend = @($itens | Where-Object { "$((Get-Service -Name $_[1] -ErrorAction SilentlyContinue).Status)" -ne 'Running' })
+} while ($pend.Count -gt 0 -and (Get-Date) -lt $fim)
+$ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $t0 } -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -in 7000, 7009, 7011, 7022, 7023, 7024, 7031, 7034 })
+$out = foreach ($i in $itens) {
+    $svc = Get-Service -Name $i[1] -ErrorAction SilentlyContinue
+    $st = if ($svc) { "$($svc.Status)" } else { 'NOT_FOUND' }
+    $erro = ''
+    if ($svc -and $st -ne 'Running') {
+        $e = $ev | Where-Object { $_.Message -like "*$($svc.DisplayName)*" -or $_.Message -like "*$($i[1])*" } | Select-Object -First 1
+        if ($e) { $erro = ($e.Message -replace '\s+', ' ').Trim() }
+    }
+    [pscustomobject]@{ name = $i[1]; status = $st; erro = $erro }
+}
+ConvertTo-Json -InputObject @($out) -Compress
+"""
+# Estados que contam como "voltou": ja no ar, ou o Windows ainda subindo
+SUBIU = {"Running": "subiu", "StartPending": "comando aceito, o Windows ainda esta subindo"}
+
+
+def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str, str]],
+                   allowed: Iterable[str] | None = None, espera_s: int = 25) -> dict[str, tuple[bool, str]]:
+    """Sobe (start) ou reinicia (restart) servicos monitorados de um host.
+
+    `itens` = [(acao, nome)]. Devolve {nome: (voltou, texto)}. Nunca levanta
+    excecao: falha de WinRM vira (False, motivo) para todos.
+    """
+    permitido = set(server.services or []) | set(allowed or ())
+    out: dict[str, tuple[bool, str]] = {}
+    validos = []
+    for acao, nome in itens:
+        if nome not in permitido:
+            out[nome] = (False, "servico nao monitorado neste servidor")
+        elif acao not in ("start", "restart") or not _re.fullmatch(r"[A-Za-z0-9 ._#$-]+", nome or ""):
+            out[nome] = (False, "acao ou nome invalido")
+        else:
+            validos.append((acao, nome))
+    if not validos:
+        return out
+    user, pw = credential_for(server.cred)
+    if not user or not pw:
+        return {**out, **{n: (False, f"sem credencial (perfil '{server.cred}')") for _, n in validos}}
+    lista = ", ".join(f"@({_ps_str(a)}, {_ps_str(n)})" for a, n in validos)
+    script = _PS_SUBIR.replace("__ITENS__", lista).replace("__ESPERA__", str(int(espera_s)))
+    try:
+        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=1, budget_sec=espera_s + 60)
+        if r.status_code != 0:
+            raise RuntimeError(_decode(r.std_err)[:200] or "WinRM status != 0")
+        estados = {str(d.get("name")): d for d in _as_list(json.loads(_decode(r.std_out) or "[]"))}
+    except Exception as exc:  # noqa: BLE001
+        motivo = f"{type(exc).__name__}: {exc}"[:200]
+        return {**out, **{n: (False, motivo) for _, n in validos}}
+    for _, nome in validos:
+        d = estados.get(nome) or {}
+        st = str(d.get("status") or "?")
+        if st in SUBIU:
+            out[nome] = (True, SUBIU[st])
+        else:
+            out[nome] = (False, f"nao subiu ({st})" + (f": {str(d['erro'])[:180]}" if d.get("erro") else ""))
+    return out
+
+
 # --- Encerrar um RM.Host.JobRunner que esta estourando a memoria ---
 # O PID vem do formulario, entao o script confere tudo no host antes de matar:
 # o processo existe, ainda e um JobRunner e e o MESMO que a coleta viu (hora de

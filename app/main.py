@@ -956,7 +956,7 @@ async def admin_config(request: Request):
                              "resumo_hora": _int("resumo_hora", 8, -1, 23),
                              "boot_janela_min": _int("boot_janela_min", 30, 5, 240),
                              "boot_iniciar_min": _int("boot_iniciar_min", 10, 0, 240),
-                             "boot_tentativas": _int("boot_tentativas", 3, 0, 10)})
+                             "autocorrecao_teto_min": _int("autocorrecao_teto_min", 30, 5, 240)})
     _apply_ui_globals()
     db.audit(request.session.get("user"), "config_update", None, _ip(request))
     return RedirectResponse("/admin?ok=1", status_code=303)

@@ -375,48 +375,67 @@ def boot(uptime, status="Stopped"):
 
 @pytest.fixture
 def partidas(monkeypatch):
+    """collector.subir_servicos falso: registra cada chamada (uma por host)."""
     chamadas: list[str] = []
-    resposta = [(True, "start")]
+    lotes: list[list[tuple[str, str]]] = []
+    resposta = [(True, "subiu")]
 
-    def falso(server, wc, nome, acao="restart", allowed=None):
-        assert acao == "start" and nome in (allowed or [])
-        chamadas.append(nome)
-        return resposta[0]
-    monkeypatch.setattr(scheduler, "service_action", falso)
-    return SimpleNamespace(chamadas=chamadas, resposta=resposta)
+    def falso(server, wc, itens, allowed=None, espera_s=25):
+        lotes.append(list(itens))
+        out = {}
+        for acao, nome in itens:
+            assert nome in (allowed or [])
+            chamadas.append(nome if acao == "start" else f"{acao}:{nome}")
+            out[nome] = resposta[0]
+        return out
+    monkeypatch.setattr(scheduler, "subir_servicos", falso)
+    return SimpleNamespace(chamadas=chamadas, lotes=lotes, resposta=resposta)
 
 
 def test_incidente_248_sobe_sozinho_sem_ninguem_clicar(ambiente, partidas):
-    # padrao: ligado, 10 min de uptime, ate 3 tentativas
     msgs = ambiente.ciclo(**boot(228))
     assert len(msgs) == 1 and "nao subiu apos o reboot de" in msgs[0]
     assert partidas.chamadas == []           # cedo demais: o boot ainda esta assentando
     ambiente.passar(0.15)
     msgs = ambiente.ciclo(**boot(228 + 540))
     assert partidas.chamadas == ["RM.Host.Service"]
-    assert any("iniciando RM.Host.Service sozinho (1a de 3 tentativas" in m for m in msgs)
+    assert any("iniciando RM.Host.Service sozinho (1a tentativa; nao subiu apos o reboot" in m
+               and m.endswith(": subiu") for m in msgs)
     assert ("acao", "svc:RM.Host.Service") in kinds(ambiente.banco)
     ambiente.passar(0.02)
     msgs = ambiente.ciclo(**boot(228 + 600, status="Running"))
     assert "resolvido" in msgs[0]
 
 
-def test_partida_que_falha_e_repetida_ate_desistir(ambiente, partidas):
-    partidas.resposta[0] = (False, "Service cannot be started")
+def test_guardiao_nunca_desiste(ambiente, partidas):
+    # o .188 em 16/10: o Elastic Agent estourou os 30 s do Windows por uma hora
+    # depois do boot e o limite antigo de 3 tentativas ja tinha desistido
+    partidas.resposta[0] = (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
+    up, minutos, canal, t0 = 700, [], [], ambiente.relogio[0]
+    for _ in range(14 * 6):                  # 14 h de coleta a cada 10 min
+        antes = len(partidas.chamadas)
+        msgs = ambiente.ciclo(**boot(up))
+        if len(partidas.chamadas) > antes:
+            minutos.append(round((ambiente.relogio[0] - t0) / 60))
+            canal.append(any("iniciando RM.Host.Service sozinho" in m for m in msgs))
+        if minutos and len(minutos) == 5:
+            ambiente.reiniciar()             # deploy do RMon no meio: a conta continua
+        ambiente.passar(10 / 60)
+        up += 600
+    # 1a na hora; depois espera 10, 20, 30 e fica de 30 em 30 min, sem parar
+    assert minutos[:5] == [0, 10, 30, 60, 90]
+    assert all(b - a == 30 for a, b in zip(minutos[3:], minutos[4:]))
+    assert len(minutos) >= 28
+    textos = [m for _, k, _, m in ambiente.banco.alertas if k == "acao"]
+    assert len(textos) == len(minutos) and not any("desisti " in t for t in textos)
+    # canal: as 3 primeiras e uma a cada 6 (o resto fica so na linha do tempo)
+    assert canal[:3] == [True, True, True] and canal[3:5] == [False, False] and canal[5] is True
+
+
+def test_texto_da_falha_diz_quando_tenta_de_novo(ambiente, partidas):
+    partidas.resposta[0] = (False, "nao subiu (Stopped)")
     msgs = ambiente.ciclo(**boot(700))
-    assert any("1a de 3 tentativas" in m and "falhou: Service cannot be started" in m for m in msgs)
-    ambiente.passar(5 / 60)
-    ambiente.ciclo(**boot(700 + 300))        # antes do intervalo: espera
-    assert len(partidas.chamadas) == 1
-    ambiente.passar(5 / 60)
-    ambiente.ciclo(**boot(700 + 600))
-    ambiente.reiniciar()                     # deploy do RMon no meio: a conta continua
-    ambiente.passar(10 / 60)
-    msgs = ambiente.ciclo(**boot(700 + 1200))
-    assert len(partidas.chamadas) == 3 and any("desisti" in m for m in msgs)
-    ambiente.passar(1)
-    ambiente.ciclo(**boot(700 + 4800))
-    assert len(partidas.chamadas) == 3
+    assert any("(1a tentativa;" in m and "tento de novo em 10 min, sem desistir" in m for m in msgs)
 
 
 def test_partida_desligada_so_avisa(ambiente, partidas):
@@ -434,10 +453,28 @@ def test_novo_boot_ganha_nova_tentativa(ambiente, partidas):
     assert partidas.chamadas == ["RM.Host.Service", "RM.Host.Service"]
 
 
-def test_servico_que_caiu_longe_do_boot_nao_e_iniciado_sozinho(ambiente, partidas):
+def test_servico_que_caiu_longe_do_boot_tambem_volta(ambiente, partidas):
     ambiente.ciclo(**boot(5 * HORA, status="Running"))
     msgs = ambiente.ciclo(**boot(5 * HORA + 60))
-    assert partidas.chamadas == [] and "reboot" not in msgs[0]
+    assert partidas.chamadas == ["RM.Host.Service"]
+    assert any("iniciando RM.Host.Service sozinho (1a tentativa; parado desde" in m for m in msgs)
+
+
+def test_desabilitado_ou_inexistente_nao_e_mexido(ambiente, partidas):
+    ambiente.ciclo(**ok(uptime_sec=5 * HORA, services=[
+        {"name": "Fixo.Desligado", "status": "Stopped", "src": "fixo", "start": "Disabled"},
+        {"name": "Fixo.Sumiu", "status": "NOT_FOUND", "src": "fixo"}]))
+    assert partidas.chamadas == []
+
+
+def test_todos_do_host_vao_numa_chamada_so(ambiente, partidas):
+    # o reboot do .188: RM.Host.Service, Service1 e Elastic Agent parados juntos
+    ambiente.ciclo(**ok(uptime_sec=700, services=[
+        {"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto"},
+        {"name": "RM.Host.Service1", "status": "StartPending", "src": "auto", "start": "Auto"},
+        {"name": "Elastic Agent", "status": "Stopped", "src": "agente", "start": "Auto"}]))
+    assert partidas.lotes == [[("start", "RM.Host.Service"), ("start", "RM.Host.Service1"),
+                               ("start", "Elastic Agent")]]
 
 
 def test_sem_partida_automatica_durante_manutencao(ambiente, partidas):
@@ -459,7 +496,7 @@ def test_agente_parado_a_qualquer_hora_sobe_sozinho(ambiente, partidas):
     msgs = ambiente.ciclo(**com_agente(5 * HORA))
     assert partidas.chamadas == ["Elastic Agent"]
     assert any("agente de coleta Elastic Agent = Stopped" in m for m in msgs)
-    assert any("iniciando Elastic Agent sozinho (1a de 3 tentativas; parado desde" in m for m in msgs)
+    assert any("iniciando Elastic Agent sozinho (1a tentativa; parado desde" in m for m in msgs)
     ambiente.passar(1 / 60)
     assert "resolvido" in ambiente.ciclo(**com_agente(5 * HORA + 60, "Running"))[0]
 
@@ -472,26 +509,63 @@ def test_agente_logo_apos_o_boot_espera_assentar(ambiente, partidas):
     assert partidas.chamadas == ["Elastic Agent"]
 
 
-def test_agente_que_nao_sobe_tem_tres_tentativas(ambiente, partidas):
-    partidas.resposta[0] = (False, "Cannot start service")
-    for i in range(6):
+def test_agente_que_nao_sobe_segue_sendo_tentado(ambiente, partidas):
+    partidas.resposta[0] = (False, "nao subiu (Stopped)")
+    for i in range(12):
         ambiente.ciclo(**com_agente(5 * HORA + i * 600))
         ambiente.passar(10 / 60)
-    assert partidas.chamadas == ["Elastic Agent"] * 3
+    # minutos 0, 10, 30, 60, 90: nada de parar na 3a
+    assert partidas.chamadas == ["Elastic Agent"] * 5
 
 
 def test_agente_mudo_para_o_elastic_e_reiniciado(ambiente, partidas, monkeypatch):
-    acoes = []
-    monkeypatch.setattr(scheduler, "service_action",
-                        lambda server, wc, nome, acao="restart", allowed=None:
-                        acoes.append((nome, acao)) or (True, acao))
     monkeypatch.setattr(scheduler, "padrao_cluster", lambda *a, **k: {
         "app-34": {"PADRAO:elastic": "agente do Elastic (h34) sem mandar dados nos ultimos 15 min"}})
     msgs = ambiente.ciclo(**com_agente(5 * HORA, "Running"))
-    assert acoes == [("Elastic Agent", "restart")]
-    assert any("reiniciando Elastic Agent sozinho (1a de 3 tentativas; no ar, mas sem mandar dados" in m
+    assert partidas.chamadas == ["restart:Elastic Agent"]
+    assert any("reiniciando Elastic Agent sozinho (1a tentativa; no ar, mas sem mandar dados" in m
                for m in msgs)
     assert ("acao", "PADRAO:elastic") in kinds(ambiente.banco)
     ambiente.passar(5 / 60)
     ambiente.ciclo(**com_agente(5 * HORA + 300, "Running"))
-    assert len(acoes) == 1                   # espera o intervalo antes de tentar de novo
+    assert len(partidas.chamadas) == 1       # espera o intervalo antes de tentar de novo
+
+
+def test_subir_servicos_le_o_estado_de_cada_um(monkeypatch):
+    from app import collector
+    from app.config import ServerConfig, WinRMConfig
+    scripts = []
+
+    def falso(host, wc, user, pw, script, attempts=2, budget_sec=None):
+        scripts.append(script)
+        saida = ('[{"name":"RM.Host.Service","status":"Running","erro":""},'
+                 '{"name":"Elastic Agent","status":"Stopped","erro":"Tempo limite esgotado (30000 milissegundos)"},'
+                 '{"name":"RM.Host.Service1","status":"StartPending","erro":""}]')
+        return SimpleNamespace(status_code=0, std_out=saida.encode(), std_err=b"")
+    monkeypatch.setattr(collector, "_run_ps_resilient", falso)
+    monkeypatch.setattr(collector, "credential_for", lambda cred: ("u", "p"))
+    srv = ServerConfig(name="x", host="h", services=["RM.Host.Service"])
+    r = collector.subir_servicos(srv, WinRMConfig(), [("start", "RM.Host.Service"), ("restart", "Elastic Agent"),
+                                                       ("start", "RM.Host.Service1"), ("start", "Outro"),
+                                                       ("start", "x'; Stop-Computer")],
+                                 allowed=["Elastic Agent", "RM.Host.Service1", "x'; Stop-Computer"])
+    assert r["RM.Host.Service"] == (True, "subiu")
+    assert r["RM.Host.Service1"][0] is True
+    assert r["Elastic Agent"] == (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
+    assert r["Outro"][0] is False and "nao monitorado" in r["Outro"][1]
+    assert r["x'; Stop-Computer"][0] is False             # nome fora do padrao nao chega ao script
+    assert len(scripts) == 1 and "@('restart', 'Elastic Agent')" in scripts[0]
+    assert "Stop-Computer" not in scripts[0] and "Start-Service" not in scripts[0]
+
+
+def test_subir_servicos_winrm_fora_vira_falha_de_todos(monkeypatch):
+    from app import collector
+    from app.config import ServerConfig, WinRMConfig
+
+    def falha(*a, **k):
+        raise collector.WinRMOperationTimeoutError()
+    monkeypatch.setattr(collector, "_run_ps_resilient", falha)
+    monkeypatch.setattr(collector, "credential_for", lambda cred: ("u", "p"))
+    r = collector.subir_servicos(ServerConfig(name="x", host="h"), WinRMConfig(), [("start", "A"), ("start", "B")],
+                                 allowed=["A", "B"])
+    assert r == {"A": (False, "WinRMOperationTimeoutError: "), "B": (False, "WinRMOperationTimeoutError: ")}
