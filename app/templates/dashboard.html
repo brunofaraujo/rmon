@@ -57,7 +57,7 @@
           {% set running = s.status == 'Running' %}
           {% set down = svc_down(s) %}
           <span class="svc">
-            <span class="pill {{ 'green' if running else ('red' if down else 'amber') }}" title="{{ s.status }}{% if s.start %} &middot; inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Inicio automatico, mas parado desde o boot de {{ hora(s.nao_subiu) }}">nao subiu apos o reboot</span>{% endif %}
+            <span class="pill {{ 'green' if running else ('amber' if s.src == 'agente' or not down else 'red') }}" title="{% if s.src == 'agente' %}agente de coleta: o RMon sobe sozinho &middot; {% endif %}{{ s.status }}{% if s.start %} &middot; inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Inicio automatico, mas parado desde o boot de {{ hora(s.nao_subiu) }}">nao subiu apos o reboot</span>{% endif %}
             {% if running %}
               <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button>
               <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>

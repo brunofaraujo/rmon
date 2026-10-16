@@ -223,6 +223,19 @@ um restart do RMon não recomeça do zero. Host em manutenção não recebe tent
 Só entra nisso o serviço que o RMon monitora no host (os fixos do `servers.yaml` e os
 descobertos por padrão, como `RM.Host*`).
 
+### Agente do Elastic
+
+O `Elastic Agent` é vigiado em todo servidor que o tiver instalado (`defaults.agent_patterns`,
+padrão `["Elastic Agent"]`; `[]` desliga). Ele é descoberto à parte dos `service_patterns`, para
+a pasta dele não entrar na verificação do broker do RM. Parado com início automático, vira o
+alerta **âmbar** `agente:Elastic Agent`: o RM segue funcionando, só o histórico do Elastic fica
+cego. O RMon o sobe sozinho **a qualquer hora**, não só depois do boot. Valem o mesmo uptime
+mínimo e o mesmo limite de `boot_tentativas` por episódio. No ar, mas mudo para o Elastic
+(aviso "Fora do padrao: agente do Elastic"), ele é **reiniciado**, com o mesmo limite.
+
+O `winlogbeat` e o `metricbeat` 8.13.4 que sobraram no .4 e no .248 não entram: apontam para o
+Kibana antigo (10.10.10.9) e saem sozinhos segundos depois de subir.
+
 ### Lembrete de crítico aberto
 
 Problema vermelho que segue aberto volta ao canal a cada `lembrete_h` horas (padrão 4h),

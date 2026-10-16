@@ -44,6 +44,9 @@ $svcPatterns = @(__PATTERNS__)
 # Exclusoes (__EXCLUDE__): casam no curinga mas nao interessam ao monitor
 # (ex.: RM.Host.Cleanner). Somem da descoberta e do broker; fixo nao e afetado.
 $svcExclude = @(__EXCLUDE__)
+# Agentes de coleta (ex.: Elastic Agent): descobertos a parte, para
+# nao entrarem na busca de pastas do broker, que usa os curingas do RM.
+$agentPatterns = @(__AGENTS__)
 function Test-Excluido($s) {
     foreach ($x in $svcExclude) {
         if ($s.Name -like $x -or $s.DisplayName -like $x) { return $true }
@@ -73,6 +76,15 @@ foreach ($p in $svcPatterns) {
         [void]$services.Add([pscustomobject]@{
             name = $s.Name; status = $s.State; start = $s.StartMode
             display = $s.DisplayName; src = 'auto'; pattern = $p })
+    }
+}
+foreach ($p in $agentPatterns) {
+    foreach ($s in @($allSvc | Where-Object { $_.Name -like $p -or $_.DisplayName -like $p } | Sort-Object Name)) {
+        if ($seen[$s.Name]) { continue }
+        $seen[$s.Name] = $true
+        [void]$services.Add([pscustomobject]@{
+            name = $s.Name; status = $s.State; start = $s.StartMode
+            display = $s.DisplayName; src = 'agente'; pattern = $p })
     }
 }
 $services = @($services)
@@ -289,6 +301,19 @@ def jobrunner_settings(defaults: dict[str, Any] | None) -> dict[str, Any]:
     return {**JOBRUNNER_DEFAULTS, **((defaults or {}).get("jobrunner") or {})}
 
 
+# Agentes de coleta vigiados em todo servidor que os tiver instalados. O RMon
+# sobe sozinho o que estiver parado (scheduler.iniciar_automatico).
+AGENT_PATTERNS_DEFAULT = ["Elastic Agent"]
+
+
+def agent_patterns(defaults: dict[str, Any] | None) -> list[str]:
+    """`defaults.agent_patterns` do inventario; sem a chave, os nossos ([] desliga)."""
+    d = defaults or {}
+    if "agent_patterns" in d:
+        return [str(x) for x in (d.get("agent_patterns") or [])]
+    return list(AGENT_PATTERNS_DEFAULT)
+
+
 def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
     services = server.services or list(defaults.get("services") or [])
     patterns = server.service_patterns or list(defaults.get("service_patterns") or [])
@@ -315,6 +340,7 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__SERVICES__", ",".join(_ps_str(s) for s in services))
         .replace("__PATTERNS__", ",".join(_ps_str(p) for p in patterns))
         .replace("__EXCLUDE__", ",".join(_ps_str(x) for x in exclude))
+        .replace("__AGENTS__", ",".join(_ps_str(a) for a in agent_patterns(defaults)))
         .replace("__LOGS__", ",".join(f"'{l}'" for l in logs))
         .replace("__LOOKBACK_H__", str(lookback))
         .replace("__NOISE_IDS__", ",".join(str(int(n)) for n in noise))

@@ -708,6 +708,8 @@ templates.env.globals["kind_label"] = KIND_LABEL
 def _problema_label(chave: str) -> str:
     if chave.startswith("svc:"):
         return "Servico " + chave[4:]
+    if chave.startswith("agente:"):
+        return "Agente " + chave[7:]
     if chave.startswith("broker:"):
         return "Broker " + chave[7:]
     if chave.startswith("PADRAO:"):

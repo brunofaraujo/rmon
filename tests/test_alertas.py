@@ -335,3 +335,42 @@ def test_hora_do_boot_nao_oscila_entre_ciclos():
     assert r2["services"][0]["nao_subiu"] == int(boot)
     r3 = coleta(uptime_sec=60, services=[rm_parado()])   # reiniciou de novo
     assert scheduler.marcar_pos_boot(r3, {}, AGORA + 3600, 30 * 60, boot) == AGORA + 3540
+
+
+# ------------------------------------------------------------ agentes de coleta (Elastic Agent)
+
+def agente(**kw):
+    s = {"name": "Elastic Agent", "status": "Stopped", "src": "agente", "start": "Auto",
+         "pattern": "Elastic Agent"}
+    s.update(kw)
+    return s
+
+
+def test_agente_parado_e_ambar_e_notifica():
+    p = scheduler.problems(coleta(services=[agente()]), TH)
+    assert p == {"agente:Elastic Agent": "agente de coleta Elastic Agent = Stopped"}
+    assert not scheduler.critico("agente:Elastic Agent")
+    assert scheduler.notifica("agente:Elastic Agent")
+
+
+def test_agente_desligado_de_proposito_nao_e_problema():
+    assert scheduler.problems(coleta(services=[agente(start="Disabled")]), TH) == {}
+
+
+def test_agente_que_some_da_coleta_fecha_calado():
+    assert scheduler.fora_do_monitoramento("agente:Elastic Agent", coleta(services=[]))
+    assert not scheduler.fora_do_monitoramento("agente:Elastic Agent", coleta(services=[agente()]))
+
+
+def test_coleta_procura_o_elastic_agent_por_padrao():
+    from app.collector import _build_script
+    from app.config import ServerConfig
+    srv = ServerConfig(name="x", host="10.0.0.1")
+    assert "$agentPatterns = @('Elastic Agent')" in _build_script(srv, {})
+    assert "$agentPatterns = @()" in _build_script(srv, {"agent_patterns": []})
+
+
+def test_agente_parado_logo_apos_o_boot_ainda_nao_e_problema():
+    # Elastic Agent e "Automatico (atraso na inicializacao)": sobe ~2 min depois do boot
+    assert scheduler.problems(coleta(uptime_sec=120, services=[agente()]), TH) == {}
+    assert "agente:Elastic Agent" in scheduler.problems(coleta(uptime_sec=900, services=[agente()]), TH)
