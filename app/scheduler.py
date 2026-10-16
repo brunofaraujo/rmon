@@ -77,6 +77,9 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
 # problema de infraestrutura.
 AVISOS = frozenset({"JOBS", "JOBSQL"})
 
+# Uptime abaixo do qual agente de coleta parado nao e problema (partida atrasada)
+AGENTE_CARENCIA_S = 10 * 60
+
 # Problemas que pintam o cartao de vermelho (mural e painel).
 CRITICOS = frozenset({"DOWN", "APP", "JOBQUEUE", "JOBFAIL"})
 
@@ -326,8 +329,13 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         if isinstance(jr, dict) and jr.get("fonte") == "elastic":
             p.update(jobrunner_problems(jr, th))
         return p
+    up = r.get("uptime_sec")
     for s in r.get("services") or []:
         if service_down(s):
+            # Agente com partida atrasada so sobe ~2 min depois do boot: parado
+            # antes disso e o Windows ainda nao chegou nele, nao defeito.
+            if s.get("src") == "agente" and up is not None and float(up) < AGENTE_CARENCIA_S:
+                continue
             p[chave_servico(s)] = texto_servico(s)
     if r.get("app_ok") is False:
         p["APP"] = "app_health (HTTP) falhou"

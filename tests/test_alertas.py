@@ -368,3 +368,9 @@ def test_coleta_procura_o_elastic_agent_por_padrao():
     srv = ServerConfig(name="x", host="10.0.0.1")
     assert "$agentPatterns = @('Elastic Agent')" in _build_script(srv, {})
     assert "$agentPatterns = @()" in _build_script(srv, {"agent_patterns": []})
+
+
+def test_agente_parado_logo_apos_o_boot_ainda_nao_e_problema():
+    # Elastic Agent e "Automatico (atraso na inicializacao)": sobe ~2 min depois do boot
+    assert scheduler.problems(coleta(uptime_sec=120, services=[agente()]), TH) == {}
+    assert "agente:Elastic Agent" in scheduler.problems(coleta(uptime_sec=900, services=[agente()]), TH)
