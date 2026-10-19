@@ -733,7 +733,7 @@ PROBLEMA_LABEL = {
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
 KIND_LABEL = {"raised": "abriu", "resolved": "resolvido", "reminder": "lembrete",
-              "manutencao": "manutenção", "acao": "ação automática", "package": "software",
+              "manutencao": "manutenção", "acao": "ação", "package": "software",
               "nlb": "balanceamento"}
 templates.env.globals["kind_label"] = KIND_LABEL
 templates.env.globals["acao_nlb"] = nlb.ACAO_LABEL
