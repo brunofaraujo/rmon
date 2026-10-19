@@ -19,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, elastic, execution, fontes, incus, inventory, jobstats, manutencao,
-               nlb, nomes, notify, packages, scheduler)
+from . import (__version__, db, elastic, execution, fontes, incus, inventory, jobstats, limite_jr,
+               manutencao, nlb, nomes, notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -519,6 +519,7 @@ def server_detail(request: Request, name: str):
          "jr_kill": {"gb": th.get("jobrunner_kill_gb"), "mb_min": th.get("jobrunner_kill_mb_min"),
                      "min_mb": th.get("jobrunner_kill_min_mb")},
          "jr_sonda": _sonda_do_servidor(name),
+         "limite_jr": limite_jr.resumo(hist[0].get("limite_jr")),
          "es": _elastic_do_servidor(name, hist[0], th, horas if horas in (24, 168, 720) else 24),
          "manut": manut, "flash": flash},
     )

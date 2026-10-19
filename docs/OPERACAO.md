@@ -284,7 +284,99 @@ pelo Incus: os nós do NLB pela regra do [NLB.md](NLB.md), os demais pela de
 [CONFIGURACAO.md](CONFIGURACAO.md#servidor-travado-sem-contato-defaultsreinicio).
 Servidor físico, como o .222, não tem como ser reiniciado pelo RMon: sai o alerta crítico
 **"Sem contato e sem como reiniciar"** e o reset é no console. A proteção dele é o
-encerramento automático do JobRunner, que não deixa o job esgotar a memória.
+encerramento automático do JobRunner, que não deixa o job esgotar a memória. E, quando
+instalado, o [teto de memória no Windows](#teto-de-memória-do-jobrunner-no-windows).
+
+### Teto de memória do JobRunner no Windows
+
+O encerramento automático depende de o RMon **ver** o processo crescer. Em 19/10 o JobRunner
+do .188 foi de 0,4 a 4,2 GB entre duas leituras, e um estouro assim dentro de um único
+intervalo ainda derruba o servidor. O .222 é físico e não tem como ser reiniciado de fora.
+O teto resolve isso no próprio Windows: um serviço do RMon põe cada `RM.Host.JobRunner`
+num **Job Object** com limite de memória por processo (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`).
+Quando o processo pede memória acima do teto, o Windows nega. O job falha por falta de
+memória e o servidor segue de pé, sem depender de coleta, rede ou WinRM.
+
+**Dois modos.** O padrão é `registrar`: nada é bloqueado e um limite só de aviso grava no
+Event Log quando o processo passaria do teto. É o modo para calibrar. Em `aplicar` o
+Windows nega a memória. O modo muda sem reinstalar e vale em até 2 s.
+
+**O que o RM faz quando o JobRunner fica sem memória.** O RM já passou por isso sem teto.
+Em 06/10 às 21:14, o PID 47072 do WIN2016 morreu com `System.OutOfMemoryException`
+(eventos 1026 e 1000 no Application). O RM marcou o job 2417813 (`EduGeraHorarioTurmaData`)
+como STATUS 7, **"Ocorreu uma falha crítica no processo"**. O RM.Host mantém 16 JobRunners
+por instância (`RM.Host.Service` e `RM.Host.Service1`), sempre como filhos dela, e repõe o
+que morre. Com o teto em `aplicar` o desfecho para o RM é o mesmo, só que no teto, e não
+quando o servidor inteiro já está sem memória.
+
+**Job do próprio RM.** Conferido em 19/10 no .188 e no .222: nenhum dos 32 JobRunners de cada
+um, nem os RM.Host, estava em Job Object (`IsProcessInJob` = falso). Se um dia o RM passar a
+usar job, o Windows Server 2016 aceita job dentro de job e vale o limite mais apertado.
+O serviço registra no evento 1010 quando o processo já estava em outro job ("aninhado").
+
+**Teto padrão:** 6144 MB por processo, sem passar de 40% da RAM do servidor. Nos servidores
+de hoje: .248 (8 GB de RAM) fica com 3 GB, .223 (10,5 GB) com 4 GB e os demais com 6 GB. Ele
+fica acima do encerramento automático (4 GB): quando o RMon vê o processo crescer, ele
+encerra primeiro. O teto é para o estouro que acontece entre duas leituras.
+
+**Instalar** (só com o OK do Bruno; comece pela homologação). Pela VM, sem copiar nada para o
+servidor, porque o script leva o `deploy/windows/` pela própria sessão WinRM:
+
+```bash
+sudo -u rmon /opt/rmon/.venv/bin/python /opt/rmon/deploy/limite_jobrunner_remoto.py checar
+sudo -u rmon /opt/rmon/.venv/bin/python /opt/rmon/deploy/limite_jobrunner_remoto.py instalar homolog-218
+sudo -u rmon /opt/rmon/.venv/bin/python /opt/rmon/deploy/limite_jobrunner_remoto.py instalar fin-sge-jobs-222 --teto-mb 6144
+```
+
+Ou no servidor, como administrador, com a pasta `deploy\windows` copiada para ele:
+`powershell -ExecutionPolicy Bypass -File instalar-limite-jobrunner.ps1 [-Modo aplicar] [-TetoMB 6144]`.
+O instalador compila o `RMonLimiteJobRunner.cs` com o `csc.exe` do .NET Framework 4 do próprio
+servidor. Nenhum binário é baixado, e o compilador existe nos 8 servidores (conferido em 19/10).
+Depois ele cria o serviço `RMonLimiteJobRunner` (LocalSystem, automático, volta sozinho em
+1 min se cair) e confere que os JobRunners ficaram sob o teto. Rodar de novo atualiza.
+
+**Trocar o modo:** `limite_jobrunner_remoto.py modo fin-sge-jobs-222 aplicar` (ou `registrar`). No
+servidor: `Set-ItemProperty HKLM:\SOFTWARE\RMon\LimiteJobRunner Modo aplicar`. A configuração
+toda fica nessa chave (`Modo`, `TetoMB`, `Processo`, `Pais`, `IntervaloMs`) e é relida a cada
+varredura.
+
+**Desinstalar:** `limite_jobrunner_remoto.py desinstalar SERVIDOR`, ou no servidor
+`desinstalar-limite-jobrunner.ps1`. Ao parar, o serviço tira o teto de todos os JobRunners no
+ar, sem reiniciar nada do RM. **Parar o serviço também tira o teto**, e a tela mostra isso em âmbar.
+
+**Calibrar antes de ligar.** Deixe em `registrar` uma ou duas semanas e veja na tela do servidor
+(ou no Event Log) quem passaria do teto. O evento 1030 traz o maior consumo de cada JobRunner
+que chegou a metade do teto. Ligue `aplicar` quando nenhum job legítimo passar dele. Cuidados:
+
+- o teto conta a memória **privada** (a mesma que esgota a memória reservada do servidor), não
+  a RAM em uso;
+- o JobRunner é reaproveitado entre jobs: o que um job deixou alocado conta para o seguinte;
+- em `aplicar`, falha o job que estiver rodando naquele processo quando o teto bate. Quase
+  sempre é o relatório sem filtro, mas não necessariamente.
+
+**Na tela do servidor**, o painel **Teto de memória dos processos de job no Windows** aparece
+abaixo dos processos de job. Ele mostra o modo (verde = ligado, azul = só registra, âmbar =
+parado ou sem notícia), quantos processos estão sob o teto, o maior agora e os últimos que
+passaram do teto. A leitura vem da coleta WinRM, que só lê o arquivo de estado do serviço
+(`C:\ProgramData\RMon\LimiteJobRunner\estado.json`).
+
+Eventos no log Application, origem `RMon-LimiteJobRunner`:
+
+| ID | Nível | O que é |
+|---|---|---|
+| 1000 / 1001 | Informação | serviço iniciou / parou (ao parar: quantos ficaram sem teto) |
+| 1002 | Aviso | a configuração mudou (modo ou teto), aplicada a todos |
+| 1010 | Informação | JobRunners novos postos sob o teto (PID e pai) |
+| 1011 | Informação | JobRunner com outro processo pai: ficou sem teto |
+| 1020 | Aviso | `registrar`: o processo passou do teto (nada bloqueado) |
+| 1021 | Erro | `aplicar`: bateu no teto e o Windows negou a memória (aparece em *Erros do Windows*) |
+| 1030 | Aviso / Informação | JobRunner que passou do teto ou chegou a metade dele terminou: maior consumo e código de saída |
+| 1090 / 1091 | Erro | não conseguiu pôr o processo sob o teto / mudar o teto |
+| 1096–1099 | Erro | estado, configuração ou falha interna (repetidos no máximo a cada 10 min) |
+
+Teste local, sem instalar nem ser administrador: compile o `.cs` com o `csc.exe` e rode
+`RMonLimiteJobRunner.exe -console -processo:NOME -pais:* -teto:300 -modo:aplicar -estado:C:\temp\lj -segundos:60`.
+Ele age sobre os processos com aquele nome e escreve os eventos no console.
 
 ---
 

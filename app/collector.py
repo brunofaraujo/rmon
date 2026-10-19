@@ -14,6 +14,7 @@ import requests
 import winrm
 from winrm.exceptions import WinRMOperationTimeoutError
 
+from . import limite_jr
 from .config import ServerConfig, WinRMConfig, credential_for
 
 log = logging.getLogger("rmon.collector")
@@ -201,6 +202,7 @@ if ($jrName) {
         count = $jrAll.Count; total_mb = [math]::Round([double]$jrSum / 1MB, 0)
         top = $jrTop; computer = $env:COMPUTERNAME }
 }
+__LIMITE_JR__
 # NLB + RDP (so nos nos declarados com `nlb: true`): estado do proprio no no
 # cluster e quantos logons RDP autenticaram (1149) x viraram sessao (21/25)
 # na janela. E a diferenca entre os dois que denuncia o no que aceita o
@@ -241,8 +243,35 @@ if (__NLB__) {
     cpu = $cpu; mem_pct = $memPct; mem_total_mb = [math]::Round($memTotal / 1024, 0)
     uptime_sec = [math]::Round($uptime, 0); disks = $disks; services = $services; events = $events
     users_count = $ucount; broker = $broker; commit_pct = $commitPct; jobrunners = $jobrunners
-    nlb = $nlb
+    nlb = $nlb; limite_jr = $limiteJr
 } | ConvertTo-Json -Depth 5 -Compress
+"""
+
+
+# Teto de memoria do JobRunner (deploy/windows, app/limite_jr.py): o servico local
+# poe cada JobRunner num Job Object e grava o estado num arquivo. Este bloco SO
+# le - o RMon nao liga, desliga nem configura nada. Sem o servico, $null = nao
+# instalado. Precisa de $allSvc (Win32_Service) ja lido; o
+# deploy/limite_jobrunner_remoto.py usa o mesmo bloco no `checar`.
+_PS_LIMITE_JR = r"""
+$limiteJr = $null
+$ljs = @($allSvc | Where-Object { $_.Name -eq __LJ_SVC__ })[0]
+if ($ljs) {
+    $lj = [ordered]@{ servico = "$($ljs.State)"; inicio = "$($ljs.StartMode)"; idade_s = $null; erro = $null }
+    try {
+        $ljE = Get-Content -LiteralPath (Join-Path $env:ProgramData 'RMon\LimiteJobRunner\estado.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($k in 'ativo', 'modo', 'teto_mb', 'processos', 'sob_teto', 'falhas', 'ignorados', 'maior_mb', 'maior_pid', 'versao') { $lj[$k] = $ljE.$k }
+        $lj.ultimo_erro = $ljE.erro
+        # idade e janela de 24 h pelo relogio do proprio host
+        $ljAgora = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $lj.idade_s = $ljAgora - [int64]$ljE.atualizado_epoch
+        $ljEst = @($ljE.estouros | Where-Object { $_ })
+        $lj.estouros_24h = @($ljEst | Where-Object { $ljAgora - [int64]$_.quando_epoch -le 86400 }).Count
+        $lj.estouros = @($ljEst | Select-Object -Last 3 | ForEach-Object {
+            [pscustomobject]@{ pid = $_.pid; mb = $_.mb; pico_mb = $_.pico_mb; modo = $_.modo; quando = $_.quando; fim = $_.fim } })
+    } catch { $lj.erro = "$($_.Exception.Message)".Trim() }
+    $limiteJr = [pscustomobject]$lj
+}
 """
 
 
@@ -357,6 +386,8 @@ def _build_script(server: ServerConfig, defaults: dict[str, Any]) -> str:
         .replace("__BROKER_GENERATORS__", ",".join(_ps_str(g) for g in broker_gen))
         .replace("__JR_NAME__", jr_name)
         .replace("__JR_TOP__", str(jr_top))
+        .replace("__LIMITE_JR__", _PS_LIMITE_JR)
+        .replace("__LJ_SVC__", _ps_str(limite_jr.SERVICO))
         .replace("__NLB__", "$true" if getattr(server, "nlb", False) else "$false")
         .replace("__RDP_WIN__", str(nlb_window(defaults)))
     )
@@ -991,7 +1022,7 @@ def collect_server(
     result: dict[str, Any] = {
         "reachable": False, "cpu": None, "mem_pct": None, "uptime_sec": None,
         "disks": [], "services": [], "events": [], "app_ok": None, "app_ms": None,
-        "broker": [], "commit_pct": None, "jobrunners": None, "error": None,
+        "broker": [], "commit_pct": None, "jobrunners": None, "limite_jr": None, "error": None,
     }
     # Saude HTTP (independe do WinRM)
     result["app_ok"], result["app_ms"] = _check_app_health(server.app_health)
@@ -1022,6 +1053,10 @@ def collect_server(
             "commit_pct": data.get("commit_pct"),
             "nlb": data.get("nlb") if isinstance(data.get("nlb"), dict) else None,
         })
+        lj = data.get("limite_jr")
+        if isinstance(lj, dict):
+            lj["estouros"] = _as_list(lj.get("estouros"))
+            result["limite_jr"] = lj
         jr = data.get("jobrunners")
         if isinstance(jr, dict):
             jr["top"] = _as_list(jr.get("top"))

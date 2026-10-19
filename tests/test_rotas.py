@@ -388,3 +388,26 @@ def test_tela_mostra_a_sonda_dos_jobrunners(app_falso, monkeypatch):
     assert "a sonda lê os processos de job a cada 15 s" in html and "última leitura há 7 s" in html
     monkeypatch.setattr(scheduler, "sonda_ultima", {"app-34": (time.time() - 3, False)})
     assert "sem resposta" in app_falso.c.get("/server/app-34").text
+
+
+def test_tela_mostra_o_teto_de_memoria_do_windows(app_falso):
+    app_falso.entrar()
+    html = app_falso.c.get("/server/app-34").text
+    assert "Teto de memória dos processos de job no Windows" in html and "Não instalado neste servidor" in html
+    lj = {"servico": "Running", "ativo": True, "modo": "registrar", "teto_mb": 6144, "processos": 32,
+          "sob_teto": 32, "falhas": 0, "idade_s": 10, "estouros_24h": 1,
+          "estouros": [{"pid": 7760, "mb": 6300, "pico_mb": 9800, "modo": "registrar",
+                        "quando": "2026-10-19 10:36:00"}]}
+    app_falso.estado.coletas[:] = [coleta(limite_jr=lj)]
+    html = app_falso.c.get("/server/app-34").text
+    assert "Só registra (calibração): teto de 6 GB, nada é bloqueado" in html
+    assert "32 de 32 processos de job sob o teto" in html
+    assert "PID 7760: 6,2 GB em 2026-10-19 10:36:00, pico de 9,6 GB (só registrado)" in html
+    app_falso.estado.coletas[:] = [coleta(limite_jr={**lj, "servico": "Stopped"})]
+    assert "os processos de job estão sem teto" in app_falso.c.get("/server/app-34").text
+
+
+def test_servidor_sem_jobrunner_e_sem_teto_nao_tem_o_painel(app_falso):
+    app_falso.entrar()
+    app_falso.estado.coletas[:] = [coleta(jobrunners=None)]
+    assert "Teto de memória dos processos de job" not in app_falso.c.get("/server/app-34").text
