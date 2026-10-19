@@ -85,8 +85,6 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 | `nlb` | — | `true` = nó de cluster NLB de terminal server: coleta o estado do NLB e os logons RDP e entra na drenagem/reingresso automático (ver [NLB.md](NLB.md)) |
 | `elastic_host` | — | `host.name` do servidor no Elasticsearch, quando não for o COMPUTERNAME (ver [Elasticsearch](#elasticsearch-opcional-só-leitura)) |
 | `incus_vm` | — | Instância desta VM no Incus. Servidor travado sem contato é reiniciado por ela (nó do NLB: [NLB.md](NLB.md); fora do NLB: [Servidor travado](#servidor-travado-sem-contato-defaultsreinicio)) |
-| `ilo` | — | IP da iLO da HPE deste servidor físico. Fora do NLB, servidor travado sem contato é reiniciado por ela (Redfish). Credencial em `RMON_CRED_<ILO_CRED>_*` |
-| `ilo_cred` | — | Perfil da credencial da iLO. Padrão `ilo` (`RMON_CRED_ILO_USER`/`_PASSWORD`) |
 
 ### Serviços fixos x descobertos (`service_patterns`)
 
@@ -394,8 +392,6 @@ parser Python próprio (o `systemd` **não** usa `EnvironmentFile` — ver
 | `RMON_DB_DSN` | **Obrigatório.** DSN do PostgreSQL: `postgresql://user:senha@host:porta/banco` |
 | `RMON_CRED_<PERFIL>_USER` / `_PASSWORD` | Credencial WinRM do perfil (ex.: `RMON_CRED_FIN_USER`). Usuário no formato `DOMINIO\usuario` |
 | `RMON_WINRM_USER` / `_PASSWORD` | Par legado, usado por servidores **sem** `cred` |
-| `RMON_CRED_ILO_USER` / `_PASSWORD` | Usuário local da iLO (só o privilégio *Virtual Power and Reset*) para o reinício de servidor travado. **Não** cai no par legado do WinRM |
-| `RMON_ILO_CA` | PEM da CA da iLO (padrão `/opt/rmon/config/ilo-ca.crt`). Sem o arquivo, a conexão é cifrada mas o certificado não é conferido |
 | `RMON_SQL_HOST`/`_PORT`/`_DB`/`_USER`/`_PASSWORD` | Login (somente-leitura) do SQL Server p/ estatísticas de jobs |
 | `RMON_TELEGRAM_TOKEN` / `RMON_TELEGRAM_CHAT_ID` | Alerta via Telegram |
 | `RMON_SLACK_WEBHOOK` | Alerta via Slack (Incoming Webhook) |
@@ -721,7 +717,7 @@ sinais, travas de segurança e como ativar o modo `auto`: [NLB.md](NLB.md).
 ## Servidor travado sem contato (`defaults.reinicio`)
 
 Servidor **fora do NLB** que trava (o .222 em 19/10: WinRM, RPC e agente do Elastic parados
-juntos) é reiniciado fora do Windows, com a mesma regra que reinicia os nós do NLB:
+juntos) entra na mesma regra que reinicia os nós do NLB:
 
 - sem contato (WinRM) há `ciclos` coletas seguidas (padrão 3);
 - o Elastic confirma que o Windows parou: a consulta respondeu, o host mandava dados quando
@@ -730,11 +726,13 @@ juntos) é reiniciado fora do Windows, com a mesma regra que reinicia os nós do
 - fora de janela de manutenção, no máximo `max_dia` reinícios em 24h (padrão 2) e um a
   cada `intervalo_min` (padrão 30).
 
-O canal é o que o servidor tiver: `incus_vm` (o mesmo comando forçado do NLB, ver
-[NLB.md](NLB.md)) ou `ilo` (Redfish `ForceRestart`). Sem canal, ou passado o limite, sai
-um alerta **crítico** uma vez por episódio dizendo que o Windows travou e que precisa de
-reset no console/iLO. Sem Elastic não há confirmação e nada acontece além do alerta de
-sem contato.
+Se for VM (`incus_vm`), é reiniciado pelo Incus, com o mesmo comando forçado do NLB (ver
+[NLB.md](NLB.md)). Servidor físico, como o .222, não tem canal fora do Windows: o RMon não
+consegue reiniciá-lo, e a proteção dele é não deixar travar (o
+[encerramento automático](#encerramento-automático) do JobRunner). Travado mesmo assim,
+ou passado o limite de reinícios, sai um alerta **crítico** uma vez por episódio dizendo
+que o Windows parou (não só o WinRM) e que o reset é no console. Sem Elastic não há
+confirmação e nada acontece além do alerta de sem contato.
 
 ```yaml
 defaults:
@@ -744,13 +742,7 @@ defaults:
     elastic_mudo_sec: 180
     max_dia: 2
     intervalo_min: 30
-servers:
-  - name: fin-sge-jobs-222
-    ilo: 10.10.x.y      # IP da iLO; credencial em RMON_CRED_ILO_USER/_PASSWORD
 ```
-
-A iLO de cada servidor é conferida de hora em hora (só leitura: estado de energia). Canal
-quebrado vira mensagem antes do dia em que for preciso.
 
 ## Embutir o mural (`/tv`) em outro painel via iframe
 

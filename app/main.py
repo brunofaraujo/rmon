@@ -732,8 +732,6 @@ PROBLEMA_LABEL = {
     "out_unowned": "Fora do balanceamento", "recovered": "Recuperado no balanceamento",
     "nlb_error": "Leitura do balanceamento", "failed": "Ação no balanceamento falhou",
     "MANUT": "Manutenção",
-    # reinicio de servidor fora do NLB (alerts_log.kind = "reinicio")
-    "canal": "Canal de reinício (iLO/hypervisor)",
 }
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)

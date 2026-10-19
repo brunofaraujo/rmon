@@ -13,12 +13,15 @@ Aqui vale a mesma regra para os demais servidores:
   (nlb.elastic_confirma: consulta respondida, o host mandava dados quando o
   contato caiu e nada chega ha `elastic_mudo_sec`);
 * fora de janela de manutencao; no maximo `max_dia` reinicios em 24h e um a
-  cada `intervalo_min` (o boot de um servidor fisico demora).
+  cada `intervalo_min`.
 
-O canal e o que o servidor tiver: VM no Incus (`incus_vm`, o mesmo comando
-forcado do NLB) ou iLO da HPE (`ilo`, app/ilo.py). Sem canal, sem confirmacao do
-Elastic ou passado o limite: alerta critico, uma vez por episodio, dizendo o
-que fazer. Elastic ainda recebendo dados: so o WinRM travou - aviso, sem reset.
+O unico canal fora do Windows e o Incus (`incus_vm`, o mesmo comando forcado do
+NLB). Servidor fisico (o .222 e um HPE sem iLO acessivel) nao tem como ser
+reiniciado pelo RMon: a protecao dele e nao deixar travar (o encerramento
+automatico do JobRunner, scheduler.encerrar_jobrunners). Travado mesmo assim,
+sai um alerta critico, uma vez por episodio, dizendo que o Windows parou (nao
+so o WinRM) e que o reset e no console. Passado o limite de reinicios, idem.
+Elastic ainda recebendo dados: so o WinRM travou - aviso, sem reset.
 Elastic desligado ou sem leitura: nada aqui (o alerta "sem contato" ja diz tudo).
 """
 from __future__ import annotations
@@ -29,7 +32,7 @@ import threading
 import time
 from typing import Any, Iterable
 
-from . import incus, ilo
+from . import incus
 from .nlb import elastic_confirma
 
 log = logging.getLogger("rmon.reinicio")
@@ -48,7 +51,7 @@ _LOCK = threading.Lock()
 
 ICON = {"reset_unreachable": "\U0001F504", "would_reset": "\U0001F7E0",
         "unreachable_crit": "\U0001F534", "unreachable_alive": "⚠️",
-        "failed": "❌", "canal": "⚠️"}
+        "failed": "❌"}
 
 
 def settings_for(defaults: dict | None) -> dict[str, Any]:
@@ -63,12 +66,10 @@ def settings_for(defaults: dict | None) -> dict[str, Any]:
 
 
 def canal(server, nlb_cfg: dict) -> tuple[str, str]:
-    """("incus"|"ilo"|"", descricao) - por onde este servidor pode ser reiniciado."""
+    """("incus"|"", descricao) - por onde este servidor pode ser reiniciado."""
     vm = getattr(server, "incus_vm", "") or ""
     if vm and incus.configurado(nlb_cfg):
         return "incus", f"a VM {vm} pelo Incus"
-    if ilo.configurado(server):
-        return "ilo", f"o servidor pela iLO {server.ilo}"
     return "", ""
 
 
@@ -118,14 +119,14 @@ def avaliar(nome: str, reachable: bool, es: dict | None, st: dict, cfg: dict, no
     impede = None
     if not tipo:
         impede = ("sem_canal", f"o Elastic também está sem dados ({es_txt}): o Windows travou. "
-                               "O RMon não tem como reiniciá-lo (sem iLO nem hypervisor configurado)")
+                               "O RMon não tem como reiniciá-lo (servidor físico)")
     elif len(st["resets"]) >= cfg["max_dia"]:
         impede = ("limite", f"Elastic sem dados ({es_txt}), mas o RMon já o reiniciou "
                             f"{len(st['resets'])}x em 24h: só aviso")
     if impede:
         if _nota(st, "crit:" + impede[0]):
             return {"kind": "unreachable_crit", "action": False,
-                    "msg": f"{resumo}: {impede[1]}. Reinicie pelo console, iLO ou hypervisor"}
+                    "msg": f"{resumo}: {impede[1]}. Reinicie pelo console"}
         return None
     if st["resets"] and now - st["resets"][-1] < cfg["intervalo_min"] * 60:
         return None          # reiniciado ha pouco: o boot ainda esta em curso
@@ -143,8 +144,6 @@ def avaliar(nome: str, reachable: bool, es: dict | None, st: dict, cfg: dict, no
 def _executar(server, tipo: str, nlb_cfg: dict) -> tuple[bool, str]:
     if tipo == "incus":
         return incus.reset(nlb_cfg, server.incus_vm)
-    if tipo == "ilo":
-        return ilo.reset(server)
     return False, "sem canal"
 
 
@@ -159,28 +158,6 @@ def _registrar(server, kind: str, msg: str, avisar: bool = True) -> None:
 def servidores(inv) -> list:
     """Quem entra aqui: todo servidor fora do NLB (os do NLB tem a regra deles)."""
     return [s for s in inv.servers if not getattr(s, "nlb", False)]
-
-
-def checar_canais(inv, nlb_cfg: dict, state: dict, now: float) -> None:
-    """Confere de hora em hora a iLO de cada servidor que tem uma (so leitura).
-
-    Canal quebrado tem de aparecer antes do dia em que o reset for preciso: a
-    primeira falha e a volta viram mensagem. O Incus ja e conferido pelo NLB.
-    """
-    canais = state.setdefault("canais", {})
-    for s in servidores(inv):
-        if not ilo.configurado(s):
-            canais.pop(s.name, None)
-            continue
-        antes = canais.get(s.name) or {}
-        if not ilo.devido(antes, now):
-            continue
-        r = ilo.checar(s)
-        canais[s.name] = {**r, "ts": now}
-        if bool(antes.get("ok")) != r["ok"] and (antes or not r["ok"]):
-            txt = ("canal de reinício OK: " if r["ok"] else
-                   "canal de reinício FALHOU (se travar, não será reiniciado): ")
-            _registrar(s, "canal", txt + r["detail"])
 
 
 def run_cycle(inv, coletas: dict[str, dict], es: dict[str, dict] | None,
@@ -228,9 +205,5 @@ def run_cycle(inv, coletas: dict[str, dict], es: dict[str, dict] | None,
                         continue
             _registrar(s, d["kind"], d["msg"])
             feitas.append({**d, "server": s.name})
-        try:
-            checar_canais(inv, nlb_cfg, state, now)
-        except Exception:  # noqa: BLE001
-            log.exception("reinicio: falha ao conferir os canais")
         db.set_config(STATE_KEY, state)
     return feitas

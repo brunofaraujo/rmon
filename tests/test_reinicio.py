@@ -1,4 +1,4 @@
-"""Servidor fora do NLB travado sem contato (app/reinicio.py) e o canal da iLO (app/ilo.py).
+"""Servidor fora do NLB travado sem contato (app/reinicio.py).
 
 O caso real e o .222 em 19/10: JobRunner esgotou a memoria as 10:31, o WinRM, o
 RPC e o agente do Elastic pararam juntos e o servidor ficou esperando alguem.
@@ -7,59 +7,56 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app import db, ilo, incus, notify, reinicio
+from app import db, incus, notify, reinicio
 
 CFG = reinicio.settings_for({})
 T0 = 1_760_000_000.0
-ILO = ("ilo", "o servidor pela iLO 10.9.9.22")
+VM = ("incus", "a VM vm-x pelo Incus")
+FISICO = ("", "")
 
 
 def es_mudo(ultimo=T0 - 30):
-    return {"ok": True, "ts": None} if ultimo is None else {"ok": True, "ts": ultimo}
+    return {"ok": True, "ts": ultimo}
 
 
-def rodar(st, ciclos, es, via=ILO, manut=False, inicio=T0, passo=60):
+def rodar(st, ciclos, es, via=VM, manut=False, inicio=T0, passo=60):
     """`ciclos` coletas sem contato seguidas; devolve as decisoes."""
-    out = []
-    for i in range(ciclos):
-        d = reinicio.avaliar("jobs-222", False, es if i == 0 else {"ok": True, "ts": None}, st,
+    return [reinicio.avaliar("x", False, es if i == 0 else {"ok": True, "ts": None}, st,
                              CFG, inicio + i * passo, via, manut)
-        out.append(d)
-    return out
+            for i in range(ciclos)]
 
 
-def test_222_travado_e_reiniciado_na_terceira_coleta():
-    st = {}
-    d = rodar(st, 3, es_mudo(T0 - 30), passo=120)
+def test_vm_travada_e_reiniciada_na_terceira_coleta():
+    d = rodar({}, 3, es_mudo(), passo=120)
     assert d[0] is None and d[1] is None
     assert d[2]["action"] and d[2]["kind"] == "reset_unreachable"
-    assert "iLO 10.9.9.22" in d[2]["msg"] and "o Windows travou" in d[2]["msg"]
+    assert "vm-x pelo Incus" in d[2]["msg"] and "o Windows travou" in d[2]["msg"]
+
+
+def test_fisico_travado_avisa_uma_vez_por_episodio():
+    # o .222: sem canal fora do Windows
+    st = {}
+    crit = [x for x in rodar(st, 6, es_mudo(), via=FISICO, passo=120) if x]
+    assert len(crit) == 1 and crit[0]["kind"] == "unreachable_crit" and not crit[0]["action"]
+    assert "servidor físico" in crit[0]["msg"] and "console" in crit[0]["msg"]
+    # voltou e travou de novo: novo episodio, novo aviso
+    reinicio.avaliar("x", True, None, st, CFG, T0 + 3600, FISICO, False)
+    d = rodar(st, 3, es_mudo(T0 + 3600), via=FISICO, inicio=T0 + 3660, passo=120)
+    assert [x["kind"] for x in d if x] == ["unreachable_crit"]
 
 
 def test_so_o_winrm_travado_nao_reinicia():
     st = {}
     for i in range(3):
-        d = reinicio.avaliar("x", False, {"ok": True, "ts": T0 + i * 60 - 10}, st, CFG, T0 + i * 60, ILO, False)
+        d = reinicio.avaliar("x", False, {"ok": True, "ts": T0 + i * 60 - 10}, st, CFG, T0 + i * 60, VM, False)
     assert d["kind"] == "unreachable_alive" and not d["action"]
 
 
 def test_sem_elastic_nao_faz_nada_alem_do_down():
     st = {}
     for i in range(5):
-        d = reinicio.avaliar("x", False, None, st, CFG, T0 + i * 60, ILO, False)
+        d = reinicio.avaliar("x", False, None, st, CFG, T0 + i * 60, VM, False)
     assert d is None
-
-
-def test_sem_canal_avisa_uma_vez_por_episodio():
-    st = {}
-    d = rodar(st, 6, es_mudo(T0 - 30), via=("", ""), passo=120)
-    crit = [x for x in d if x]
-    assert len(crit) == 1 and crit[0]["kind"] == "unreachable_crit"
-    assert "não tem como reiniciá-lo" in crit[0]["msg"]
-    # voltou e travou de novo: novo episodio, novo aviso
-    reinicio.avaliar("x", True, None, st, CFG, T0 + 3600, ("", ""), False)
-    d = rodar(st, 3, es_mudo(T0 + 3600), via=("", ""), inicio=T0 + 3660, passo=120)
-    assert [x["kind"] for x in d if x] == ["unreachable_crit"]
 
 
 def test_manutencao_e_modo_off_nao_reiniciam():
@@ -67,7 +64,7 @@ def test_manutencao_e_modo_off_nao_reiniciam():
     cfg = reinicio.settings_for({"reinicio": {"mode": "off"}})
     st = {}
     for i in range(4):
-        d = reinicio.avaliar("x", False, es_mudo(), st, cfg, T0 + i * 120, ILO, False)
+        d = reinicio.avaliar("x", False, es_mudo(), st, cfg, T0 + i * 120, VM, False)
     assert d is None
 
 
@@ -75,31 +72,26 @@ def test_modo_alerta_so_diz_o_que_faria():
     cfg = reinicio.settings_for({"reinicio": {"mode": "alert"}})
     st = {}
     for i in range(3):
-        d = reinicio.avaliar("x", False, es_mudo() if i == 0 else {"ok": True}, st, cfg, T0 + i * 120, ILO, False)
+        d = reinicio.avaliar("x", False, es_mudo() if i == 0 else {"ok": True}, st, cfg, T0 + i * 120, VM, False)
     assert d["kind"] == "would_reset" and not d["action"] and "Reiniciaria" in d["msg"]
 
 
 def test_espera_o_boot_e_para_no_limite_do_dia():
-    st = {"resets": [T0 - 60]}
     # reiniciado ha 1 min: espera o boot
-    assert rodar(st, 3, es_mudo(T0 - 300), passo=60)[-1] is None
-    st = {"resets": [T0 - 7200, T0 - 5400]}
-    d = rodar(st, 3, es_mudo(T0 - 300), passo=60)[-1]
+    assert rodar({"resets": [T0 - 60]}, 3, es_mudo(T0 - 300))[-1] is None
+    d = rodar({"resets": [T0 - 7200, T0 - 5400]}, 3, es_mudo(T0 - 300))[-1]
     assert d["kind"] == "unreachable_crit" and "2x em 24h" in d["msg"]
 
 
-def test_canal_preferido():
-    nlb_cfg = {"incus_ssh": "rmon-reset@10.10.10.161"}
-    vm = SimpleNamespace(name="a", incus_vm="win2016", ilo="")
-    fisico = SimpleNamespace(name="b", incus_vm="", ilo="10.9.9.22")
-    nada = SimpleNamespace(name="c", incus_vm="", ilo="")
-    assert reinicio.canal(vm, nlb_cfg)[0] == "incus"
-    assert reinicio.canal(vm, {})[0] == ""
-    assert reinicio.canal(fisico, {})[0] == "ilo"
-    assert reinicio.canal(nada, nlb_cfg) == ("", "")
+def test_canal():
+    vm = SimpleNamespace(name="a", incus_vm="win2016")
+    fisico = SimpleNamespace(name="b", incus_vm="")
+    assert reinicio.canal(vm, {"incus_ssh": "rmon-reset@10.10.10.161"})[0] == "incus"
+    assert reinicio.canal(vm, {}) == ("", "")
+    assert reinicio.canal(fisico, {"incus_ssh": "x@y"}) == ("", "")
 
 
-def test_run_cycle_reinicia_pela_ilo_e_registra(monkeypatch):
+def test_run_cycle_reinicia_vm_fora_do_nlb_e_registra(monkeypatch):
     estado, alertas, enviadas, resets = {}, [], [], []
     monkeypatch.setattr(db, "get_config", lambda k, d=None: estado.get(k, d))
     monkeypatch.setattr(db, "set_config", lambda k, v: estado.__setitem__(k, v))
@@ -107,49 +99,18 @@ def test_run_cycle_reinicia_pela_ilo_e_registra(monkeypatch):
     monkeypatch.setattr(db, "audit", lambda *a, **k: None)
     monkeypatch.setattr(notify, "enabled", lambda: True)
     monkeypatch.setattr(notify, "send", lambda t: enviadas.append(t))
-    monkeypatch.setattr(ilo, "reset", lambda s: resets.append(s.name) or (True, "reiniciado pela iLO"))
-    monkeypatch.setattr(ilo, "checar", lambda s: {"ok": True, "detail": "iLO ok"})
-    srv = SimpleNamespace(name="fin-sge-jobs-222", host="10.10.10.222", nlb=False, incus_vm="",
-                          ilo="10.9.9.22", ilo_cred="ilo")
-    no = SimpleNamespace(name="fin-sge-app-188", host="10.10.10.188", nlb=True, incus_vm="win2016", ilo="")
-    inv = SimpleNamespace(servers=[srv, no], defaults={}, winrm=None)
+    monkeypatch.setattr(incus, "reset", lambda cfg, vm: resets.append(vm) or (True, "ok"))
+    vm = SimpleNamespace(name="jobs-vm", host="10.0.0.9", nlb=False, incus_vm="vm-jobs")
+    fisico = SimpleNamespace(name="fin-sge-jobs-222", host="10.10.10.222", nlb=False, incus_vm="")
+    no = SimpleNamespace(name="fin-sge-app-188", host="10.10.10.188", nlb=True, incus_vm="win2016")
+    inv = SimpleNamespace(servers=[vm, fisico, no], winrm=None,
+                          defaults={"nlb": {"incus_ssh": "rmon-reset@10.10.10.161"}})
     for i in range(3):
-        reinicio.run_cycle(inv, {s.name: {"reachable": False} for s in inv.servers},
-                           {srv.name: {"ok": True, "ts": T0 - 30 if i == 0 else None}},
-                           now=T0 + i * 120)
-    assert resets == ["fin-sge-jobs-222"]          # o no do NLB nao e com este modulo
-    assert [a[2] for a in alertas] == ["reset_unreachable"] and alertas[0][1] == "reinicio"
-    assert "Reiniciado:" in alertas[0][3]
-    assert any("Reiniciado:" in t for t in enviadas)
-
-
-def test_ilo_nunca_usa_a_senha_do_winrm(monkeypatch):
-    monkeypatch.setenv("RMON_WINRM_USER", "dominio\\admin")
-    monkeypatch.setenv("RMON_WINRM_PASSWORD", "segredo")
-    monkeypatch.delenv("RMON_CRED_ILO_USER", raising=False)
-    chamadas = []
-    monkeypatch.setattr(ilo.requests, "request", lambda *a, **k: chamadas.append(k))
-    ok, msg = ilo.reset(SimpleNamespace(ilo="10.9.9.22", ilo_cred="ilo"))
-    assert not ok and "RMON_CRED_ILO_USER" in msg and chamadas == []
-
-
-def test_ilo_manda_force_restart(monkeypatch):
-    monkeypatch.setenv("RMON_CRED_ILO_USER", "rmon")
-    monkeypatch.setenv("RMON_CRED_ILO_PASSWORD", "x")
-    pedidos = []
-
-    def falso(metodo, url, **kw):
-        pedidos.append((metodo, url, kw.get("json")))
-        return SimpleNamespace(status_code=200, text="")
-    monkeypatch.setattr(ilo.requests, "request", falso)
-    ok, _ = ilo.reset(SimpleNamespace(ilo="10.9.9.22", ilo_cred="ilo"))
-    assert ok and pedidos == [("POST", "https://10.9.9.22/redfish/v1/Systems/1/Actions/ComputerSystem.Reset/",
-                               {"ResetType": "ForceRestart"})]
-    assert not ilo.configurado(SimpleNamespace(ilo="10.9.9.22/../x"))
-
-
-def test_incus_e_o_mesmo_canal_do_nlb(monkeypatch):
-    feitos = []
-    monkeypatch.setattr(incus, "reset", lambda cfg, vm: feitos.append(vm) or (True, "ok"))
-    srv = SimpleNamespace(name="x", incus_vm="vm-x", ilo="")
-    assert reinicio._executar(srv, "incus", {"incus_ssh": "a@b"}) == (True, "ok") and feitos == ["vm-x"]
+        es = {s.name: {"ok": True, "ts": T0 - 30 if i == 0 else None} for s in (vm, fisico)}
+        reinicio.run_cycle(inv, {s.name: {"reachable": False} for s in inv.servers}, es, now=T0 + i * 120)
+    assert resets == ["vm-jobs"]                   # o no do NLB nao e com este modulo
+    por = {a[0]: a for a in alertas}
+    assert por["jobs-vm"][1:3] == ("reinicio", "reset_unreachable") and "Reiniciado:" in por["jobs-vm"][3]
+    assert por["fin-sge-jobs-222"][2] == "unreachable_crit"
+    assert "fin-sge-app-188" not in por
+    assert len(enviadas) == 2

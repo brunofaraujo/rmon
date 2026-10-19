@@ -93,11 +93,6 @@ class ServerConfig:
     # Instancia deste no no Incus (VM). No do NLB que trava sem contato e
     # reiniciado por ela (app/incus.py); vazio = fisico, so alerta critico.
     incus_vm: str = ""
-    # iLO da HPE deste servidor fisico (IP ou nome). Servidor fora do NLB que
-    # trava sem contato e reiniciado por ela (app/ilo.py, Redfish); vazio = sem
-    # iLO, so alerta critico. A credencial vem de RMON_CRED_<ILO_CRED>_USER/_PASSWORD.
-    ilo: str = ""
-    ilo_cred: str = "ilo"
 
 
 def credential_for(profile: str) -> tuple[str, str]:
@@ -231,8 +226,6 @@ def load_inventory(path: str) -> Inventory:
                 nlb=bool(raw.get("nlb", False)),
                 elastic_host=str(raw.get("elastic_host") or "").strip(),
                 incus_vm=str(raw.get("incus_vm") or "").strip(),
-                ilo=str(raw.get("ilo") or "").strip(),
-                ilo_cred=str(raw.get("ilo_cred") or "ilo").strip(),
             )
         )
     ambientes = {str(k): str(v) for k, v in (data.get("environments") or {}).items()}
