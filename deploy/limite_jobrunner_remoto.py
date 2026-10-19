@@ -21,8 +21,10 @@ Exemplos (na VM):
 """
 import argparse
 import base64
+import html
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -91,10 +93,20 @@ def script_modo(modo: str) -> str:
     return _PS_MODO.replace("__MODO__", collector._ps_str(modo))
 
 
+def so_erros(err: str) -> str:
+    """O stderr sem o eco do Write-Host. Pelo WinRM, o PowerShell repete cada
+    Write-Host no stderr como registro de informacao em CLIXML (o pywinrm so
+    limpa quando ha erro), e o texto do instalador saia duas vezes."""
+    if not err.startswith("#< CLIXML"):
+        return err
+    erros = re.findall(r'<S S="Error">(.*?)</S>', err, re.S)
+    return "".join(html.unescape(e).replace("_x000D__x000A_", "\n") for e in erros).strip()
+
+
 def rodar(srv, inv, script: str, budget: int) -> tuple[int, str, str]:
     user, pw = credential_for(srv.cred)
     r = collector._run_ps_resilient(srv.host, inv.winrm, user, pw, script, attempts=1, budget_sec=budget)
-    return r.status_code, collector._decode(r.std_out).strip(), collector._decode(r.std_err).strip()
+    return r.status_code, collector._decode(r.std_out).strip(), so_erros(collector._decode(r.std_err).strip())
 
 
 def escolher(inv, nomes: list[str], todos_se_vazio: bool) -> list:

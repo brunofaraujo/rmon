@@ -187,3 +187,12 @@ def test_modo_so_aceita_os_dois(remoto):
 def test_checar_usa_o_mesmo_bloco_da_coleta(remoto):
     assert collector._PS_LIMITE_JR.split("\n", 2)[1] in remoto._PS_CHECAR
     assert "__LJ_SVC__" not in remoto._PS_CHECAR
+
+
+def test_stderr_sem_o_eco_do_write_host(remoto):
+    eco = ('#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">'
+           '<Obj S="information" RefId="0"><ToString>== 1/6 conferencia</ToString></Obj></Objs>')
+    assert remoto.so_erros(eco) == ""
+    erro = eco.replace("</Objs>", '<S S="Error">falhou &amp; parou_x000D__x000A_</S></Objs>')
+    assert remoto.so_erros(erro) == "falhou & parou"
+    assert remoto.so_erros("texto comum") == "texto comum"
