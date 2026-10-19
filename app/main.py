@@ -722,7 +722,7 @@ PROBLEMA_LABEL = {
     # decisoes do NLB (alerts_log.kind = "nlb")
     "drain": "Saiu do balanceamento", "rejoin": "Voltou ao balanceamento",
     "drain_unreachable": "Sem contato: saiu do balanceamento",
-    "reset_unreachable": "Sem contato: VM reiniciada",
+    "reset_unreachable": "Sem contato: reiniciado fora do Windows",
     "would_reset": "Reiniciaria a VM (modo alerta)",
     "unreachable_crit": "Sem contato e sem como reiniciar",
     "unreachable_alive": "Só o WinRM travou",
@@ -732,12 +732,14 @@ PROBLEMA_LABEL = {
     "out_unowned": "Fora do balanceamento", "recovered": "Recuperado no balanceamento",
     "nlb_error": "Leitura do balanceamento", "failed": "Ação no balanceamento falhou",
     "MANUT": "Manutenção",
+    # reinicio de servidor fora do NLB (alerts_log.kind = "reinicio")
+    "canal": "Canal de reinício (iLO/hypervisor)",
 }
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
 KIND_LABEL = {"raised": "abriu", "resolved": "resolvido", "reminder": "lembrete",
               "manutencao": "manutenção", "acao": "ação", "package": "software",
-              "nlb": "balanceamento"}
+              "nlb": "balanceamento", "reinicio": "reinício"}
 templates.env.globals["kind_label"] = KIND_LABEL
 templates.env.globals["acao_nlb"] = nlb.ACAO_LABEL
 
@@ -768,6 +770,8 @@ def _acao_audit(acao: str) -> str:
         return AUDIT_LABEL[acao]
     if acao.startswith("nlb_"):
         return "balanceamento: " + _problema_label(acao[4:]).lower()
+    if acao.startswith("reinicio_"):
+        return "reinício: " + _problema_label(acao[9:]).lower()
     return acao
 
 

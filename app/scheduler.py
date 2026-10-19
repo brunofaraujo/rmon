@@ -11,6 +11,7 @@ from typing import Iterable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
+from . import reinicio
 from . import nomes as exibicao
 from .collector import SEM_RESPOSTA, collect_server, kill_jobrunner, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
@@ -1145,13 +1146,20 @@ def batimento_nlb(inv: Inventory, nomes_es: dict, vistos_es: dict,
     `ok` so quando a consulta deste ciclo respondeu: Elastic fora do ar nao pode
     parecer "host mudo" e autorizar um reset. None com o Elastic desligado.
     """
+    return batimento(nomes_es, vistos_es, es_ativo,
+                     [s for s in inv.servers if getattr(s, "nlb", False)])
+
+
+def batimento(nomes_es: dict, vistos_es: dict, es_ativo: bool,
+              servidores: Iterable) -> dict[str, dict] | None:
+    """Ultima metrica de cada servidor no Elastic (ver batimento_nlb)."""
     if not es_ativo:
         return None
     # respondeu AGORA: sucesso recente e nenhum erro depois dele
     ok = (elastic.erro_atual() is None
           and time.time() - float(elastic.saude().get("ok_ts") or 0) < 120)
     return {s.name: {"ok": ok, "ts": vistos_es.get(nomes_es.get(s.name) or "")}
-            for s in inv.servers if getattr(s, "nlb", False)}
+            for s in servidores}
 
 
 def poll_all(inv: Inventory, settings: Settings) -> None:
@@ -1296,6 +1304,14 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                           es=batimento_nlb(inv, nomes_es, vistos_es, es_ativo))
         except Exception:  # noqa: BLE001
             log.exception("NLB: falha no ciclo de avaliação")
+        # Servidor fora do NLB travado sem contato: reinicio pela iLO/hypervisor
+        # (o .222 em 19/10). Mesma confirmacao do Elastic que o NLB exige.
+        try:
+            reinicio.run_cycle(inv, {s.name: r for s, r in coletas},
+                               batimento(nomes_es, vistos_es, es_ativo, reinicio.servidores(inv)),
+                               hold=manutencao.ativas(agora, janelas))
+        except Exception:  # noqa: BLE001
+            log.exception("reinício: falha no ciclo de avaliação")
 
 
 def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str, dict]],
