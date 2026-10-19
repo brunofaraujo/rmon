@@ -1,117 +1,130 @@
 {% extends "base.html" %}
-{% block title %}NLB - RMonitor{% endblock %}
+{% block title %}Balanceamento - RMonitor{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>NLB dos terminal servers</h1>
-    <div class="sub">drenagem e reingresso automaticos pela saude de aplicacao, nao so da placa de rede</div>
+    <h1>Balanceamento de acesso (NLB)</h1>
+    <div class="sub">Os usuários entram por um endereço único e o Windows os distribui entre os servidores de aplicação.
+      O RMon tira do balanceamento o servidor com problema e o devolve quando ele volta ao normal.</div>
   </div>
 </div>
 
 {% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
 
 {% if cfg.mode == 'auto' %}
-<div class="alert small">
-  <b>Modo AUTOMATICO.</b> O RMon drena (<code>nlb.exe drainstop</code>) o no doente ha
-  {{ cfg.bad_after_min }}min e reingressa (<code>nlb.exe start</code>) o que drenou quando ele
-  fica apto por {{ cfg.rejoin_after_min }}min. Nunca deixa menos de
-  {{ cfg.min_active_remaining }} no(s) ativo(s) nem menos de {{ cfg.min_healthy_remaining }}
-  saudavel(is); uma drenagem por cluster a cada {{ cfg.cooldown_min }}min; no maximo
-  {{ cfg.max_drains_day }} por no em 24h.
-  {% if cfg.unreachable_drain %}
-  <br><b>No sem contato</b> (WinRM) por {{ cfg.unreachable_cycles }} coletas seguidas e sem dados
-  no Elastic ha {{ (cfg.reset_elastic_mudo_sec / 60) | round | int }}min: a VM e reiniciada pelo
-  Incus, volta fora do NLB e o RMon a reingressa quando estiver apta &mdash; respeitando o mesmo
-  piso, no maximo {{ cfg.reset_max_day }} reset(s) por no em 24h. Servidor fisico: alerta critico.
-  {% endif %}
+<div class="alert ok small">
+  <b>Automação ligada.</b> O RMon tira do balanceamento o servidor com problema há {{ cfg.bad_after_min }} min
+  e o devolve depois de {{ cfg.rejoin_after_min }} min funcionando bem. Quem já está conectado não cai: só deixa de receber novos acessos.
+  <details class="ajuda">
+    <summary>Regras de segurança da automação</summary>
+    <div>
+      <p>Nunca deixa menos de {{ cfg.min_active_remaining }} servidor(es) no balanceamento, dos quais pelo menos
+        {{ cfg.min_healthy_remaining }} saudável(is).</p>
+      <p>No máximo uma retirada automática a cada {{ cfg.cooldown_min }} min e {{ cfg.max_drains_day }} por servidor em 24 horas;
+        passou disso, o servidor está instável e o RMon só avisa.</p>
+      {% if cfg.unreachable_drain %}
+      <p><b>Servidor travado</b> (sem resposta do WinRM por {{ cfg.unreachable_cycles }} coletas seguidas e sem mandar dados ao Elastic
+        há {{ (cfg.reset_elastic_mudo_sec / 60) | round | int }} min): se for máquina virtual, o RMon a reinicia pelo hypervisor (Incus).
+        Ela volta fora do balanceamento e o RMon a devolve quando estiver pronta. No máximo {{ cfg.reset_max_day }} reinício(s) por
+        servidor em 24 horas. Servidor físico: só alerta crítico.</p>
+      {% endif %}
+    </div>
+  </details>
 </div>
 {% elif cfg.mode == 'alert' %}
 <div class="alert info small">
-  <b>Modo alerta (padrao).</b> O RMon avalia, avisa e audita o que <i>faria</i> &mdash;
-  nao toca no NLB. Para automatizar, <code>defaults.nlb.mode: auto</code> no inventario
-  (ver <code>docs/NLB.md</code>). Os botoes abaixo funcionam em qualquer modo.
+  <b>Modo alerta.</b> O RMon avalia os servidores e avisa o que <i>faria</i>, mas não mexe no balanceamento.
+  Para automatizar, configure <code>defaults.nlb.mode: auto</code> no inventário (ver <code>docs/NLB.md</code>).
+  Os botões abaixo funcionam em qualquer modo.
 </div>
 {% else %}
-<div class="alert info small"><b>Automacao desligada</b> (<code>defaults.nlb.mode: off</code>).</div>
+<div class="alert info small"><b>Automação desligada</b> (<code>defaults.nlb.mode: off</code>).</div>
 {% endif %}
 
 <div class="panel">
-  <h2>Nos</h2>
+  <h2>Servidores</h2>
   {% if not nos %}
-  <div class="muted small">Nenhum servidor com <code>nlb: true</code> no inventario.</div>
+  <div class="muted small">Nenhum servidor com <code>nlb: true</code> no inventário.</div>
   {% else %}
   <div class="table-wrap"><table class="tbl">
     <thead><tr>
-      <th>No</th><th>NLB</th><th>Saude agora</th><th>RDP {{ cfg.window_min }}min</th>
-      <th>Usuarios</th><th>Commit</th><th>JobRunner</th><th>Automacao</th><th></th>
+      <th>Servidor</th><th>No balanceamento?</th><th>Saúde agora</th>
+      <th title="Logins aceitos x sessões abertas na área de trabalho remota, nos últimos {{ cfg.window_min }} minutos">Acessos ({{ cfg.window_min }} min)</th>
+      <th>Carga agora</th>
+      <th>Observações</th><th></th>
     </tr></thead>
     <tbody>
     {% for n in nos %}
+      {% set titulo = n.name | nome %}
       <tr>
-        <td><b>{{ n.name }}</b><div class="mono small muted">{{ n.host }}{% if n.host_id %} &middot; host {{ n.host_id }}{% endif %}</div></td>
+        <td><a class="linkish srv" href="/server/{{ n.name }}">{{ titulo }}</a>
+          <span class="srv-desc mono" title="{% if n.host_id %}prioridade {{ n.host_id }} no grupo do balanceamento{% endif %}">{{ n.host }}</span></td>
         <td>
           {% if not n.reachable %}<span class="pill red">sem contato</span>
-          {% elif n.ativo %}<span class="pill green">{{ n.status_label }}</span>
-          {% elif n.fora %}<span class="pill amber">{{ n.status_label }}</span>
+          {% elif n.ativo %}<span class="pill green">sim</span>
+          {% elif n.fora %}<span class="pill amber">não &middot; {{ n.status_label }}</span>
           {% else %}<span class="pill">{{ n.status_label }}</span>{% endif %}
-          {% if n.cluster %}<div class="mono small muted">{{ n.cluster }}</div>{% endif %}
+          {% if n.cluster %}<div class="small muted" title="Endereço único por onde os usuários entram">endereço {{ n.cluster }}</div>{% endif %}
           {% if n.nlb_error %}<div class="small muted">{{ n.nlb_error }}</div>{% endif %}
         </td>
         <td class="small">
           {% if not n.reachable %}<span class="muted">{{ n.error }}</span>
-            {% if n.st.unreach %}<div><span class="pill red">sem contato ha {{ n.st.unreach }} coleta(s)</span>
-              {% if cfg.unreachable_drain and not n.st.owned and n.st.unreach < cfg.unreachable_cycles %}<span class="muted">age na {{ cfg.unreachable_cycles }}&ordf; (se o Elastic tambem estiver mudo)</span>{% endif %}</div>{% endif %}
-          {% elif n.sinais %}{% for s in n.sinais %}<div><span class="pill red">doente</span> {{ s }}</div>{% endfor %}
+            {% if n.st.unreach %}<div><span class="pill red">sem contato há {{ n.st.unreach }} coleta(s)</span>
+              {% if cfg.unreachable_drain and not n.st.owned and n.st.unreach < cfg.unreachable_cycles %}<span class="muted">o RMon age na {{ cfg.unreachable_cycles }}&ordf;, se o Elastic também parar</span>{% endif %}</div>{% endif %}
+          {% elif n.sinais %}{% for s in n.sinais %}<div><span class="pill red">com problema</span> {{ s }}</div>{% endfor %}
           {% elif n.fora %}
             {% if n.st.rejoin_gaps %}{% for g in n.st.rejoin_gaps %}<div class="muted">falta: {{ g }}</div>{% endfor %}
-            {% else %}<span class="pill green">apto a reingressar</span>{% endif %}
-          {% else %}<span class="pill green">ok</span>{% endif %}
-          {% if n.st.bad_since %}<div class="muted">doente desde {{ n.st.bad_since | dt }}</div>{% endif %}
-          {% if n.st.good_since %}<div class="muted">apto desde {{ n.st.good_since | dt }}</div>{% endif %}
+            {% else %}<span class="pill green">pronto para voltar</span>{% endif %}
+          {% else %}<span class="pill green">normal</span>{% endif %}
+          {% if n.st.bad_since %}<div class="muted">com problema desde {{ n.st.bad_since | dt }}</div>{% endif %}
+          {% if n.st.good_since %}<div class="muted">normal desde {{ n.st.good_since | dt }}</div>{% endif %}
         </td>
         {% set fa = (n.fonte or {}).get('auth') or ('winrm' if n.auth is not none else none) %}
         {% set fs = (n.fonte or {}).get('sess') or ('winrm' if n.sess is not none else none) %}
-        <td class="mono small" title="Elastic: {{ n.auth_elastic if n.auth_elastic is not none else '-' }} aut. / {{ n.sess_elastic if n.sess_elastic is not none else '-' }} sess. &middot; WinRM: {{ n.auth_winrm if n.auth_winrm is not none else (n.auth if not n.fonte else '-') }} aut. / {{ n.sess_winrm if n.sess_winrm is not none else (n.sess if not n.fonte else '-') }} sess. &middot; com as duas leituras vale a mais saudavel (menos autenticacoes, mais sessoes)">
-          <div class="src-linha">{{ n.auth if n.auth is not none else '-' }} aut. {% if fa %}<span class="src-tag {{ fa }}">{{ rotulo_fonte[fa] }}</span>{% endif %}</div>
-          <div class="src-linha">{{ n.sess if n.sess is not none else '-' }} sess. {% if fs %}<span class="src-tag {{ fs }}">{{ rotulo_fonte[fs] }}</span>{% endif %}</div>
-          {% if n.auth_elastic is not none or n.sess_elastic is not none %}<div class="faint">Elastic {{ n.auth_elastic if n.auth_elastic is not none else '-' }}/{{ n.sess_elastic if n.sess_elastic is not none else '-' }} &middot; WinRM {{ n.auth_winrm if n.auth_winrm is not none else '-' }}/{{ n.sess_winrm if n.sess_winrm is not none else '-' }}</div>{% endif %}
+        <td class="small" title="Elastic: {{ n.auth_elastic if n.auth_elastic is not none else '-' }} login(s) / {{ n.sess_elastic if n.sess_elastic is not none else '-' }} sessão(ões) &middot; WinRM: {{ n.auth_winrm if n.auth_winrm is not none else (n.auth if not n.fonte else '-') }} login(s) / {{ n.sess_winrm if n.sess_winrm is not none else (n.sess if not n.fonte else '-') }} sessão(ões) &middot; com as duas leituras vale a mais saudável">
+          <div class="src-linha">{{ n.auth if n.auth is not none else '-' }} login(s) {% if fa %}<span class="src-tag {{ fa }}">{{ rotulo_fonte[fa] }}</span>{% endif %}</div>
+          <div class="src-linha">{{ n.sess if n.sess is not none else '-' }} sessão(ões) aberta(s) {% if fs %}<span class="src-tag {{ fs }}">{{ rotulo_fonte[fs] }}</span>{% endif %}</div>
+          {% if n.auth_elastic is not none or n.sess_elastic is not none %}<div class="faint">logins/sessões: Elastic {{ n.auth_elastic if n.auth_elastic is not none else '-' }}/{{ n.sess_elastic if n.sess_elastic is not none else '-' }} &middot; WinRM {{ n.auth_winrm if n.auth_winrm is not none else '-' }}/{{ n.sess_winrm if n.sess_winrm is not none else '-' }}</div>{% endif %}
         </td>
-        <td class="mono">{{ n.users if n.users is not none else '-' }}</td>
-        <td class="mono">{{ n.commit if n.commit is not none else '-' }}{% if n.commit is not none %}%{% endif %}</td>
-        <td class="mono small">{% if n.jobrunner_gb is not none %}{{ n.jobrunner_gb }} GB<div class="muted">PID {{ n.jobrunner_pid }}</div>{% else %}-{% endif %}</td>
+        <td class="small" style="white-space:nowrap">
+          <div>{{ n.users if n.users is not none else '-' }} usuário(s)</div>
+          <div title="Memória já reservada pelos programas (RAM + arquivo de paginação)">memória reservada {{ n.commit if n.commit is not none else '-' }}{% if n.commit is not none %}%{% endif %}</div>
+          {% if n.jobrunner_gb is not none %}<div class="muted" title="Maior processo de job do RM (RM.Host.JobRunner), PID {{ n.jobrunner_pid }}">maior job {{ n.jobrunner_gb }} GB</div>{% endif %}
+        </td>
         <td class="small">
-          {% if n.hold %}<span class="pill amber">manutencao</span>{% endif %}
-          {% if n.st.owned %}<span class="pill blue">drenado pelo RMon{% if n.st.drain_reason == 'reset' %} (VM reiniciada, sem contato){% elif n.st.drain_reason == 'unreachable' %} (sem contato){% endif %}</span>{% endif %}
+          {% if n.hold %}<span class="pill amber">em manutenção</span>{% endif %}
+          {% if n.st.owned %}<span class="pill blue">retirado pelo RMon{% if n.st.drain_reason == 'reset' %} (VM reiniciada por falta de contato){% elif n.st.drain_reason == 'unreachable' %} (sem contato){% endif %}</span>{% endif %}
           {% if n.st.last_action %}
-          <div class="muted">ultima acao: {{ n.st.last_action.action }} {{ 'ok' if n.st.last_action.ok else 'FALHOU' }}
+          <div class="muted">última ação: {{ acao_nlb.get(n.st.last_action.action, n.st.last_action.action) }} {{ 'ok' if n.st.last_action.ok else 'FALHOU' }}
             ({{ n.st.last_action.by }}, {{ n.st.last_action.ts | dt }})</div>
           {% endif %}
-          {% if n.st.drains %}<div class="muted">{{ n.st.drains | length }} drenagem(ns) em 24h</div>{% endif %}
-          {% if n.st.resets %}<div class="muted">{{ n.st.resets | length }} reset(s) da VM registrados</div>{% endif %}
+          {% if n.st.drains %}<div class="muted">saiu do balanceamento {{ n.st.drains | length }}x em 24 h</div>{% endif %}
+          {% if n.st.resets %}<div class="muted">VM reiniciada {{ n.st.resets | length }}x</div>{% endif %}
           {% if cfg.unreachable_drain %}
-          <div class="small" title="O que o RMon faz se este no ficar sem contato e mudo no Elastic">
-            {% if n.incus_vm and incus_on %}<span class="pill blue">se travar: reset da VM {{ n.incus_vm }}</span>
-            {% elif n.incus_vm %}<span class="pill amber">se travar: so alerta (canal do Incus nao configurado)</span>
-            {% else %}<span class="pill amber">se travar: so alerta critico (fisico)</span>{% endif %}
+          <div class="small" title="O que o RMon faz se este servidor travar (sem WinRM e sem dados no Elastic)">
+            {% if n.incus_vm and incus_on %}<span class="pill blue">se travar: reinicia a VM {{ n.incus_vm }}</span>
+            {% elif n.incus_vm %}<span class="pill amber">se travar: só alerta (acesso ao hypervisor não configurado)</span>
+            {% else %}<span class="pill amber">se travar: só alerta (servidor físico)</span>{% endif %}
           </div>
           {% endif %}
         </td>
         <td>
-          <form method="post" action="/nlb/acao" class="toolbar">
+          <form method="post" action="/nlb/acao" class="toolbar" style="white-space:nowrap">
             <input type="hidden" name="server" value="{{ n.name }}">
             {% if n.hold %}
-            <button class="btn small" name="action" value="release">Liberar</button>
+            <button class="btn small" name="action" value="release" title="A automação volta a cuidar deste servidor">Encerrar manutenção</button>
             {% else %}
-            <button class="btn small ghost" name="action" value="hold" title="O RMon deixa de drenar e reingressar este no">Manutencao</button>
+            <button class="btn small ghost" name="action" value="hold" title="O RMon deixa de tirar e devolver este servidor ao balanceamento">Manutenção</button>
             {% endif %}
           </form>
           <form method="post" action="/nlb/acao" class="toolbar nlb-act">
             <input type="hidden" name="server" value="{{ n.name }}">
+            <input type="hidden" name="nome" value="{{ titulo }}">
             <input type="hidden" name="confirm" value="">
             {% if n.ativo %}
-            <button class="btn small" name="action" value="drain">Drenar</button>
+            <button class="btn small" name="action" value="drain" title="Tirar do balanceamento: para de receber novos acessos; quem já está conectado continua">Retirar</button>
             {% elif n.fora %}
-            <button class="btn small primary" name="action" value="rejoin">Reingressar</button>
+            <button class="btn small primary" name="action" value="rejoin" title="Devolver ao balanceamento: volta a receber novos acessos">Devolver</button>
             {% endif %}
           </form>
         </td>
@@ -119,59 +132,69 @@
     {% endfor %}
     </tbody>
   </table></div>
-  <div class="muted small">
-    Saude de cada no: sinais medidos no proprio host a cada coleta &mdash; logons RDP autenticados
-    (1149) sem sessao criada (21/25), nenhuma sessao enquanto os outros nos recebem gente,
-    RM.Host.Service fora do ar, commit &ge; {{ cfg.commit_drain_pct }}%.
-    Drenar a mao respeita o mesmo piso e liga a manutencao (o RMon nao devolve o no sozinho).
-  </div>
+  <details class="ajuda">
+    <summary>Como o RMon decide que um servidor está com problema</summary>
+    <div>
+      <p>A cada coleta o RMon olha, no próprio servidor:</p>
+      <p>&bull; logins aceitos que não viram sessão (o usuário digita a senha e a área de trabalho não abre);<br>
+        &bull; nenhum usuário aqui enquanto os outros servidores recebem gente;<br>
+        &bull; RM.Host.Service fora do ar;<br>
+        &bull; memória reservada acima de {{ cfg.commit_drain_pct }}%.</p>
+      <p>Tirar do balanceamento à mão respeita o mesmo mínimo de servidores e coloca o servidor em manutenção:
+        o RMon não o devolve sozinho.</p>
+    </div>
+  </details>
   {% endif %}
 </div>
 
 {% if cfg.unreachable_drain %}
 <div class="panel">
-  <h2>No sem contato: reset pelo hypervisor</h2>
+  <h2>Servidor travado: reinício pelo hypervisor</h2>
   <div class="small">
     {% if not incus_on %}
-      <span class="pill amber">canal nao configurado</span>
-      Falta <code>defaults.nlb.incus_ssh</code> no inventario e o usuario restrito no hypervisor
-      (<code>deploy/incus/instalar-no-hypervisor.sh</code>). Ate la, no travado gera so alerta critico.
+      <span class="pill amber">não configurado</span>
+      Falta <code>defaults.nlb.incus_ssh</code> no inventário e o usuário restrito no hypervisor
+      (<code>deploy/incus/instalar-no-hypervisor.sh</code>). Até lá, servidor travado gera só alerta crítico.
     {% elif not incus %}
-      <span class="pill amber">canal ainda nao conferido</span>
-      {{ cfg.incus_ssh }} &mdash; nenhum no tem <code>incus_vm</code> no inventario, ou a primeira
-      conferencia ainda nao rodou.
+      <span class="pill amber">ainda não conferido</span>
+      {{ cfg.incus_ssh }} &mdash; nenhum servidor tem <code>incus_vm</code> no inventário, ou a primeira
+      conferência ainda não rodou.
     {% elif incus.ok %}
-      <span class="pill green">canal OK</span> <span class="mono">{{ incus.destino }}</span>
-      &middot; {{ incus.detail }} &middot; conferido {{ incus.ts | dt }}
+      <span class="pill green">funcionando</span> <span class="mono">{{ incus.destino }}</span>
+      &middot; {{ incus.detail }} &middot; conferido em {{ incus.ts | dt }}
     {% else %}
-      <span class="pill red">canal FALHOU</span> <span class="mono">{{ incus.destino }}</span>
-      &middot; conferido {{ incus.ts | dt }}: <span class="mono">{{ incus.detail }}</span>
-      <div class="muted">Enquanto falhar, no travado gera so alerta critico. Nova tentativa a cada 10 min.</div>
+      <span class="pill red">com falha</span> <span class="mono">{{ incus.destino }}</span>
+      &middot; conferido em {{ incus.ts | dt }}: <span class="mono">{{ incus.detail }}</span>
+      <div class="muted">Enquanto falhar, servidor travado gera só alerta crítico. Nova tentativa a cada 10 min.</div>
     {% endif %}
     {% if incus and incus.vms %}
-    <div class="muted">Liberadas no hypervisor:
-      {% for nome, i in incus.vms.items() %}<span class="mono">{{ nome }}</span> ({{ i.estado }}){% if not loop.last %}, {% endif %}{% endfor %}
+    <div class="muted">Máquinas virtuais liberadas no hypervisor:
+      {% for nome_vm, i in incus.vms.items() %}<span class="mono">{{ nome_vm }}</span> ({{ i.estado }}){% if not loop.last %}, {% endif %}{% endfor %}
     </div>
     {% endif %}
-    <div class="muted">
-      Um vizinho do cluster nao consegue drenar outro no no Windows Server 2016 (o WMI do NLB so age
-      no proprio no). Por isso o no travado sai pelo hypervisor: reset forcado da VM, que sobe fora do
-      NLB. Exige o Elastic confirmando que o Windows parou (so o WinRM travado nao reinicia nada).
-    </div>
+    <details class="ajuda">
+      <summary>Por que reiniciar pelo hypervisor</summary>
+      <div>
+        <p>No Windows Server 2016 um servidor do grupo não consegue tirar outro do balanceamento (o comando do NLB só age
+          na própria máquina). Por isso o servidor travado sai pelo hypervisor: a VM é reiniciada à força e volta fora do
+          balanceamento. O RMon só faz isso quando o Elastic confirma que o Windows parou &mdash; se apenas o WinRM travou,
+          nada é reiniciado.</p>
+      </div>
+    </details>
   </div>
 </div>
 {% endif %}
 
 <div class="panel">
-  <h2>Historico (7 dias)</h2>
+  <h2>Histórico <span class="muted small">últimos 7 dias</span></h2>
   {% if not hist %}<div class="muted small">Nada registrado.</div>{% else %}
   <div class="table-wrap"><table class="tbl">
-    <thead><tr><th>Quando</th><th>No</th><th>Evento</th><th>Detalhe</th></tr></thead>
+    <thead><tr><th>Quando</th><th>Servidor</th><th>O que aconteceu</th><th>Detalhe</th></tr></thead>
     <tbody>
     {% for a in hist %}
       <tr>
         <td class="muted small">{{ a.ts | dt }}</td>
-        <td>{{ a.server }}</td>
+        <td><a class="linkish" href="/server/{{ a.server }}">{{ a.server | nome }}</a></td>
         <td><span class="pill {{ 'red' if a.problem in ('drain', 'drain_unreachable', 'reset_unreachable', 'unreachable_crit', 'failed', 'unreachable_sick', 'blocked') else ('green' if a.problem in ('rejoin', 'recovered') else 'amber') }}">{{ a.label }}</span></td>
         <td class="small">{{ a.message }}</td>
       </tr>
@@ -182,13 +205,15 @@
 </div>
 
 <script>
-// Drenar/reingressar mexe com usuarios: pede o nome do servidor, como as instalacoes.
+// Tirar/devolver mexe com usuarios: pede o nome do servidor, como as instalacoes.
 document.querySelectorAll('form.nlb-act').forEach(function (f) {
   f.addEventListener('submit', function (ev) {
-    var nome = f.querySelector('[name=server]').value;
+    var nome = f.querySelector('[name=nome]').value;
     var acao = ev.submitter ? ev.submitter.value : '';
-    var txt = acao === 'drain' ? 'DRENAR do NLB' : 'REINGRESSAR no NLB';
-    var r = window.prompt(txt + ' o servidor ' + nome + '?\nDigite o nome do servidor para confirmar:');
+    var txt = acao === 'drain'
+      ? 'TIRAR ' + nome + ' do balanceamento?\nQuem já está conectado continua; os novos acessos vão para os outros servidores.'
+      : 'DEVOLVER ' + nome + ' ao balanceamento?\nEle volta a receber novos acessos.';
+    var r = window.prompt(txt + '\n\nDigite ' + nome + ' para confirmar:');
     if (r === null) { ev.preventDefault(); return; }
     f.querySelector('[name=confirm]').value = r.trim();
   });

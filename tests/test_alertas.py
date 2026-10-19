@@ -124,7 +124,7 @@ def test_broker_comparado_com_o_proprio_host_pr19():
     r = coleta(broker=[broker(size=33 * 1024)])
     assert scheduler.broker_problems(r, TH, {"_BrokerCustom.dat": 33 * 1024}) == {}
     p = scheduler.broker_problems(r, TH, {"_BrokerCustom.dat": 558 * 1024})
-    assert "558KB que este host ja teve" in p["broker:_BrokerCustom.dat"]
+    assert "558KB que este host já teve" in p["broker:_BrokerCustom.dat"]
 
 
 def test_broker_ainda_crescendo_nao_tem_veredito_pr23():
@@ -145,7 +145,7 @@ def test_broker_ausente_so_cobra_quem_tinha_de_gera_lo_pr26():
 def test_broker_minimo_absoluto():
     th = {**TH, "broker_min_kb": 100}
     p = scheduler.broker_problems(coleta(broker=[broker(size=50 * 1024)]), th)
-    assert "minimo esperado" in p["broker:_BrokerCustom.dat"]
+    assert "mínimo esperado" in p["broker:_BrokerCustom.dat"]
 
 
 # ------------------------------------------------------------ JobRunner (#32)
@@ -173,7 +173,7 @@ def test_jobrunner_zero_desliga_o_nivel():
 
 
 def test_jobrunner_diz_qual_job_e_de_quem():
-    ex = {"4242": {"idjob": 2431028, "nome": "Relatorio de turma", "usuario": "fulano",
+    ex = {"4242": {"idjob": 2431028, "nome": "Relatório de turma", "usuario": "fulano",
                    "inicio": "13/10 08:00", "progresso": 40, "filtro": "TURMA = *"}}
     texto = scheduler.jobrunner_problems(jr(5, jobs=ex), TH)["jobrunner:4242"]
     assert "2431028" in texto and "fulano" in texto and "(40%)" in texto and "TURMA" in texto
@@ -232,16 +232,16 @@ def test_sql_fora_e_so_aviso():
 # ------------------------------------------------------------ transicoes
 
 def test_transicao_abre_e_resolve():
-    prev = {"MEM": "memoria em 95%", "DISK": "disco C: em 92%"}
-    atual, novas, resolvidas = scheduler.transicoes(prev, {"MEM": "memoria em 96%", "APP": "x"},
+    prev = {"MEM": "memória em 95%", "DISK": "disco C: em 92%"}
+    atual, novas, resolvidas = scheduler.transicoes(prev, {"MEM": "memória em 96%", "APP": "x"},
                                                     coleta())
     assert novas == ["APP"] and resolvidas == ["DISK"]
-    assert atual == {"MEM": "memoria em 96%", "APP": "x"}
+    assert atual == {"MEM": "memória em 96%", "APP": "x"}
 
 
 def test_engasgo_do_winrm_nao_resolve_o_que_estava_aberto():
     """Antes: cada timeout dava "resolvido" para tudo e reabria no ciclo seguinte."""
-    prev = {"svc:RM.Host.Service": "servico RM.Host.Service = Stopped", "MEM": "memoria em 95%"}
+    prev = {"svc:RM.Host.Service": "serviço RM.Host.Service parado", "MEM": "memória em 95%"}
     sem_contato = coleta(reachable=False)
     atual, novas, resolvidas = scheduler.transicoes(prev, {}, sem_contato)
     assert novas == [] and resolvidas == [] and atual == prev
@@ -251,7 +251,7 @@ def test_engasgo_do_winrm_nao_resolve_o_que_estava_aberto():
 
 
 def test_down_resolve_quando_o_contato_volta():
-    prev = {"DOWN": "sem contato", "MEM": "memoria em 95%"}
+    prev = {"DOWN": "sem contato", "MEM": "memória em 95%"}
     atual, novas, resolvidas = scheduler.transicoes(prev, {}, coleta())
     assert sorted(resolvidas) == ["DOWN", "MEM"] and atual == {}
 
@@ -269,7 +269,7 @@ def test_servico_tirado_do_inventario_sai_do_monitoramento():
 # rh-web-248, 15/10/2026: o Windows Update reiniciou o host e, no boot, o
 # RM.Host.Service estourou os 30 s do SCM e ficou parado. A recuperacao do
 # Windows (reiniciar) nao age em falha de partida, e o alerta dizia so
-# "servico RM.Host.Service = Stopped" - nada apontava para o reboot.
+# "servico RM.Host.Service parado" - nada apontava para o reboot.
 
 AGORA = 1_760_570_000.0
 
@@ -285,8 +285,8 @@ def test_servico_automatico_parado_logo_apos_o_boot_e_marcado():
     scheduler.marcar_pos_boot(r, {}, AGORA, 30 * 60)
     assert r["services"][0]["nao_subiu"] == int(AGORA - 228)
     texto = scheduler.problems(r, TH)["svc:RM.Host.Service"]
-    assert texto.startswith("servico RM.Host.Service = Stopped")
-    assert "nao subiu apos o reboot de " + scheduler.manutencao.hora(AGORA - 228) in texto
+    assert texto.startswith("serviço RM.Host.Service parado")
+    assert "não subiu após o reboot de " + scheduler.manutencao.hora(AGORA - 228) in texto
 
 
 def test_marca_segue_enquanto_o_alerta_aberto_no_boot_continua():
@@ -348,7 +348,7 @@ def agente(**kw):
 
 def test_agente_parado_e_ambar_e_notifica():
     p = scheduler.problems(coleta(services=[agente()]), TH)
-    assert p == {"agente:Elastic Agent": "agente de coleta Elastic Agent = Stopped"}
+    assert p == {"agente:Elastic Agent": "agente de coleta Elastic Agent parado"}
     assert not scheduler.critico("agente:Elastic Agent")
     assert scheduler.notifica("agente:Elastic Agent")
 

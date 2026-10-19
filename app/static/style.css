@@ -301,7 +301,16 @@ th.sortable .arrow { color: var(--accent); }
 .danger-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 
 /* ---------- Responsive ---------- */
-@media (max-width: 720px) {
+/* Menu por extenso (Balanceamento, Configuracoes...): sem espremer, ele quebra
+   linha. Abaixo de 1500px some o subtitulo da marca e os itens encolhem; abaixo
+   de 1180px vira o menu do botao. */
+.brand, .nav a { white-space: nowrap; }
+@media (max-width: 1500px) {
+  .brand small { display: none; }
+  .nav { gap: .1rem; }
+  .nav a { padding: .4rem .62rem; font-size: .88rem; }
+}
+@media (max-width: 1180px) {
   .nav-burger { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px;
     border: 1px solid var(--line-2); cursor: pointer; font-size: 1.2rem; order: 9; }
   .nav { position: absolute; top: 100%; left: 0; right: 0; flex-direction: column; align-items: stretch;
@@ -508,3 +517,24 @@ html[data-theme="light"] .src-tag.elastic { color: #00756d; }
 .es-graf .lim.aviso { stroke: var(--amber); }
 .es-graf .lim.crit { stroke: var(--red); }
 .es-graf .pico { fill: var(--red); }
+
+/* ---------- Nome do servidor: hostname + papel/ambiente por extenso ---------- */
+.card { gap: .95rem; }
+.card-id { min-width: 0; }
+.card-title { font-size: 1.08rem; letter-spacing: .01em; }
+.card-desc { color: var(--muted); font-size: .8rem; margin-top: .3rem; }
+.card-desc .mono { color: var(--faint); font-size: .76rem; }
+.card-sec { display: grid; grid-template-columns: 4.4rem minmax(0, 1fr); gap: .6rem; align-items: start; }
+.card-sec .sec-k { color: var(--faint); font-size: .7rem; text-transform: uppercase; letter-spacing: .07em;
+  padding-top: .42rem; }
+.srv { font-weight: 600; }
+.srv-desc { display: block; color: var(--faint); font-size: .76rem; font-weight: 400; margin-top: .1rem; }
+
+/* ---------- Explicacoes recolhidas: a tela mostra o estado; o "como funciona" fica aqui ---------- */
+details.ajuda { margin: .8rem 0 0; color: var(--muted); font-size: .84rem; }
+details.ajuda > summary { cursor: pointer; color: var(--accent); font-size: .8rem; list-style: none; }
+details.ajuda > summary::-webkit-details-marker { display: none; }
+details.ajuda > summary::before { content: "\24D8  "; }
+details.ajuda > div { margin-top: .55rem; padding: .7rem .9rem; border-left: 2px solid var(--line-2);
+  background: var(--surface-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; line-height: 1.55; }
+details.ajuda p { margin: 0 0 .45rem; } details.ajuda p:last-child { margin-bottom: 0; }

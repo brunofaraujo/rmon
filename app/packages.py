@@ -77,7 +77,7 @@ def scan(diretorio: str) -> list[dict[str, Any]]:
             return []
         for caminho in sorted(raiz.rglob("*")):
             if len(entradas) >= MAX_ARQUIVOS:
-                log.warning("repositorio de pacotes truncado em %d arquivos", MAX_ARQUIVOS)
+                log.warning("repositório de pacotes truncado em %d arquivos", MAX_ARQUIVOS)
                 break
             try:
                 relativo = caminho.relative_to(raiz)
@@ -99,7 +99,7 @@ def scan(diretorio: str) -> list[dict[str, Any]]:
                 "pasta": (relativo.parts[0] if len(relativo.parts) > 1 else None),
             })
     except OSError as exc:
-        log.warning("nao consegui ler o repositorio de pacotes %s: %s", diretorio, exc)
+        log.warning("não consegui ler o repositório de pacotes %s: %s", diretorio, exc)
     return entradas
 
 

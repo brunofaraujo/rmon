@@ -5,6 +5,7 @@ admin): erro de template so apareceria em producao, na frente do usuario.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from types import SimpleNamespace
@@ -29,7 +30,7 @@ def coleta(**kw):
          "jobrunners": {"count": 12, "total_mb": 9000, "computer": "SRV06N",
                         "top": [{"pid": 4242, "private_mb": 5 * 1024, "start": "2026-10-15 08:00:00"},
                                 {"pid": 77, "private_mb": 300, "start": "2026-10-15 09:00:00"}],
-                        "jobs": {"4242": {"idjob": 2431028, "nome": "Relatorio de turma",
+                        "jobs": {"4242": {"idjob": 2431028, "nome": "Relatório de turma",
                                           "usuario": "fulano"}}}}
     r.update(kw)
     return r
@@ -45,7 +46,7 @@ def app_falso(monkeypatch):
                              coletas=[coleta()])
 
     def falha():
-        raise AssertionError("o teste tentou abrir conexao com o PostgreSQL")
+        raise AssertionError("o teste tentou abrir conexão com o PostgreSQL")
 
     monkeypatch.setattr(db, "_conn", falha)
     monkeypatch.setattr(db, "get_user", lambda u: usuarios.get(u))
@@ -63,16 +64,16 @@ def app_falso(monkeypatch):
     monkeypatch.setattr(db, "list_users", lambda: list(usuarios.values()))
     monkeypatch.setattr(db, "recent_alerts", lambda h=48, lim=500, server=None: [
         {"ts": AGORA - 600, "server": "app-34", "kind": "reminder", "problem": "svc:RM.Host.Service",
-         "message": "segue aberto ha 4h00: servico RM.Host.Service = Stopped"},
+         "message": "segue aberto há 4h00: serviço RM.Host.Service parado"},
         {"ts": AGORA - 300, "server": "app-34", "kind": "manutencao", "problem": "MANUT",
-         "message": "manutencao aberta por admin"},
+         "message": "manutenção aberta por admin"},
         {"ts": AGORA - 60, "server": "app-34", "kind": "acao", "problem": "jobrunner-kill:4242",
          "message": "JobRunner PID 4242 encerrado por admin"}])
     monkeypatch.setattr(notify, "enabled", lambda: True)
     monkeypatch.setattr(notify, "send", lambda t: estado.enviadas.append(t) or True)
     monkeypatch.setattr(main, "kill_jobrunner",
                         lambda srv, wc, pid, inicio, proc: estado.mortes.append((srv.name, pid, inicio, proc))
-                        or (True, f"PID {pid} encerrado (5120 MB de memoria privada liberados)"))
+                        or (True, f"PID {pid} encerrado (5120 MB de memória privada liberados)"))
     servidor = ServerConfig(name="app-34", host="10.0.0.34")
     inv = SimpleNamespace(servers=[servidor], winrm=WinRMConfig(), defaults={},
                           poll_interval_seconds=60, environments={})
@@ -101,8 +102,8 @@ def test_telas_renderizam(app_falso, rota):
 def test_linha_do_tempo_mostra_os_tipos_novos(app_falso):
     app_falso.entrar()
     html = app_falso.c.get("/ocorrencias").text
-    assert "lembrete &middot;" in html and "manutencao &middot; Manutencao" in html
-    assert "JobRunner encerrado (PID 4242)" in html
+    assert "lembrete &middot;" in html and "manutenção &middot; Manutenção" in html
+    assert "Processo de job encerrado (PID 4242)" in html
 
 
 def test_servico_que_nao_subiu_apos_o_reboot_aparece_na_tela(app_falso):
@@ -112,11 +113,12 @@ def test_servico_que_nao_subiu_apos_o_reboot_aparece_na_tela(app_falso):
         {"name": "RM.Host.Service", "status": "Stopped", "src": "auto", "start": "Auto",
          "nao_subiu": boot}])]
     app_falso.entrar()
-    marca = "nao subiu apos o reboot de " + manutencao.hora(boot)
+    marca = "não subiu após o reboot de " + manutencao.hora(boot)
     assert marca in app_falso.c.get("/server/app-34").text
-    assert "nao subiu apos o reboot" in app_falso.c.get("/").text
+    assert "não subiu após o reboot" in app_falso.c.get("/").text
     main._TV_CACHE.update(ts=0.0, data=None)
-    assert marca in app_falso.c.get("/tv").text
+    # no mural o texto vai dentro do JSON (tojson escapa o que nao e ASCII)
+    assert json.dumps(marca)[1:-1] in app_falso.c.get("/tv").text
 
 
 def test_agente_parado_aparece_ambar_nas_telas(app_falso):
@@ -125,7 +127,7 @@ def test_agente_parado_aparece_ambar_nas_telas(app_falso):
     app_falso.entrar()
     for rota in ("/server/app-34", "/"):
         html = app_falso.c.get(rota).text
-        assert re.search(r'class="pill amber" title="agente de coleta', html), rota
+        assert re.search(r'class="pill amber" title="Elastic Agent[^"]*agente de coleta', html), rota
 
 
 def test_admin_guarda_a_partida_pos_boot(app_falso):
@@ -153,16 +155,16 @@ def test_admin_tem_os_limiares_novos(app_falso):
 def test_abrir_manutencao(app_falso):
     app_falso.entrar()
     r = app_falso.c.post("/manutencao/iniciar",
-                         data={"server": "app-34", "minutos": "120", "motivo": "atualizacao do RM"},
+                         data={"server": "app-34", "minutos": "120", "motivo": "atualização do RM"},
                          follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/server/app-34"
     j = app_falso.estado.config["manutencao"]["app-34"]
-    assert j["por"] == "admin" and j["motivo"] == "atualizacao do RM"
+    assert j["por"] == "admin" and j["motivo"] == "atualização do RM"
     assert 119 * 60 < j["ate"] - time.time() <= 120 * 60
     assert app_falso.estado.alertas[-1][1:3] == ("manutencao", "MANUT")
-    assert "calados" in app_falso.estado.enviadas[-1]
+    assert "silenciados" in app_falso.estado.enviadas[-1]
     html = app_falso.c.get("/server/app-34").text
-    assert "Em manutencao ate" in html and "Encerrar agora" in html
+    assert "Em manutenção até" in html and "Encerrar agora" in html
 
 
 def test_manutencao_tem_teto(app_falso):
@@ -261,7 +263,7 @@ def test_script_recusa_entrada_invalida(pid, proc):
 
 def test_interpretar_respostas_do_host():
     assert collector.interpretar_encerramento("OK 5120", 9) == (
-        True, "PID 9 encerrado (5120 MB de memoria privada liberados)")
+        True, "PID 9 encerrado (5120 MB de memória privada liberados)")
     assert not collector.interpretar_encerramento("GONE", 9)[0]
     assert "notepad" in collector.interpretar_encerramento("NOT_JR notepad", 9)[1]
     assert "reaproveitado" in collector.interpretar_encerramento("REUSED 2026-10-15 10:00:00", 9)[1]
@@ -299,15 +301,15 @@ def com_elastic(app_falso, monkeypatch):
 def test_tela_mostra_a_serie_do_elastic(com_elastic):
     com_elastic.app.entrar()
     html = com_elastic.app.c.get("/server/app-34?jr_h=168").text
-    assert "Memoria do maior JobRunner" in html and 'class="es-graf"' in html
+    assert "Memória do maior processo de job (JobRunner)" in html and 'class="es-graf"' in html
     assert "pico de <b class=\"txt-red\">9.0 GB</b>" in html
-    assert re.search(r"ultima metrica ha 2\ds", html)
+    assert re.search(r"último dado há 2\d s", html)
     assert com_elastic.pedidos == [("hosta", "RM.Host.JobRunner", 168)]
 
 
 def test_tela_sem_elastic_nao_tem_o_painel(app_falso):
     app_falso.entrar()
-    assert "Memoria do maior JobRunner" not in app_falso.c.get("/server/app-34").text
+    assert "Memória do maior processo de job" not in app_falso.c.get("/server/app-34").text
 
 
 def test_host_sem_winrm_mostra_o_jobrunner_do_elastic_sem_botao(com_elastic):
@@ -318,7 +320,7 @@ def test_host_sem_winrm_mostra_o_jobrunner_do_elastic_sem_botao(com_elastic):
     com_elastic.app.entrar()
     html = com_elastic.app.c.get("/server/app-34").text
     assert "leitura do Elasticsearch" in html and "PID 4242" in html
-    assert "JobRunner do RM <span class=\"src-tag elastic\">Elastic</span>" in html
+    assert "Processos de job do RM (JobRunner) <span class=\"src-tag elastic\">Elastic</span>" in html
     assert 'class="svc-btn jr-kill"' not in html and "acima de 8 GB" in html
     r = com_elastic.app.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "4242", "confirm": "4242"})
     assert r.status_code == 409 and "Elasticsearch" in r.json()["msg"] and est.mortes == []
@@ -333,8 +335,8 @@ def test_nlb_mostra_de_onde_veio_cada_contagem(app_falso):
     app_falso.entrar()
     html = app_falso.c.get("/nlb").text
     # cada numero com a sua etiqueta, a vista - nao num tooltip
-    assert '7 aut. <span class="src-tag winrm">WinRM</span>' in html
-    assert '0 sess. <span class="src-tag elastic">Elastic</span>' in html
+    assert '7 login(s) <span class="src-tag winrm">WinRM</span>' in html
+    assert '0 sessão(ões) aberta(s) <span class="src-tag elastic">Elastic</span>' in html
     assert "Elastic 9/0 &middot; WinRM 7/0" in html
 
 
@@ -345,21 +347,21 @@ def test_nlb_mostra_a_saida_do_no_sem_contato(app_falso):
     main.STATE["inv"].defaults = {"nlb": {"incus_ssh": "rmon-reset@10.10.10.161"}}
     app_falso.estado.config["nlb_state"] = {"incus": {
         "ok": True, "ts": AGORA - 60, "destino": "rmon-reset@10.10.10.161",
-        "detail": "2 instancia(s) liberada(s)",
+        "detail": "2 instância(s) liberada(s)",
         "vms": {"WIN2016": {"estado": "RUNNING", "mac": "10:66:6a:cc:09:90"}}}}
     app_falso.estado.coletas = [coleta(nlb={"status": 1007, "cluster": "vip", "host_id": 5})]
     app_falso.entrar()
     html = app_falso.c.get("/nlb").text
-    assert "se travar: reset da VM WIN2016" in html
-    assert '<span class="pill green">canal OK</span>' in html and "WIN2016</span> (RUNNING)" in html
+    assert "se travar: reinicia a VM WIN2016" in html
+    assert '<span class="pill green">funcionando</span>' in html and "WIN2016</span> (RUNNING)" in html
     # sem VM no inventario: servidor fisico, so alerta
     srv.incus_vm = ""
     html = app_falso.c.get("/nlb").text
-    assert "se travar: so alerta critico (fisico)" in html
+    assert "se travar: só alerta (servidor físico)" in html
 
 
 def test_nlb_sem_canal_do_incus_diz_o_que_falta(app_falso):
     main.STATE["inv"].servers[0].nlb = True
     app_falso.entrar()
     html = app_falso.c.get("/nlb").text
-    assert "canal nao configurado" in html and "instalar-no-hypervisor.sh" in html
+    assert "não configurado" in html and "instalar-no-hypervisor.sh" in html

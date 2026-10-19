@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Ocorrencias - RMonitor{% endblock %}
+{% block title %}Ocorrências - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
 {% set criticos = abertos | selectattr('crit') | list %}
 {% set avisos = abertos | rejectattr('crit') | list %}
 <div class="page-head">
   <div>
-    <h1>Ocorrencias</h1>
-    <div class="sub">o que esta aberto agora, o que ja aconteceu e os eventos do Windows por tras</div>
+    <h1>Ocorrências</h1>
+    <div class="sub">O que está com problema agora, o que já aconteceu e os erros registrados pelo Windows</div>
   </div>
   <div class="pills">
-    {% for h, rot in [(24, '24h'), (48, '48h'), (168, '7 dias'), (720, '30 dias')] %}
+    {% for h, rot in [(24, '24 horas'), (48, '48 horas'), (168, '7 dias'), (720, '30 dias')] %}
     <a class="pill chip-link {{ 'green' if horas == h else '' }}" href="/ocorrencias?h={{ h }}{% if alvo %}&server={{ alvo }}{% endif %}">{{ rot }}</a>
     {% endfor %}
   </div>
@@ -19,51 +19,51 @@
 <div class="kpis">
   <div class="kpi {{ 'bad' if criticos else 'ok' }}">
     <div class="val {{ 'txt-red' if criticos else '' }}">{{ criticos | length }}</div>
-    <div class="lbl">Problemas criticos abertos</div></div>
+    <div class="lbl">Problemas críticos abertos</div></div>
   <div class="kpi {{ 'warn' if avisos else 'ok' }}">
     <div class="val {{ 'txt-amber' if avisos else '' }}">{{ avisos | length }}</div>
     <div class="lbl">Avisos abertos</div></div>
   <div class="kpi"><div class="val">{{ hist | selectattr('kind', 'equalto', 'raised') | list | length }}</div>
-    <div class="lbl">Alertas abertos em {{ horas }}h</div></div>
+    <div class="lbl">Alertas abertos nas últimas {{ horas }} horas</div></div>
   <div class="kpi"><div class="val">{{ rows | length }}</div>
-    <div class="lbl">Eventos do Windows (24h)</div></div>
+    <div class="lbl">Erros do Windows (24 horas)</div></div>
 </div>
 
 <div class="panel">
-  <h2>Aberto agora <span class="muted small">(estado da ultima coleta de cada host)</span></h2>
+  <h2>Com problema agora <span class="muted small">pela última coleta de cada servidor</span></h2>
   {% if abertos %}
   <div class="issue-list">
     {% for a in abertos %}
     <div class="issue {{ 'crit' if a.crit else '' }}">
       <span class="pill {{ 'red' if a.crit else 'amber' }} tag"><span class="d"></span>{{ a.label }}</span>
-      <a class="who linkish" href="/server/{{ a.server }}" title="Abrir este servidor">{{ a.server }}</a>
+      <a class="who linkish" href="/server/{{ a.server }}" title="{{ descricao(a.server) }} &middot; abrir este servidor">{{ a.server | nome }}</a>
       <span>
-        {% if not a.notifica %}<span class="pill small" title="Aparece aqui, mas nao dispara Slack/Telegram: nao e falha do servidor">so no painel</span>{% endif %}
+        {% if not a.notifica %}<span class="pill small" title="Aparece aqui, mas não é enviado ao Slack/Telegram: não é falha do servidor">só no painel</span>{% endif %}
         {% if a.key.startswith('JOB') %}<a class="pill blue chip-link" href="/jobs">ver jobs</a>{% endif %}
-        {% if a.key.startswith('svc:') %}<a class="pill blue chip-link" href="/server/{{ a.server }}">ver servicos</a>{% endif %}
+        {% if a.key.startswith('svc:') %}<a class="pill blue chip-link" href="/server/{{ a.server }}">ver serviços</a>{% endif %}
       </span>
       <div class="what">{{ a.text }}</div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <div class="alert ok small">Nenhum problema aberto. Todos os hosts responderam a ultima coleta dentro dos limiares.</div>
+  <div class="alert ok small">Nenhum problema aberto. Todos os servidores responderam à última coleta dentro dos limites.</div>
   {% endif %}
 </div>
 
 <div class="panel">
-  <h2>Linha do tempo <span class="muted small">(ultimas {{ horas }}h{% if alvo %} &middot; {{ alvo }}{% endif %})</span></h2>
+  <h2>Linha do tempo <span class="muted small">últimas {{ horas }} horas{% if alvo %} &middot; {{ alvo | nome }}{% endif %}</span></h2>
   <div class="toolbar" style="margin-top:0">
-    <input type="search" id="q-hist" class="input" placeholder="&#128269;  Pesquisar problema, servidor, mensagem...">
-    {% if alvo %}<span class="filter-chip">filtro: {{ alvo }} <a href="/ocorrencias?h={{ horas }}" title="Limpar filtro">&times;</a></span>{% endif %}
+    <input type="search" id="q-hist" class="input" placeholder="&#128269;  Pesquisar problema, servidor, mensagem…">
+    {% if alvo %}<span class="filter-chip">só {{ alvo | nome }} <a href="/ocorrencias?h={{ horas }}" title="Mostrar todos os servidores">&times;</a></span>{% endif %}
     <span class="muted small" id="hist-count"></span>
   </div>
   {% if hist %}
   <ul class="timeline" id="hist-list">
     {% for a in hist %}
-    <li class="hrow {{ a.kind }}" data-text="{{ (a.server ~ ' ' ~ a.problem ~ ' ' ~ (a.message or '')) | lower }}">
+    <li class="hrow {{ a.kind }}" data-text="{{ (a.server ~ ' ' ~ (a.server | nome) ~ ' ' ~ a.label ~ ' ' ~ (a.message or '')) | lower }}">
       <span class="quando mono">{{ a.ts | dt }}</span>
-      <a class="linkish" href="/ocorrencias?h={{ horas }}&server={{ a.server }}" title="So este servidor">{{ a.server }}</a>
+      <a class="linkish" href="/ocorrencias?h={{ horas }}&server={{ a.server }}" title="Ver só este servidor">{{ a.server | nome }}</a>
       <span class="pill {{ 'red' if a.kind in ('raised', 'reminder') and a.crit else ('green' if a.kind == 'resolved' else ('blue' if a.kind in ('package', 'manutencao', 'acao') else 'amber')) }} tag">
         {{ kind_label.get(a.kind, a.kind) }} &middot; {{ a.label }}</span>
       <span class="txt">{{ a.message }}</span>
@@ -71,47 +71,47 @@
     {% endfor %}
   </ul>
   {% else %}
-  <div class="alert ok small">Nada registrado nas ultimas {{ horas }}h{% if alvo %} para {{ alvo }}{% endif %}.</div>
+  <div class="alert ok small">Nada registrado nas últimas {{ horas }} horas{% if alvo %} para {{ alvo | nome }}{% endif %}.</div>
   {% endif %}
 </div>
 
 <details class="grupo" {{ 'open' if not abertos and rows else '' }}>
-  <summary><b>Eventos do Windows</b> <span class="muted small">&middot; {{ rows|length }} grupo(s), erros/criticos das ultimas 24h, ruido filtrado</span></summary>
+  <summary><b>Erros do Windows</b> <span class="muted small">&middot; {{ rows|length }} tipo(s) de erro nas últimas 24 horas, sem os avisos que se repetem à toa</span></summary>
   <div class="toolbar">
-    <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar origem, mensagem, servidor...">
+    <input type="search" id="q" class="input" placeholder="&#128269;  Pesquisar origem, mensagem, servidor…">
     <select id="f-server" class="input">
       <option value="">Todos os servidores</option>
-      {% for s in rows|map(attribute='server')|unique|sort %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      {% for s in rows|map(attribute='server')|unique|sort %}<option value="{{ s }}">{{ s | nome }}</option>{% endfor %}
     </select>
     <select id="f-level" class="input">
-      <option value="">Todos os niveis</option>
-      {% for l in rows|map(attribute='level')|unique|sort %}<option value="{{ l }}">{{ l }}</option>{% endfor %}
+      <option value="">Todas as gravidades</option>
+      {% for l in rows|map(attribute='level')|unique|sort %}<option value="{{ l }}">{{ nivel(l) }}</option>{% endfor %}
     </select>
     <span class="muted small" id="vis-count"></span>
   </div>
-  {% if not rows %}<div class="alert ok small">Nenhum evento relevante no momento.</div>{% endif %}
+  {% if not rows %}<div class="alert ok small">Nenhum erro relevante no momento.</div>{% endif %}
   <div class="table-wrap">
     <table class="tbl" id="occ-table">
       <thead><tr>
-        <th class="sortable" data-key="server">Servidor <span class="arrow"></span></th>
-        <th class="sortable" data-key="level">Nivel <span class="arrow"></span></th>
+        <th class="sortable" data-key="servername">Servidor <span class="arrow"></span></th>
+        <th class="sortable" data-key="level">Gravidade <span class="arrow"></span></th>
         <th class="sortable" data-key="provider">Origem <span class="arrow"></span></th>
-        <th class="sortable" data-key="id">ID <span class="arrow"></span></th>
-        <th class="sortable" data-key="count">Qtd <span class="arrow"></span></th>
-        <th class="sortable" data-key="last">Ultima <span class="arrow"></span></th>
+        <th class="sortable" data-key="id" title="Código do evento no Visualizador de Eventos">Evento <span class="arrow"></span></th>
+        <th class="sortable" data-key="count">Vezes <span class="arrow"></span></th>
+        <th class="sortable" data-key="last">Última vez <span class="arrow"></span></th>
         <th>Mensagem</th>
       </tr></thead>
       <tbody>
         {% for e in rows %}
-        <tr class="orow" data-server="{{ e.server }}" data-level="{{ e.level }}" data-provider="{{ e.provider }}"
+        <tr class="orow" data-server="{{ e.server }}" data-servername="{{ e.server | nome }}" data-level="{{ e.level }}" data-provider="{{ e.provider }}"
             data-id="{{ e.id }}" data-count="{{ e.count }}" data-last="{{ e.last }}"
-            data-text="{{ (e.server ~ ' ' ~ e.provider ~ ' ' ~ e.message ~ ' ' ~ (e.level or '')) | lower }}">
-          <td class="muted"><a class="linkish" href="/server/{{ e.server }}">{{ e.server }}</a></td>
-          <td><span class="pill red">{{ e.level or 'Erro' }}</span></td>
+            data-text="{{ (e.server ~ ' ' ~ (e.server | nome) ~ ' ' ~ e.provider ~ ' ' ~ e.message ~ ' ' ~ (e.level or '')) | lower }}">
+          <td class="muted"><a class="linkish" href="/server/{{ e.server }}">{{ e.server | nome }}</a></td>
+          <td><span class="pill red">{{ nivel(e.level) }}</span></td>
           <td><b>{{ e.provider }}</b></td>
           <td class="mono">{{ e.id }}</td>
           <td class="mono">{{ e.count }}</td>
-          <td class="muted small">{{ e.last }}</td>
+          <td class="muted small">{{ e.last | dt }}</td>
           <td class="muted small">{{ e.message }}</td>
         </tr>
         {% endfor %}
@@ -132,7 +132,7 @@
         var ok = !t || r.getAttribute('data-text').indexOf(t) >= 0;
         r.style.display = ok ? '' : 'none'; if (ok) n++;
       });
-      hc.textContent = n + ' registro(s)';
+      hc.textContent = n + (n === 1 ? ' registro' : ' registros');
     }
     qh.addEventListener('input', applyHist);
     applyHist();
@@ -153,7 +153,7 @@
             && (!l || r.getAttribute('data-level') === l);
       r.style.display = ok ? '' : 'none'; if (ok) n++;
     });
-    vis.textContent = n + ' visivel(is)';
+    vis.textContent = n + (n === 1 ? ' visível' : ' visíveis');
   }
   function sortBy(k) {
     if (sortKey === k) dir = -dir; else { sortKey = k; dir = 1; }

@@ -1,58 +1,59 @@
 {% extends "base.html" %}
-{% block title %}Fontes de dados - RMonitor{% endblock %}
+{% block title %}Origem dos dados - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Fontes de dados</h1>
-    <div class="sub">de onde veio cada dado do painel no ultimo ciclo de coleta{% if ts %} ({{ ts | dt }}){% endif %}</div>
+    <h1>Origem dos dados</h1>
+    <div class="sub">De onde veio cada informação do painel na última coleta{% if ts %} ({{ ts | dt }}){% endif %}</div>
   </div>
 </div>
 
 <div class="kpis">
-  <div class="kpi {{ 'ok' if topo.winrm_estado == 'ok' else ('bad' if topo.winrm_estado == 'erro' else 'warn') }}">
-    <div class="val">{{ topo.winrm_ok }}/{{ topo.total }}</div>
-    <div class="lbl"><span class="src-tag winrm">WinRM</span> hosts que responderam</div></div>
-  <div class="kpi {{ 'ok' if topo.es_estado == 'ok' else ('bad' if topo.es_estado == 'erro' else '') }}">
+  <div class="kpi {{ 'ok' if topo.winrm_estado == 'ok' else ('bad' if topo.winrm_estado == 'erro' else 'warn') }}" title="Leitura direta de cada servidor Windows">
+    <div class="val">{{ topo.winrm_ok }} de {{ topo.total }}</div>
+    <div class="lbl"><span class="src-tag winrm">WinRM</span> servidores que responderam</div></div>
+  <div class="kpi {{ 'ok' if topo.es_estado == 'ok' else ('bad' if topo.es_estado == 'erro' else '') }}" title="Histórico guardado no Elasticsearch pelos agentes instalados nos servidores">
     <div class="val" style="font-size:1.3rem">{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[topo.es_estado] }}</div>
-    <div class="lbl"><span class="src-tag elastic">Elastic</span> {% if es_ok_ts %}ultima consulta ok {{ es_ok_ts | dt }}{% else %}{{ es_url or 'sem RMON_ES_URL no .env' }}{% endif %}</div></div>
+    <div class="lbl"><span class="src-tag elastic">Elastic</span> {% if es_ok_ts %}última consulta bem-sucedida {{ es_ok_ts | dt }}{% else %}{{ es_url or 'sem RMON_ES_URL no .env' }}{% endif %}</div></div>
 </div>
 {% if es_erro %}<div class="alert">Elasticsearch com erro agora: {{ es_erro }}. Tudo segue pelo WinRM.</div>{% endif %}
 
 <div class="panel">
-  <h2>Padronizacao <span class="muted small">(toda coleta vale para todos os servidores, ou o RMon acusa)</span></h2>
+  <h2>Configuração igual em todos os servidores <span class="muted small">o RMon avisa quando um servidor foge do padrão dos outros</span></h2>
   {% if divergencias %}
   <div class="alert">
-    <b>{{ divergencias | length }} divergencia(s) do padrao:</b>
-    {% for d in divergencias %}<div style="margin-top:.35rem">&#9888; <a class="linkish" href="/server/{{ d.server }}"><b>{{ d.server }}</b></a> &middot; {{ d.label }}: {{ d.texto }}</div>{% endfor %}
+    <b>{{ divergencias | length }} diferença(s) encontrada(s):</b>
+    {% for d in divergencias %}<div style="margin-top:.35rem">&#9888; <a class="linkish" href="/server/{{ d.server }}"><b>{{ d.server | nome }}</b></a> &middot; {{ d.label }}: {{ d.texto }}</div>{% endfor %}
   </div>
   {% else %}
-  <div class="alert ok small">Todos os servidores no mesmo padrao de coleta.</div>
+  <div class="alert ok small">Todos os servidores com a mesma configuração de coleta.</div>
   {% endif %}
   {% if nos_nlb %}
-  <div class="table-wrap" style="margin-top:.6rem">
+  <h3 class="small muted" style="margin:.9rem 0 .4rem">Área de trabalho remota (RDP) nos servidores do balanceamento</h3>
+  <div class="table-wrap">
     <table class="tbl">
-      <thead><tr><th>No do NLB</th><th>SecurityLayer do RDP</th><th>TLS em vigor (porta 3389)</th><th>NLA</th><th>Ultimo 1149 (RDP autenticado)</th><th>Situacao</th></tr></thead>
+      <thead><tr><th>Servidor</th><th title="SecurityLayer do RDP">Segurança do RDP</th><th>Aceita TLS na porta 3389</th><th title="Network Level Authentication: pede a senha antes de abrir a sessão">NLA</th><th title="Evento 1149 do Windows: login aceito pelo RDP">Último login registrado</th><th>Situação</th></tr></thead>
       <tbody>
         {% for no in nos_nlb %}
         {% set n = no.n %}
         {% set fora = no.padrao %}
         <tr>
-          <td><a class="linkish" href="/server/{{ no.nome }}"><b>{{ no.nome }}</b></a></td>
+          <td><a class="linkish srv" href="/server/{{ no.nome }}">{{ no.nome | nome }}</a></td>
           <td class="{{ 'txt-red' if 'PADRAO:security_layer' in fora or ('PADRAO:1149' in fora and n.security_layer == 0) else '' }}">
-            {% if n.security_layer is none %}<span class="faint">-</span>{% else %}{{ n.security_layer }} <span class="small">({{ {0: 'RDP nativo, sem TLS', 1: 'Negociar', 2: 'TLS'}.get(n.security_layer, '?') }})</span>{% endif %}</td>
+            {% if n.security_layer is none %}<span class="faint">-</span>{% else %}{{ {0: 'RDP nativo, sem TLS', 1: 'negociar', 2: 'TLS'}.get(n.security_layer, '?') }} <span class="faint small">({{ n.security_layer }})</span>{% endif %}</td>
           <td class="{{ 'txt-red' if n.rdp_tls == false and n.security_layer in (1, 2) else '' }}">
             {% if n.rdp_tls is none or n.rdp_tls is not defined %}<span class="faint">-</span>
-            {% elif n.rdp_tls %}aceita
-            {% else %}<b>recusa</b>{% if n.min_encryption == 1 %} <span class="small">(criptografia 1, Baixo: so RDP nativo)</span>{% endif %}{% endif %}</td>
+            {% elif n.rdp_tls %}sim
+            {% else %}<b>não</b>{% if n.min_encryption == 1 %} <span class="small">(criptografia no nível 1, Baixo: só RDP nativo)</span>{% endif %}{% endif %}</td>
           <td class="{{ 'txt-red' if 'PADRAO:nla' in fora else '' }}">{% if n.nla is none %}<span class="faint">-</span>{% else %}{{ 'ligada' if n.nla == 1 else 'desligada' }}{% endif %}</td>
           <td class="{{ 'txt-red' if 'PADRAO:1149' in fora else '' }}">
             {% if 'ultimo_1149_min' not in n %}<span class="faint">aguardando coleta</span>
             {% elif n.ultimo_1149_min is none %}<b>nenhum no log</b>
-            {% elif n.ultimo_1149_min < 60 %}ha {{ n.ultimo_1149_min }} min
-            {% elif n.ultimo_1149_min < 2880 %}ha {{ (n.ultimo_1149_min / 60) | int }} h
-            {% else %}ha {{ (n.ultimo_1149_min / 1440) | int }} dias{% endif %}</td>
-          <td>{% if fora %}<span class="pill red">fora do padrao</span>{% elif not no.reachable %}<span class="pill amber">sem coleta</span>{% else %}<span class="pill green">no padrao</span>{% endif %}</td>
+            {% elif n.ultimo_1149_min < 60 %}há {{ n.ultimo_1149_min }} min
+            {% elif n.ultimo_1149_min < 2880 %}há {{ (n.ultimo_1149_min / 60) | int }} h
+            {% else %}há {{ (n.ultimo_1149_min / 1440) | int }} dias{% endif %}</td>
+          <td>{% if fora %}<span class="pill red">diferente dos outros</span>{% elif not no.reachable %}<span class="pill amber">sem coleta</span>{% else %}<span class="pill green">igual aos outros</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -62,45 +63,45 @@
 </div>
 
 <div class="panel">
-  <h2>Quem fornece o que</h2>
+  <h2>Qual fonte fornece cada dado</h2>
   <div class="table-wrap">
     <table class="tbl">
-      <thead><tr><th>Dado</th><th>Fonte</th><th>Quando o outro lado assume</th></tr></thead>
+      <thead><tr><th>Dado</th><th>Fonte</th><th>Quando a outra fonte assume</th></tr></thead>
       <tbody>
-        <tr><td>CPU, memoria, discos, servicos, sessoes RDP, broker, eventos do Windows</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small">nunca: so o WinRM le isso</td></tr>
-        <tr><td>JobRunner agora (lista de PIDs, alerta de 4/8 GB, botao encerrar)</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small"><span class="src-tag elastic">Elastic</span> quando o WinRM do host nao responde (sem o botao encerrar)</td></tr>
-        <tr><td>Historico de memoria do JobRunner (grafico de 24h/7/30 dias)</td><td><span class="src-tag elastic">Elastic</span></td><td class="muted small">so o Elastic guarda historico; sem ele, o grafico some</td></tr>
-        <tr><td>Contagens de RDP do NLB (1149 autenticou x 21/25 abriu sessao)</td><td><span class="src-tag elastic">Elastic</span> + <span class="src-tag winrm">WinRM</span></td><td class="muted small">o que so um lado sabe, vale ele; com os dois, vale a leitura mais saudavel (menos autenticacoes, mais sessoes)</td></tr>
-        <tr><td>Jobs e fila do RM</td><td class="small">SQL Server</td><td class="muted small">-</td></tr>
+        <tr><td>Processador, memória, discos, serviços, sessões, broker, erros do Windows</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small">nunca: só o WinRM lê isso</td></tr>
+        <tr><td>Processos de job agora (lista de PIDs, alerta de memória, botão de encerrar)</td><td><span class="src-tag winrm">WinRM</span></td><td class="muted small"><span class="src-tag elastic">Elastic</span> quando o WinRM do servidor não responde (sem o botão de encerrar)</td></tr>
+        <tr><td>Histórico de memória dos processos de job (gráfico de 24 horas, 7 e 30 dias)</td><td><span class="src-tag elastic">Elastic</span></td><td class="muted small">só o Elastic guarda histórico; sem ele, o gráfico some</td></tr>
+        <tr><td>Contagem de acessos do balanceamento (logins aceitos x sessões abertas)</td><td><span class="src-tag elastic">Elastic</span> + <span class="src-tag winrm">WinRM</span></td><td class="muted small">o que só uma fonte sabe vale ela; com as duas, vale a leitura mais saudável</td></tr>
+        <tr><td>Jobs e fila do RM</td><td class="small">banco do RM (SQL Server)</td><td class="muted small">-</td></tr>
       </tbody>
     </table>
   </div>
 </div>
 
 <div class="panel">
-  <h2>Por servidor <span class="muted small">(ultimo ciclo)</span></h2>
+  <h2>Servidor por servidor <span class="muted small">última coleta</span></h2>
   {% if not ts %}
-  <div class="alert info small">Aguardando a primeira coleta depois do start (ate {{ 60 }}s).</div>
+  <div class="alert info small">Aguardando a primeira coleta depois que o RMon iniciou (até 60 segundos).</div>
   {% else %}
   <div class="table-wrap">
     <table class="tbl">
-      <thead><tr><th>Servidor</th><th>WinRM</th><th>Agente do Elastic</th><th>JobRunner agora</th><th>RDP do NLB</th></tr></thead>
+      <thead><tr><th>Servidor</th><th>WinRM</th><th>Agente do Elastic</th><th>Processos de job agora</th><th>Acessos do balanceamento</th></tr></thead>
       <tbody>
         {% for l in linhas %}
         {% set f = l.f %}
         <tr>
-          <td><a class="linkish" href="/server/{{ l.nome }}"><b>{{ l.nome }}</b></a><br><span class="faint small mono">{{ l.host }}</span></td>
+          <td><a class="linkish srv" href="/server/{{ l.nome }}">{{ l.nome | nome }}</a><span class="srv-desc">{{ descricao(l.nome) }} &middot; <span class="mono">{{ l.host }}</span></span></td>
           <td>{% if f.winrm_ok %}<span class="txt-green">&#9679;</span> respondeu{% elif f %}<span class="txt-red">&#9679;</span> <span class="small" title="{{ f.winrm_erro }}">sem resposta</span>{% else %}<span class="faint">-</span>{% endif %}</td>
           <td>{% if not es_ativo %}<span class="faint small">Elastic desligado</span>
               {% elif not f.elastic_host %}<span class="faint small">sem nome no Elastic</span>
-              {% elif l.es_fresco %}<span class="txt-green">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="faint small">ha {{ [l.es_idade, 0] | max | int }}s</span>
+              {% elif l.es_fresco %}<span class="txt-green">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="faint small">há {{ [l.es_idade, 0] | max | int }} s</span>
               {% elif f.elastic_visto %}<span class="txt-amber">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="small txt-amber">parado desde {{ f.elastic_visto | dt }}</span>
-              {% else %}<span class="txt-amber">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="small txt-amber">nada nos ultimos 15 min</span>{% endif %}</td>
+              {% else %}<span class="txt-amber">&#9679;</span> <span class="mono small">{{ f.elastic_host }}</span> <span class="small txt-amber">nada nos últimos 15 min</span>{% endif %}</td>
           <td>{% if f.jobrunner %}<span class="src-tag {{ f.jobrunner }}">{{ rotulo_fonte[f.jobrunner] }}</span>{% else %}<span class="faint">-</span>{% endif %}</td>
           <td>{% if f.nlb %}
-              aut. {% if f.nlb_auth %}<span class="src-tag {{ f.nlb_auth }}">{{ rotulo_fonte[f.nlb_auth] }}</span>{% else %}<span class="faint">-</span>{% endif %}
-              &middot; sess. {% if f.nlb_sess %}<span class="src-tag {{ f.nlb_sess }}">{{ rotulo_fonte[f.nlb_sess] }}</span>{% else %}<span class="faint">-</span>{% endif %}
-              {% else %}<span class="faint small">nao e no do NLB</span>{% endif %}</td>
+              logins {% if f.nlb_auth %}<span class="src-tag {{ f.nlb_auth }}">{{ rotulo_fonte[f.nlb_auth] }}</span>{% else %}<span class="faint">-</span>{% endif %}
+              &middot; sessões {% if f.nlb_sess %}<span class="src-tag {{ f.nlb_sess }}">{{ rotulo_fonte[f.nlb_sess] }}</span>{% else %}<span class="faint">-</span>{% endif %}
+              {% else %}<span class="faint small">fora do balanceamento</span>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>

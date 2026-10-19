@@ -87,26 +87,26 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
             continue
         ident = str(raw.get("id") or "").strip().lower()
         if not _ID_RE.match(ident):
-            log.warning("acao de execucao ignorada: id invalido (%r)", raw.get("id"))
+            log.warning("ação de execução ignorada: id inválido (%r)", raw.get("id"))
             continue
         if raw.get("dest"):
             # Copiar DLL para dentro da instalacao nao passa pelo registro do
             # Windows: some do "Programas e Recursos" e nao ha como desinstalar
             # nem saber que versao esta la. Se o fornecedor so entrega o
             # arquivo, empacote antes - nao e o RMon que vai contornar isso.
-            log.warning("acao %s ignorada: copia de arquivo nao e reversivel pelo "
+            log.warning("ação %s ignorada: copia de arquivo não e reversível pelo "
                         "Painel de Controle; use um instalador (.exe/.msi)", ident)
             continue
         args = str(raw.get("args") or "")
         # O executavel e sempre o pacote que nos mesmos colocamos la; os
         # argumentos sao texto fixo do YAML. Encadear outro comando nao passa.
         if any(c in args for c in ";&|<>`$\n\r"):
-            log.warning("acao %s ignorada: caracteres proibidos em 'args'", ident)
+            log.warning("ação %s ignorada: caracteres proibidos em 'args'", ident)
             continue
         extensoes = [str(e).lower() for e in (raw.get("extensions") or [])]
         invalidas = [e for e in extensoes if e not in EXTENSOES_INSTALADOR]
         if invalidas:
-            log.warning("acao %s ignorada: so instalador (%s), e nao %s", ident,
+            log.warning("ação %s ignorada: só instalador (%s), e não %s", ident,
                         ", ".join(EXTENSOES_INSTALADOR), ", ".join(invalidas))
             continue
         saida[ident] = {
@@ -126,7 +126,7 @@ def na_janela(janela: str, agora: time.struct_time | None = None) -> bool:
         return True
     m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", janela)
     if not m:
-        log.warning("janela de manutencao invalida (%r): tratando como sempre aberta", janela)
+        log.warning("janela de manutenção invalida (%r): tratando como sempre aberta", janela)
         return True
     ini = int(m.group(1)) * 60 + int(m.group(2))
     fim = int(m.group(3)) * 60 + int(m.group(4))
@@ -265,21 +265,21 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
     acao = acoes.get(task.get("action") or "")
     checagens.append(_check("acao", bool(acao),
                             acao["label"] if acao else
-                            f"acao '{task.get('action')}' nao existe no catalogo"))
+                            f"ação '{task.get('action')}' não existe no catálogo"))
     checagens.append(_check(
         "habilitado", bool(cfg.get("enabled")),
-        "execucao real habilitada no inventario" if cfg.get("enabled")
-        else "execucao real DESLIGADA (execution.enabled = false): so pre-voo"))
+        "execução real habilitada no inventário" if cfg.get("enabled")
+        else "execução real DESLIGADA (execution.enabled = false): só pré-voo"))
     liberado = task["server"] in (cfg.get("hosts") or [])
     checagens.append(_check(
         "host_liberado", liberado,
         f"{task['server']} esta na lista de hosts liberados" if liberado
-        else f"{task['server']} NAO esta em execution.hosts"))
+        else f"{task['server']} NÃO esta em execution.hosts"))
     dentro = na_janela(str(cfg.get("window") or ""))
     checagens.append(_check(
         "janela", dentro,
-        "dentro da janela de manutencao" if dentro
-        else f"fora da janela de manutencao ({cfg.get('window')})"))
+        "dentro da janela de manutenção" if dentro
+        else f"fora da janela de manutenção ({cfg.get('window')})"))
 
     caminho = pacote_local(settings, task.get("arquivo") or "")
     if caminho:
@@ -289,7 +289,7 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
                                 f"{sha256(caminho)[:16]}..."))
     else:
         checagens.append(_check("pacote", False,
-                                f"pacote nao encontrado no repositorio: {task.get('arquivo')}"))
+                                f"pacote não encontrado no repositório: {task.get('arquivo')}"))
         tamanho = 0
 
     if caminho:
@@ -298,11 +298,11 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
             "instalador", instalador,
             f"{caminho.suffix} se registra no Windows e da para desinstalar depois"
             if instalador else
-            f"{caminho.suffix} nao e instalador: so {', '.join(EXTENSOES_INSTALADOR)}, "
-            "porque a instalacao precisa ser reversivel pelo Painel de Controle"))
+            f"{caminho.suffix} não e instalador: só {', '.join(EXTENSOES_INSTALADOR)}, "
+            "porque a instalação precisa ser reversível pelo Painel de Controle"))
         if acao and acao["extensions"] and caminho.suffix.lower() not in acao["extensions"]:
             checagens.append(_check("extensao", False,
-                                    f"{caminho.suffix} nao e aceito por esta acao "
+                                    f"{caminho.suffix} não e aceito por esta ação "
                                     f"(esperado: {', '.join(acao['extensions'])})"))
 
     if instalado and task.get("version"):
@@ -310,25 +310,25 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
         checagens.append(_check(
             "versao", cmp > 0,
             f"instalado {instalado} -> pacote {task['version']}" if cmp > 0
-            else f"o host ja esta em {instalado}; o pacote e {task['version']}"))
+            else f"o host já esta em {instalado}; o pacote e {task['version']}"))
 
     comando = ""
     dados: dict[str, Any] = {}
     if server is None:
-        checagens.append(_check("host", False, "servidor nao esta no inventario"))
+        checagens.append(_check("host", False, "servidor não esta no inventário"))
     else:
         destino = ""
         temp = str(cfg.get("temp_dir") or DEFAULTS["temp_dir"])
         dados = _remoto(server, wc, destino, temp,
                         list(cfg.get("require_services_stopped") or []), url_check)
         if dados.get("erro"):
-            checagens.append(_check("host", False, f"host inacessivel: {dados['erro']}"))
+            checagens.append(_check("host", False, f"host inacessível: {dados['erro']}"))
         else:
             sessoes = int(dados.get("sessoes") or 0)
             limite = int(cfg.get("max_sessions", 0) or 0)
             checagens.append(_check(
                 "sessoes", sessoes <= limite,
-                f"{sessoes} sessao(oes) RDP ativa(s) (limite {limite})"))
+                f"{sessoes} sessão(ões) RDP ativa(s) (limite {limite})"))
             livre = dados.get("livre_gb")
             minimo = float(cfg.get("min_free_gb", 2) or 0)
             precisa = max(minimo, (tamanho / 1073741824) * 2)
@@ -342,10 +342,10 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
             exigidos = list(cfg.get("require_services_stopped") or [])
             checagens.append(_check(
                 "servicos", not parados,
-                "nenhum servico exigido parado pendente" if not exigidos
-                else (f"{len(parados)} servico(s) ainda rodando: "
+                "nenhum serviço exigido parado pendente" if not exigidos
+                else (f"{len(parados)} serviço(s) ainda rodando: "
                       + ", ".join(s["nome"] for s in parados[:5]) if parados
-                      else "servicos exigidos estao parados")))
+                      else "serviços exigidos estão parados")))
             # O pacote viaja da VM para o host por HTTP, entao "o host alcanca o
             # RMon?" decide se a instalacao e possivel. Em seco isso e so um
             # aviso; para valer, e impedimento - melhor barrar aqui do que
@@ -356,12 +356,12 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
                 checagens.append(_check(
                     "alcance", http == 200,
                     f"o host alcanca o RMon em {url_check} (HTTP {http})" if http == 200
-                    else f"o host NAO alcanca o RMon em {url_check} (HTTP {http}) - "
-                         "sem isso o pacote nao chega la", dura=real))
+                    else f"o host NÃO alcanca o RMon em {url_check} (HTTP {http}) - "
+                         "sem isso o pacote não chega la", dura=real))
             elif real:
                 checagens.append(_check(
                     "alcance", False,
-                    "execution.base_url nao configurada: o host nao teria de onde "
+                    "execution.base_url não configurada: o host não teria de onde "
                     "baixar o pacote", dura=True))
 
         if acao and caminho:
@@ -505,19 +505,19 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
     """
     cfg = settings_for(defaults)
     if not cfg.get("enabled"):
-        return {"ok": False, "error": "execucao real desligada (execution.enabled = false)"}
+        return {"ok": False, "error": "execução real desligada (execution.enabled = false)"}
     if task["server"] not in (cfg.get("hosts") or []):
-        return {"ok": False, "error": f"{task['server']} nao esta em execution.hosts"}
+        return {"ok": False, "error": f"{task['server']} não esta em execution.hosts"}
     acao = actions_for(defaults).get(task.get("action") or "")
     if not acao:
-        return {"ok": False, "error": "acao desconhecida"}
+        return {"ok": False, "error": "ação desconhecida"}
     caminho = pacote_local(settings, task.get("arquivo") or "")
     if not caminho:
-        return {"ok": False, "error": "pacote nao encontrado no repositorio"}
+        return {"ok": False, "error": "pacote não encontrado no repositório"}
     if caminho.suffix.lower() not in EXTENSOES_INSTALADOR:
         return {"ok": False,
-                "error": f"{caminho.suffix} nao e instalador: a instalacao precisa ser "
-                         "reversivel pelo Painel de Controle"}
+                "error": f"{caminho.suffix} não e instalador: a instalação precisa ser "
+                         "reversível pelo Painel de Controle"}
     user, pw = credential_for(server.cred)
     if not (user and pw):
         return {"ok": False, "error": f"sem credencial para o perfil '{server.cred}'"}
@@ -542,14 +542,14 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
 
         if codigo != 0:
             return {"ok": False, "exit_code": codigo, "output": texto[:4000],
-                    "error": erro or "o instalador retornou codigo != 0"}
+                    "error": erro or "o instalador retornou código != 0"}
         if not registro:
             # Rodou sem erro mas nao deixou rastro em "Programas e Recursos":
             # nao da para desinstalar nem para saber que versao ficou. Pela
             # regra da casa, isso nao e uma instalacao bem-sucedida.
             return {"ok": False, "exit_code": codigo, "output": texto[:4000],
                     "error": "o instalador terminou com sucesso mas nada apareceu em "
-                             "Programas e Recursos: o resultado nao seria reversivel "
+                             "Programas e Recursos: o resultado não seria reversível "
                              "pelo Painel de Controle"}
         return {"ok": True, "exit_code": codigo, "output": texto[:4000], "error": None}
     except Exception as exc:  # noqa: BLE001

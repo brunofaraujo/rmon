@@ -12,7 +12,7 @@ import pytest
 from app import db
 
 DSN = os.environ.get("RMON_TEST_DSN")
-pytestmark = pytest.mark.skipif(not DSN, reason="RMON_TEST_DSN nao definido")
+pytestmark = pytest.mark.skipif(not DSN, reason="RMON_TEST_DSN não definido")
 
 
 @pytest.fixture
@@ -32,8 +32,8 @@ def gravar(server, kind, problem, msg="", dias=0):
 
 
 def test_aberto_e_o_que_terminou_em_raised(banco):
-    gravar("a", "raised", "MEM", "memoria em 95%", dias=3)
-    gravar("a", "resolved", "MEM", "memoria em 95%", dias=2)
+    gravar("a", "raised", "MEM", "memória em 95%", dias=3)
+    gravar("a", "resolved", "MEM", "memória em 95%", dias=2)
     gravar("a", "raised", "DISK", "disco em 92%", dias=1)
     gravar("b", "raised", "svc:W3SVC", "parado", dias=2)
     gravar("b", "resolved", "svc:W3SVC", "parado", dias=1)
@@ -86,7 +86,7 @@ def test_acoes_desde_contam_so_o_mesmo_problema_depois_do_boot(banco):
     gravar("a", "acao", "svc:RM.Host.Service", "1a", dias=0.5)
     gravar("a", "acao", "svc:RM.Host.Service", "2a", dias=0.25)
     gravar("a", "raised", "svc:RM.Host.Service", "parado")      # outro tipo nao conta
-    gravar("a", "acao", "svc:W3SVC", "outro servico")           # outro problema nao conta
+    gravar("a", "acao", "svc:W3SVC", "outro serviço")           # outro problema nao conta
     gravar("b", "acao", "svc:RM.Host.Service", "outro host")    # outro host nao conta
     feitas = banco.acoes_desde("a", "svc:RM.Host.Service", agora - 86400)
     assert len(feitas) == 2 and feitas[0] < feitas[1]

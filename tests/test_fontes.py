@@ -46,7 +46,7 @@ def test_resumo_do_cabecalho():
     ciclo_exemplo()
     r = fontes.resumo({"ativo": True, "ok_ts": AGORA - 12, "erro": None}, agora=AGORA)
     assert (r["winrm_ok"], r["total"], r["winrm_estado"]) == (2, 3, "parcial")
-    assert (r["es_estado"], r["es_texto"]) == ("ok", "ha 12s")
+    assert (r["es_estado"], r["es_texto"]) == ("ok", "há 12s")
     assert fontes.resumo({"ativo": True, "ok_ts": AGORA, "erro": "HTTP 401"})["es_estado"] == "erro"
     assert fontes.resumo({"ativo": False})["es_estado"] == "off"
 
@@ -54,12 +54,12 @@ def test_resumo_do_cabecalho():
 def test_cabecalho_mostra_as_fontes_em_toda_tela(app_falso):  # noqa: F811
     app_falso.entrar()
     html = app_falso.c.get("/").text
-    assert "aguardando a 1a coleta" in html
+    assert "aguardando a primeira coleta" in html
     fontes.registrar([(main.STATE["inv"].servers[0], coleta())], {}, {}, es_ativo=False)
     for rota in ("/", "/ocorrencias", "/admin", "/server/app-34"):
         html = app_falso.c.get(rota).text
         assert 'class="src-strip" href="/fontes"' in html, rota
-        assert '<span class="src-tag winrm">WinRM</span> <b>1/1</b>' in html, rota
+        assert '<span class="src-tag winrm">WinRM</span> <b>1 de 1</b>' in html, rota
         assert "<b>desligado</b>" in html, rota
 
 
@@ -71,9 +71,9 @@ def test_pagina_fontes(app_falso, monkeypatch):  # noqa: F811
                      {"app-34": "hosta"}, {"hosta": time.time() - 30}, es_ativo=True)
     app_falso.entrar()
     html = app_falso.c.get("/fontes").text
-    assert "Fontes de dados" in html and "Quem fornece o que" in html
+    assert "Origem dos dados" in html and "Qual fonte fornece cada dado" in html
     assert "sem resposta" in html and '<span class="src-tag elastic">Elastic</span></td>' in html
-    assert '<span class="mono small">hosta</span> <span class="faint small">ha 3' in html
+    assert '<span class="mono small">hosta</span> <span class="faint small">há 3' in html
 
 
 def test_viewer_nao_ve_fontes(app_falso):  # noqa: F811
@@ -86,8 +86,8 @@ def test_tela_do_servidor_diz_as_fontes(app_falso):  # noqa: F811
                      {"hosta": time.time()}, es_ativo=True)
     app_falso.entrar()
     html = app_falso.c.get("/server/app-34").text
-    assert "Fontes desta tela:" in html and "metricas, servicos, discos, broker, JobRunner atual" in html
-    assert 'JobRunner do RM <span class="src-tag winrm">WinRM</span>' in html
+    assert "Origem dos dados desta tela:" in html and "processador, memória, serviços, discos e broker, processos de job agora" in html
+    assert 'Processos de job do RM (JobRunner) <span class="src-tag winrm">WinRM</span>' in html
 
 
 def test_css_do_painel_tem_selo_de_deploy(app_falso):  # noqa: F811

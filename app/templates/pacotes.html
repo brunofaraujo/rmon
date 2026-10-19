@@ -7,17 +7,17 @@
 {% set base_qs = base_qs_sem_vis ~ '&vis=' ~ vis %}
 <div class="page-head">
   <div>
-    <h1>Inventario de software</h1>
+    <h1>Inventário de software</h1>
     <div class="sub">
-      Software TOTVS instalado, comparado entre os hosts
+      Versões do RM e do software TOTVS em cada servidor, comparadas entre os servidores
       {% if ambientes %}de <b>{{ ambiente_label }}</b>{% else %}do parque{% endif %}
     </div>
   </div>
   <div class="pills">
     <a class="pill" href="/pacotes/mudancas?ambiente={{ ambiente }}">&#128337; Mudancas</a>
     {% if request.session.get('role') == 'admin' %}
-    <a class="pill" href="/pacotes/catalogo">&#128230; Versoes disponiveis</a>
-    <a class="pill" href="/pacotes/tarefas">&#9881; Instalacoes</a>{% endif %}
+    <a class="pill" href="/pacotes/catalogo">&#128230; Versões disponíveis</a>
+    <a class="pill" href="/pacotes/tarefas">&#9881; Instalações</a>{% endif %}
     <a class="btn" href="/pacotes.csv">&#8681; CSV</a>
     {% if request.session.get('role') == 'admin' %}
     <form method="post" action="/pacotes/coletar" style="display:inline">
@@ -34,7 +34,7 @@
   {% for id, rotulo in ambientes %}
   <a class="envtab {{ 'on' if id == ambiente else '' }}"
      href="/pacotes?ambiente={{ id }}&fonte={{ fonte }}&filtro={{ filtro }}&vis={{ vis }}">
-    {{ rotulo }}<span class="n">{{ ambiente_hosts.get(id, 0) }} host(s)</span>
+    {{ rotulo }}<span class="n">{{ ambiente_hosts.get(id, 0) }} servidor(es)</span>
   </a>
   {% endfor %}
 </div>
@@ -43,30 +43,30 @@
 {% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
 {% if resumo.sem_coleta %}
   <div class="alert info small">
-    Sem inventario ainda: <b>{{ resumo.sem_coleta|join(', ') }}</b>.
-    A primeira coleta roda 90s apos o servico subir, depois na cadencia configurada.
+    Ainda sem inventário: <b>{{ resumo.sem_coleta|map('nome')|join(', ') }}</b>.
+    A primeira leitura roda 90 segundos depois que o RMon inicia; depois, de tempos em tempos.
   </div>
 {% endif %}
 {% if resumo.falhas %}
   <div class="alert small">
-    Falha na ultima coleta de inventario:
-    {% for s in resumo.falhas %}<b>{{ s }}</b> ({{ runs[s].error }}){% if not loop.last %} &middot; {% endif %}{% endfor %}
+    A última leitura do inventário falhou em:
+    {% for s in resumo.falhas %}<b>{{ s | nome }}</b> ({{ runs[s].error }}){% if not loop.last %} &middot; {% endif %}{% endfor %}
   </div>
 {% endif %}
 
 <div class="kpis">
   <a class="kpi {{ 'sel' if filtro == 'todos' else '' }}" href="/pacotes?{{ base_qs }}&filtro=todos">
-    <div class="val">{{ resumo.pacotes }}</div><div class="lbl">Itens no ambiente</div></a>
+    <div class="val">{{ resumo.pacotes }}</div><div class="lbl">Itens neste ambiente</div></a>
   <a class="kpi {{ 'warn' if resumo.drift else 'ok' }} {{ 'sel' if filtro == 'drift' else '' }}"
      href="/pacotes?{{ base_qs }}&filtro=drift">
     <div class="val {{ 'txt-amber' if resumo.drift else 'txt-green' }}">{{ resumo.drift }}</div>
-    <div class="lbl">Versoes divergentes</div></a>
+    <div class="lbl">Com versões diferentes entre servidores</div></a>
   <a class="kpi {{ 'sel' if filtro == 'ausentes' else '' }}" href="/pacotes?{{ base_qs }}&filtro=ausentes">
-    <div class="val">{{ resumo.parcial }}</div><div class="lbl">Ausentes em algum host</div></a>
+    <div class="val">{{ resumo.parcial }}</div><div class="lbl">Faltando em algum servidor</div></a>
   <a class="kpi {{ 'warn' if resumo.atualizavel else '' }} {{ 'sel' if filtro == 'atualizavel' else '' }}"
      href="/pacotes?{{ base_qs }}&filtro=atualizavel">
     <div class="val {{ 'txt-amber' if resumo.atualizavel else '' }}">{{ resumo.atualizavel }}</div>
-    <div class="lbl">Com pacote mais novo baixado</div></a>
+    <div class="lbl">Com versão mais nova já baixada</div></a>
 </div>
 
 {# Tudo o que antes ficava espremido no cabecalho de cada coluna da matriz:
@@ -75,14 +75,14 @@
   {% for s in servidores %}
   {% set r = runs.get(s) %}
   <div class="hostchip {{ 'bad' if r and not r.ok else ('idle' if not r else '') }}">
-    <b>{{ s }}</b>
-    <span class="muted small">{{ papel_label.get(papeis.get(s), papeis.get(s)) or 'sem papel' }}</span>
+    <b>{{ s | nome }}</b>
+    <span class="muted small">{{ descricao(s) or 'sem papel definido' }}</span>
     <span class="faint small">
       {% if not r %}sem coleta
-      {% elif not r.ok %}falha na coleta
-      {% else %}coleta {{ r.ts | dt }}{% endif %}
+      {% elif not r.ok %}falha na leitura
+      {% else %}lido em {{ r.ts | dt }}{% endif %}
       {% if r and r.last_upgrade %}
-        &middot; <span title="ultima atualizacao aplicada pelo RM.Atualizador">&#8635; {{ r.last_upgrade.strftime('%d/%m/%Y') }}</span>
+        &middot; <span title="última atualização aplicada pelo RM.Atualizador">&#8635; {{ r.last_upgrade.strftime('%d/%m/%Y') }}</span>
       {% endif %}
     </span>
   </div>
@@ -93,26 +93,26 @@
   <input type="hidden" name="ambiente" value="{{ ambiente }}">
   <input type="hidden" name="vis" value="{{ vis }}">
   <input type="search" name="q" class="input" value="{{ busca }}"
-         placeholder="&#128269;  Pesquisar pacote ou versao...">
+         placeholder="&#128269;  Pesquisar pacote ou versão…">
   <select name="fonte" class="input">
-    <option value="totvs"    {{ 'selected' if fonte=='totvs' else '' }}>TOTVS (produto, customizacoes e bibliotecas)</option>
-    <option value="rm"       {{ 'selected' if fonte=='rm' else '' }}>So a versao do produto</option>
-    <option value="custom"   {{ 'selected' if fonte=='custom' else '' }}>So customizacoes (RM.Cst)</option>
-    <option value="assembly" {{ 'selected' if fonte=='assembly' else '' }}>So bibliotecas e executaveis</option>
+    <option value="totvs"    {{ 'selected' if fonte=='totvs' else '' }}>TOTVS (produto, customizações e bibliotecas)</option>
+    <option value="rm"       {{ 'selected' if fonte=='rm' else '' }}>Só a versão do produto</option>
+    <option value="custom"   {{ 'selected' if fonte=='custom' else '' }}>Só customizações (RM.Cst)</option>
+    <option value="assembly" {{ 'selected' if fonte=='assembly' else '' }}>Só bibliotecas e executáveis</option>
     <option value="registry" {{ 'selected' if fonte=='registry' else '' }}>Instaladores TOTVS (registro)</option>
     <option value="hotfix"   {{ 'selected' if fonte=='hotfix' else '' }}>Hotfixes do Windows</option>
     <option value="todos"    {{ 'selected' if fonte=='todos' else '' }}>Tudo</option>
   </select>
   <select name="filtro" class="input">
     <option value="todos"       {{ 'selected' if filtro=='todos' else '' }}>Todos</option>
-    <option value="atualizavel" {{ 'selected' if filtro=='atualizavel' else '' }}>So com atualizacao baixada</option>
-    <option value="problemas"   {{ 'selected' if filtro=='problemas' else '' }}>So divergentes ou ausentes</option>
-    <option value="drift"       {{ 'selected' if filtro=='drift' else '' }}>So versoes divergentes</option>
-    <option value="ausentes"    {{ 'selected' if filtro=='ausentes' else '' }}>So ausentes em algum host</option>
+    <option value="atualizavel" {{ 'selected' if filtro=='atualizavel' else '' }}>Só com atualização baixada</option>
+    <option value="problemas"   {{ 'selected' if filtro=='problemas' else '' }}>Só os diferentes ou faltando</option>
+    <option value="drift"       {{ 'selected' if filtro=='drift' else '' }}>Só versões diferentes entre servidores</option>
+    <option value="ausentes"    {{ 'selected' if filtro=='ausentes' else '' }}>Só os que faltam em algum servidor</option>
   </select>
   <select name="servidor" class="input">
     <option value="">Todos os servidores</option>
-    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}
+    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s | nome }}</option>{% endfor %}
   </select>
   <button class="btn" type="submit">Filtrar</button>
   <span class="spacer"></span>
@@ -125,10 +125,10 @@
 </form>
 
 {% macro selo(l) %}
-  {% if l.drift %}<span class="pill amber">divergente</span>{% endif %}
-  {% if l.parcial %}<span class="pill">ausente em {{ l.ausentes|length }}</span>{% endif %}
-  {% if l.atualizavel %}<span class="pill blue">atualizacao baixada</span>{% endif %}
-  {% if l.pista %}<span class="pill" title="pista para diferenciar itens de mesmo nome">{{ l.pista }}</span>{% endif %}
+  {% if l.drift %}<span class="pill amber">versões diferentes</span>{% endif %}
+  {% if l.parcial %}<span class="pill">falta em {{ l.ausentes|length }} servidor(es)</span>{% endif %}
+  {% if l.atualizavel %}<span class="pill blue">atualização baixada</span>{% endif %}
+  {% if l.pista %}<span class="pill" title="para diferenciar itens com o mesmo nome">{{ l.pista }}</span>{% endif %}
 {% endmacro %}
 
 {% if not linhas %}
@@ -147,7 +147,7 @@
     <div class="table-wrap">
       <table class="tbl inv">
         <thead><tr>
-          <th>Item</th><th>Versao instalada</th><th>Hosts</th><th>Disponivel</th>
+          <th>Item</th><th>Versão instalada</th><th>Servidores</th><th>Disponível para instalar</th>
         </tr></thead>
         <tbody>
           {% for l in g.linhas %}
@@ -158,8 +158,8 @@
             </td>
             <td class="{{ 'txt-amber' if l.drift else '' }}">
               {% if l.drift %}
-                <span class="mono">{{ l.oldest or 'sem versao' }}</span> &rarr; <span class="mono">{{ l.latest }}</span>
-                <div class="faint small">{{ l.atrasados|length }} host(s) atras da maior versao</div>
+                <span class="mono">{{ l.oldest or 'sem versão' }}</span> &rarr; <span class="mono">{{ l.latest }}</span>
+                <div class="faint small">{{ l.atrasados|length }} servidor(es) atrás da versão mais nova</div>
               {% else %}
                 <span class="mono">{{ l.latest or 'instalado' }}</span>
               {% endif %}
@@ -171,12 +171,12 @@
                   {% for s in servidores %}
                   {% set c = l.cells.get(s) %}
                   <li class="{{ 'absent' if not c else ('behind' if c.status == 'behind' else '') }}">
-                    <span class="h">{{ s }}</span>
+                    <span class="h">{{ s | nome }}</span>
                     {% if c %}
                       <span class="mono">{{ c.version or 'instalado' }}</span>
                       {% if c.date %}<span class="faint small">{{ c.date.strftime('%d/%m/%Y') }}{{ '*' if c.estimada else '' }}</span>{% endif %}
                     {% else %}
-                      <span class="faint">{{ 'faltando neste papel' if s in l.ausentes else 'nao instalado' }}</span>
+                      <span class="faint">{{ 'faltando' if s in l.ausentes else 'não instalado (não se aplica)' }}</span>
                     {% endif %}
                   </li>
                   {% endfor %}
@@ -186,7 +186,7 @@
             <td class="{{ 'txt-accent' if l.atualizavel else '' }}"
                 title="{{ (l.disp.arquivo or l.disp.nota or '') if l.disp else '' }}">
               {% if l.disp %}<span class="mono">{{ l.disp.version }}</span>
-                {% if l.atualizavel %}<div class="small">baixado, nao aplicado</div>{% endif %}
+                {% if l.atualizavel %}<div class="small">baixado, não aplicado</div>{% endif %}
               {% else %}<span class="faint">&mdash;</span>{% endif %}
             </td>
           </tr>
@@ -204,9 +204,9 @@
       <thead>
         <tr>
           <th class="sticky-col">Item</th>
-          <th class="avail">Disponivel</th>
+          <th class="avail">Disponível</th>
           {% for s in servidores %}
-          <th class="host-col" title="{{ papel_label.get(papeis.get(s), papeis.get(s)) or '' }}">{{ s }}</th>
+          <th class="host-col" title="{{ descricao(s) }}">{{ s | nome }}</th>
           {% endfor %}
         </tr>
       </thead>
@@ -231,7 +231,7 @@
               <span class="mono">{{ c.version or 'instalado' }}</span>
             </td>
             {% else %}
-            <td class="cell absent" title="nao instalado">&mdash;</td>
+            <td class="cell absent" title="não instalado">&mdash;</td>
             {% endif %}
           {% endfor %}
         </tr>
@@ -246,17 +246,17 @@
 <details class="legenda">
   <summary class="muted small">Como ler esta tela</summary>
   <div class="muted small">
-    A comparacao acontece <b>dentro de um ambiente</b>: {{ ambiente_label or 'o parque' }} tem
-    {{ servidores|length }} host(s), e a referencia de "atualizado" e a maior versao encontrada
+    A comparação acontece <b>dentro de um ambiente</b>: {{ ambiente_label or 'o parque' }} tem
+    {{ servidores|length }} servidor(es), e a referência de "atualizado" é a maior versão encontrada
     entre eles &middot;
-    <b>divergente</b> = os hosts nao estao todos na mesma versao &middot;
-    <b>ausente</b> = falta em algum host <i>do mesmo papel</i> (a camada web nao tem o mesmo
-    software que a de aplicacao, e isso nao conta como falta) &middot;
-    <b>Disponivel</b> = maior versao ja baixada do TDN para aquele item
-    ({{ resumo.catalogo }} pacote(s) no repositorio{% if resumo.sem_vinculo %},
+    <b>versões diferentes</b> = os servidores não estão todos na mesma versão &middot;
+    <b>falta</b> = não está em algum servidor <i>do mesmo papel</i> (a camada web não tem o mesmo
+    software que a de aplicação, e isso não conta como falta) &middot;
+    <b>Disponível</b> = maior versão já baixada do TDN para aquele item
+    ({{ resumo.catalogo }} pacote(s) no repositório{% if resumo.sem_vinculo %},
     {{ resumo.sem_vinculo }} sem item vinculado{% endif %}) &middot;
-    <b>*</b> na data = estimada pela primeira coleta do RMon (o registro do Windows nao
-    informa a data) &middot; <b>&#8635;</b> no cartao do host = ultima atualizacao aplicada
+    <b>*</b> na data = estimada pela primeira coleta do RMon (o registro do Windows não
+    informa a data) &middot; <b>&#8635;</b> no cartão do servidor = última atualização aplicada
     pelo RM.Atualizador.
   </div>
 </details>

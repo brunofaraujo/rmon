@@ -42,13 +42,20 @@ class WinRMConfig:
 SEM_AMBIENTE = "-"
 
 # Papeis conhecidos, na ordem em que fazem sentido numa lista. O rotulo aparece
-# no cabecalho da coluna de cada host.
+# ao lado do nome de cada host; o curto, onde falta espaco (mural, tabelas).
 PAPEIS = {
-    "app": "aplicacao (RDP)",
-    "jobs": "job server",
-    "web": "camada web",
-    "db": "banco de dados",
-    "homolog": "homologacao",
+    "app": "Servidor de aplicação",
+    "jobs": "Servidor de jobs",
+    "web": "Servidor web",
+    "db": "Banco de dados",
+    "homolog": "Homologação",
+}
+PAPEIS_CURTO = {
+    "app": "Aplicação",
+    "jobs": "Jobs",
+    "web": "Web",
+    "db": "Banco",
+    "homolog": "Homologação",
 }
 
 
@@ -56,6 +63,9 @@ PAPEIS = {
 class ServerConfig:
     name: str
     host: str
+    # Nome para a tela. Vazio = o COMPUTERNAME coletado (app/nomes.py); o `name`
+    # segue como chave interna (URL, banco, historico).
+    label: str = ""
     # Ambiente: o escopo em que faz sentido comparar versoes. SGE/Financeiro e
     # RH sao instalacoes separadas do RM, com pacotes, customizacoes e bases
     # proprias - comparar uma com a outra so produz divergencia falsa.
@@ -204,6 +214,7 @@ def load_inventory(path: str) -> Inventory:
             ServerConfig(
                 name=raw["name"],
                 host=raw["host"],
+                label=str(raw.get("label") or "").strip(),
                 env=str(raw.get("env") or "").strip(),
                 role=str(raw.get("role") or "").strip(),
                 services=list(raw.get("services") or default_services),

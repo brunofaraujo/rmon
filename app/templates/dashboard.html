@@ -5,108 +5,108 @@
 <div class="page-head">
   <div>
     <h1>Painel</h1>
-    <div class="sub">Atualiza automaticamente a cada {{ ui_refresh }}s</div>
+    <div class="sub">Situação de cada servidor do RM &middot; atualiza sozinho a cada {{ ui_refresh }} segundos</div>
   </div>
   <a class="btn" href="/">&#8635; Atualizar</a>
 </div>
 
 <div class="kpis">
-  <div class="kpi"><div class="val">{{ summary.total }}</div><div class="lbl">Servidores</div></div>
-  <div class="kpi ok"><div class="val txt-green">{{ summary.online }}</div><div class="lbl">Online</div></div>
+  <div class="kpi"><div class="val">{{ summary.total }}</div><div class="lbl">Servidores monitorados</div></div>
+  <div class="kpi ok"><div class="val txt-green">{{ summary.online }}</div><div class="lbl">Respondendo</div></div>
   <a class="kpi {{ 'bad' if summary.offline else 'ok' }}" href="/ocorrencias">
     <div class="val {{ 'txt-red' if summary.offline else '' }}">{{ summary.offline }}</div><div class="lbl">Sem contato</div></a>
   <a class="kpi {{ 'bad' if summary.services_down else 'ok' }}" href="/ocorrencias">
-    <div class="val {{ 'txt-red' if summary.services_down else '' }}">{{ summary.services_down }}</div><div class="lbl">Servicos parados</div></a>
-  <a class="kpi {{ 'warn' if summary.alerts else 'ok' }}" href="/ocorrencias">
-    <div class="val {{ 'txt-amber' if summary.alerts else '' }}">{{ summary.alerts }}</div><div class="lbl">Ocorrencias (24h)</div></a>
-  <a class="kpi" href="/sessions"><div class="val">{{ summary.sessions }}</div><div class="lbl">Sessoes RDP</div></a>
+    <div class="val {{ 'txt-red' if summary.services_down else '' }}">{{ summary.services_down }}</div><div class="lbl">Serviços parados</div></a>
+  <a class="kpi {{ 'warn' if summary.alerts else 'ok' }}" href="/ocorrencias" title="Erros e eventos críticos registrados no log do Windows nas últimas 24 horas">
+    <div class="val {{ 'txt-amber' if summary.alerts else '' }}">{{ summary.alerts }}</div><div class="lbl">Erros do Windows (24h)</div></a>
+  <a class="kpi" href="/sessions"><div class="val">{{ summary.sessions }}</div><div class="lbl">Usuários conectados</div></a>
 </div>
 
-{% if not rows %}<div class="alert">Nenhum servidor no inventario.</div>{% endif %}
+{% if not rows %}<div class="alert">Nenhum servidor cadastrado no inventário (config/servers.yaml).</div>{% endif %}
 
 <div class="grid">
 {% for row in rows %}
   {% set d = row.data %}
+  {% set chave = row.cfg.name %}
   {% set reachable = d and d.reachable %}
   {% set cpu = (d.cpu if d and d.cpu is not none else 0) | round(0, 'floor') | int %}
   {% set mem = (d.mem_pct if d and d.mem_pct is not none else 0) | round(0, 'floor') | int %}
-  <a class="card" href="/server/{{ row.cfg.name }}">
+  <a class="card" href="/server/{{ chave }}">
     <div class="card-top">
-      <div class="card-title"><span class="status-dot {{ 'up' if reachable else 'down' }}"></span>{{ row.cfg.name }}</div>
-      {% set mj = manut.get(row.cfg.name) %}
-      {% if mj %}<span class="pill blue" title="Manutencao aberta por {{ mj.por }}{% if mj.motivo %}: {{ mj.motivo }}{% endif %}. Alertas calados."><span class="d"></span>MANUTENCAO</span>
-      {% else %}<span class="pill {{ 'green' if reachable else 'red' }}"><span class="d"></span>{{ 'ONLINE' if reachable else 'SEM CONTATO' }}</span>{% endif %}
+      <div class="card-id">
+        <div class="card-title"><span class="status-dot {{ 'up' if reachable else 'down' }}"></span>{{ chave | nome }}</div>
+        <div class="card-desc">{{ descricao(chave) or 'sem papel definido' }} &middot; <span class="mono">{{ row.cfg.host }}</span></div>
+      </div>
+      {% set mj = manut.get(chave) %}
+      {% if mj %}<span class="pill blue" title="Manutenção aberta por {{ mj.por }}{% if mj.motivo %}: {{ mj.motivo }}{% endif %}. Alertas silenciados."><span class="d"></span>Em manutenção</span>
+      {% else %}<span class="pill {{ 'green' if reachable else 'red' }}"><span class="d"></span>{{ 'Online' if reachable else 'Sem contato' }}</span>{% endif %}
     </div>
-    <div class="host">{{ row.cfg.host }} &middot; perfil {{ row.cfg.cred }}</div>
 
     {% if reachable %}
       <div class="metrics-2">
         <div class="metric">
-          <div class="row"><span class="k">CPU</span><span class="v">{{ cpu }}%</span></div>
+          <div class="row"><span class="k">Processador</span><span class="v">{{ cpu }}%</span></div>
           <div class="bar"><span class="{{ 'crit' if cpu>=90 else 'warn' if cpu>=75 else '' }}" style="width:{{ cpu }}%"></span></div>
         </div>
         <div class="metric">
-          <div class="row"><span class="k">Memoria</span><span class="v">{{ mem }}%</span></div>
+          <div class="row"><span class="k">Memória</span><span class="v">{{ mem }}%</span></div>
           <div class="bar"><span class="{{ 'crit' if mem>=90 else 'warn' if mem>=75 else '' }}" style="width:{{ mem }}%"></span></div>
         </div>
       </div>
 
       {% if d.services %}
-      <div class="pills">
-        {% for s in d.services %}
-          {% set running = s.status == 'Running' %}
-          {% set down = svc_down(s) %}
-          <span class="svc">
-            <span class="pill {{ 'green' if running else ('amber' if s.src == 'agente' or not down else 'red') }}" title="{% if s.src == 'agente' %}agente de coleta: o RMon sobe sozinho &middot; {% endif %}{{ s.status }}{% if s.start %} &middot; inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Inicio automatico, mas parado desde o boot de {{ hora(s.nao_subiu) }}">nao subiu apos o reboot</span>{% endif %}
-            {% if running %}
-              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button>
-              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>
+      <div class="card-sec">
+        <span class="sec-k">Serviços</span>
+        <div class="pills">
+          {% for s in d.services %}
+            {% set running = s.status == 'Running' %}
+            {% set down = svc_down(s) %}
+            <span class="pill {{ 'green' if running else ('amber' if s.src == 'agente' or not down else 'red') }}" title="{{ s.name }}: {{ svc_status(s.status) }}{% if s.src == 'agente' %} &middot; agente de coleta (o RMon sobe sozinho){% endif %}{% if s.start %} &middot; início {{ svc_inicio(s.start) }}{% endif %}"><span class="d"></span>{{ svc_nome(s.name) }}{% if not running %} &middot; {{ svc_status(s.status) }}{% endif %}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Início automático, mas parado desde o boot de {{ hora(s.nao_subiu) }}">não subiu após o reboot</span>{% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="card-sec">
+        <span class="sec-k">Disco</span>
+        <div class="pills">
+          {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}" title="{{ dk.drive }} {{ dk.used_pct }}% ocupado, {{ dk.free_gb }} GB livres">{{ dk.drive }} {{ dk.used_pct | round | int }}% ocupado &middot; {{ dk.free_gb | round | int }} GB livres</span>{% endfor %}
+        </div>
+      </div>
+
+      <div class="card-sec">
+        <span class="sec-k">RM</span>
+        <div class="pills">
+          {% if d.app_ok is not none %}<span class="pill {{ 'green' if d.app_ok else 'red' }}" title="Teste HTTP no endereço da aplicação RM">{{ 'Aplicação respondendo' if d.app_ok else 'Aplicação sem resposta' }}{% if d.app_ok and d.app_ms is not none %} &middot; {{ d.app_ms }} ms{% endif %}</span>{% endif %}
+          {% if d.users_count is not none %}<span class="pill chip-link" data-href="/sessions?server={{ chave }}" title="Ver as sessões deste servidor">&#128100; {{ d.users_count }} {{ 'usuário conectado' if d.users_count == 1 else 'usuários conectados' }}</span>{% endif %}
+          {% if d.jobs %}
+            {% if d.jobs.error %}
+              <span class="pill amber chip-link" data-href="/jobs" title="{{ d.jobs.error }}">&#9881; Jobs: não foi possível ler o banco</span>
             {% else %}
-              <button type="button" class="svc-btn svc-action" data-server="{{ row.cfg.name }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>
+              {% set fila = d.jobs.queue or {} %}
+              {# Job com erro e validacao/regra de negocio: ambar, nao vermelho.
+                 Vermelho fica para a fila travada, que e problema do servidor. #}
+              <span class="pill {{ 'amber' if d.jobs.failed else 'green' }} chip-link" data-href="/jobs?min={{ d.jobs.window_min }}" title="Jobs executados por este servidor nos últimos {{ d.jobs.window_min }} minutos. Job que termina com erro costuma ser validação da própria aplicação, não falha do servidor.">&#9881; Jobs ({{ d.jobs.window_min }} min): {{ d.jobs.ok }} {{ 'concluído' if d.jobs.ok == 1 else 'concluídos' }}{% if d.jobs.failed %} &middot; {{ d.jobs.failed }} com erro{% endif %}</span>
+              {# Fila cheia nao e fila travada: so vira pilula vermelha o que esta
+                 preso (em andamento ha tempo demais) ou esperando alguem comecar. #}
+              {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
+              {% if presas %}<span class="pill red chip-link" data-href="/jobs" title="Execuções presas há mais de {{ fila.window_min }} minutos ou com a hora programada vencida sem ninguém iniciar">&#9203; Fila de jobs parada: {{ presas }}{% if fila.oldest_min is not none %} há {{ fila.oldest_min }} min{% endif %}</span>
+              {% elif fila.running %}<span class="pill chip-link" data-href="/jobs" title="Execuções em andamento dentro do tempo normal">&#9203; {{ fila.running }} job(s) em andamento</span>{% endif %}
             {% endif %}
-          </span>
-        {% endfor %}
-      </div>
-      {% endif %}
-
-      {% set grupos = svc_groups(d.services) %}
-      {% if grupos %}
-      <div class="pills">
-        {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}" title="{{ g.names | join(', ') }} &middot; descobertos pelo padrao {{ g.pattern }}">{{ g.family }} &middot; {{ g.running }}/{{ g.installed }} instancias em execucao</span>{% endfor %}
-      </div>
-      {% endif %}
-
-      <div class="pills">
-        {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} {{ dk.used_pct }}% &middot; {{ dk.free_gb }}GB</span>{% endfor %}
-        {% if d.users_count is not none %}<span class="pill chip-link" data-href="/sessions?server={{ row.cfg.name }}" title="Ver as sessoes RDP deste servidor">&#128100; {{ d.users_count }} usuarios</span>{% endif %}
-        {% if d.app_ok is not none %}<span class="pill {{ 'green' if d.app_ok else 'red' }}">App {{ 'OK' if d.app_ok else 'FALHA' }}</span>{% endif %}
-        {% if d.jobs %}
-          {% if d.jobs.error %}
-            <span class="pill amber chip-link" data-href="/jobs" title="{{ d.jobs.error }}">&#9881; Jobs: nao deu para ler o SQL</span>
-          {% else %}
-            {% set fila = d.jobs.queue or {} %}
-            {# Job com erro e validacao/regra de negocio: ambar, nao vermelho.
-               Vermelho fica para a fila travada, que e problema do servidor. #}
-            <span class="pill {{ 'amber' if d.jobs.failed else 'green' }} chip-link" data-href="/jobs?min={{ d.jobs.window_min }}" title="Sucesso x erro na janela. Job que termina em erro costuma ser validacao da aplicacao.">&#9881; Jobs {{ d.jobs.window_min }}min: {{ d.jobs.ok }} ok &middot; {{ d.jobs.failed }} erro{% if d.jobs.requesters %} &middot; {{ d.jobs.requesters }} solicitantes{% endif %}</span>
-            {# Fila cheia nao e fila travada: so vira pilula vermelha o que esta
-               preso (em andamento ha tempo demais) ou esperando alguem comecar. #}
-            {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
-            {% if presas %}<span class="pill red chip-link" data-href="/jobs" title="Execucoes presas ha mais de {{ fila.window_min }}min ou com a hora programada vencida sem ninguem iniciar">&#9203; Fila: {{ presas }} parada(s){% if fila.oldest_min is not none %} &middot; ha {{ fila.oldest_min }}min{% endif %}</span>
-            {% elif fila.running %}<span class="pill chip-link" data-href="/jobs" title="Execucoes em andamento dentro do tempo normal">&#9203; Fila: {{ fila.running }} em curso</span>{% endif %}
           {% endif %}
-        {% endif %}
-        {% set bp = row.broker %}
-        {% if bp %}<span class="pill red" title="{{ bp.values() | join(' | ') }}">&#9888; Broker do RM</span>{% endif %}
-        {% if d.commit_pct is not none and d.commit_pct >= 80 %}<span class="pill {{ 'red' if d.commit_pct >= 90 else 'amber' }}" title="RAM + pagefile ja reservados">Commit {{ d.commit_pct }}%</span>{% endif %}
-        {% if d.events %}<span class="pill amber chip-link" data-href="/ocorrencias?server={{ row.cfg.name }}" title="Ver ocorrencias deste servidor">{{ d.events | length }} ocorrencia(s)</span>{% endif %}
+          {% set bp = row.broker %}
+          {% if bp %}<span class="pill red" title="{{ bp.values() | join(' | ') }}">&#9888; Broker do RM incompleto</span>{% endif %}
+          {% if d.commit_pct is not none and d.commit_pct >= 80 %}<span class="pill {{ 'red' if d.commit_pct >= 90 else 'amber' }}" title="Memória já reservada pelos programas (RAM + arquivo de paginação). Perto de 100% o Windows recusa memória nova.">Memória reservada {{ d.commit_pct }}%</span>{% endif %}
+          {% if d.events %}<span class="pill amber chip-link" data-href="/ocorrencias?server={{ chave }}" title="Ver as ocorrências deste servidor">{{ d.events | length }} {{ 'erro' if d.events | length == 1 else 'erros' }} no Windows (24h)</span>{% endif %}
+        </div>
       </div>
     {% else %}
-      <div class="alert small">{{ d.error if d else 'aguardando primeira coleta...' }}</div>
+      <div class="alert small">{{ d.error if d else 'aguardando a primeira coleta…' }}</div>
     {% endif %}
 
     <div class="meta-row">
-      <span>uptime {{ d.uptime_sec | dur if d else '-' }}</span>
-      <span>{{ d.ts | dt if d else '-' }}</span>
+      <span>{% if d and d.uptime_sec %}ligado há {{ d.uptime_sec | dur }}{% else %}&nbsp;{% endif %}</span>
+      <span>coleta {{ d.ts | dt if d else '-' }}</span>
     </div>
   </a>
 {% endfor %}

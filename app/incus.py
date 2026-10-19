@@ -53,7 +53,7 @@ def _ssh(cfg: dict, args: list[str], timeout: int) -> tuple[bool, str]:
     except FileNotFoundError:
         return False, "cliente ssh ausente na VM do RMon"
     except subprocess.TimeoutExpired:
-        return False, f"o hypervisor nao respondeu em {timeout}s"
+        return False, f"o hypervisor não respondeu em {timeout}s"
     saida, erro = (r.stdout or "").strip(), (r.stderr or "").strip()
     if r.returncode != 0:
         return False, (erro or saida or f"ssh saiu com {r.returncode}")[-300:]
@@ -63,7 +63,7 @@ def _ssh(cfg: dict, args: list[str], timeout: int) -> tuple[bool, str]:
 def reset(cfg: dict, vm: str) -> tuple[bool, str]:
     """`incus restart --force` da instancia `vm`, pelo comando forcado."""
     if not NOME.match(vm or ""):
-        return False, f"instancia invalida: {vm!r}"
+        return False, f"instância inválida: {vm!r}"
     return _ssh(cfg, ["reset", vm], timeout=120)
 
 
@@ -89,8 +89,8 @@ def checar(cfg: dict, esperadas: dict[str, str]) -> dict[str, Any]:
     faltam = [f"{srv} ({vm})" for srv, vm in sorted(esperadas.items()) if vm not in vms]
     if faltam:
         return {"ok": False, "vms": vms,
-                "detail": "instancia(s) nao liberada(s) no hypervisor: " + ", ".join(faltam)}
-    return {"ok": True, "vms": vms, "detail": f"{len(vms)} instancia(s) liberada(s)"}
+                "detail": "instância(s) não liberada(s) no hypervisor: " + ", ".join(faltam)}
+    return {"ok": True, "vms": vms, "detail": f"{len(vms)} instância(s) liberada(s)"}
 
 
 def devido(estado: dict | None, agora: float) -> bool:

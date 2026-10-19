@@ -74,7 +74,7 @@ class Banco:
 
 
 def _sem_banco_de_verdade():
-    raise AssertionError("o teste tentou abrir conexao com o PostgreSQL")
+    raise AssertionError("o teste tentou abrir conexão com o PostgreSQL")
 
 
 @pytest.fixture
@@ -238,8 +238,8 @@ def test_manutencao_cala_e_avisa_uma_vez_no_fim(ambiente):
     assert ambiente.holds[-1] == {"app-34"}            # NLB nao mexe no no
     ambiente.passar(1.1)
     msgs = ambiente.ciclo(**parado())
-    assert len(msgs) == 1 and "fim da manutencao" in msgs[0]
-    assert "RM.Host.Service1 = Stopped" in msgs[0] and "sem contato" not in msgs[0]
+    assert len(msgs) == 1 and "fim da manutenção" in msgs[0]
+    assert "RM.Host.Service1 parado" in msgs[0] and "sem contato" not in msgs[0]
     assert manutencao.todas() == {}
     assert ambiente.holds[-1] == set()
     assert ambiente.ciclo(**parado()) == []           # e nao repete
@@ -272,10 +272,10 @@ def test_critico_aberto_e_lembrado_a_cada_intervalo(ambiente):
     assert ambiente.ciclo(**parado()) == []
     ambiente.passar(0.2)
     msgs = ambiente.ciclo(**parado())
-    assert len(msgs) == 1 and "segue aberto ha 4h06" in msgs[0]
+    assert len(msgs) == 1 and "segue aberto há 4h06" in msgs[0]
     assert ambiente.ciclo(**parado()) == []           # um lembrete por intervalo
     ambiente.passar(4)
-    assert "segue aberto ha 8h06" in ambiente.ciclo(**parado())[0]
+    assert "segue aberto há 8h06" in ambiente.ciclo(**parado())[0]
 
 
 def test_aviso_ambar_nao_tem_lembrete(ambiente):
@@ -292,7 +292,7 @@ def test_lembrete_sobrevive_ao_restart(ambiente):
     ambiente.passar(1)
     assert ambiente.ciclo(**parado()) == []           # restart nao relembra
     ambiente.passar(3.1)
-    assert "segue aberto ha 8h" in ambiente.ciclo(**parado())[0]
+    assert "segue aberto há 8h" in ambiente.ciclo(**parado())[0]
 
 
 def test_lembrete_desligado(ambiente):
@@ -309,7 +309,7 @@ def test_sem_lembrete_durante_manutencao_e_relogio_recomeca_no_fim(ambiente):
     ambiente.passar(5)
     assert ambiente.ciclo(**parado()) == []
     ambiente.passar(1.1)
-    assert "fim da manutencao" in ambiente.ciclo(**parado())[0]
+    assert "fim da manutenção" in ambiente.ciclo(**parado())[0]
     ambiente.passar(1)
     assert ambiente.ciclo(**parado()) == []           # o fim valeu como aviso
 
@@ -320,7 +320,7 @@ def test_resumo_sai_na_hora_e_uma_vez_por_dia(ambiente, monkeypatch):
     import time as _t
     ambiente.ciclo(**parado())
     ambiente.ciclo(**ok(mem_pct=95, services=parado()["services"]))
-    ambiente.banco.record_alert("app-34", "raised", "JOBS", "5 execucoes de job com erro")
+    ambiente.banco.record_alert("app-34", "raised", "JOBS", "5 execuções de job com erro")
     hora = _t.localtime(ambiente.relogio[0]).tm_hour
     ambiente.banco.config["alerts"] = {"resumo_hora": (hora + 1) % 24}
     assert not scheduler.resumo_diario(ambiente.inv)
@@ -328,8 +328,8 @@ def test_resumo_sai_na_hora_e_uma_vez_por_dia(ambiente, monkeypatch):
     ambiente.enviadas.clear()
     assert scheduler.resumo_diario(ambiente.inv)
     texto = ambiente.enviadas[-1]
-    assert "Criticos abertos (1)" in texto and "RM.Host.Service1" in texto
-    assert "Avisos abertos (2)" in texto and "job com erro" in texto and "memoria" in texto
+    assert "Críticos abertos (1)" in texto and "RM.Host.Service1" in texto
+    assert "Avisos abertos (2)" in texto and "job com erro" in texto and "memória" in texto
     assert not scheduler.resumo_diario(ambiente.inv)  # mesmo dia: nao repete
 
 
@@ -341,13 +341,13 @@ def test_resumo_desligado(ambiente):
 
 def test_resumo_sem_nada_aberto_e_sinal_de_vida():
     texto = scheduler.texto_resumo({}, {}, {}, [], ["a"], 1_760_000_000.0)
-    assert "Nenhum problema aberto" in texto and "Ultimas 24h: 0" in texto
+    assert "Nenhum problema aberto" in texto and "Últimas 24h: 0" in texto
 
 
 def test_resumo_corta_lista_longa():
-    abertos = {"a": {f"svc:S{i:02d}": f"servico S{i:02d} = Stopped" for i in range(30)}}
+    abertos = {"a": {f"svc:S{i:02d}": f"serviço S{i:02d} = Stopped" for i in range(30)}}
     texto = scheduler.texto_resumo(abertos, {}, {}, [], ["a"], 1_760_000_000.0)
-    assert "Criticos abertos (30)" in texto and "... e mais 15" in texto
+    assert "Críticos abertos (30)" in texto and "... e mais 15" in texto
 
 
 def test_elastic_sem_resposta_nao_resolve_agente_parado(ambiente, monkeypatch):
@@ -394,12 +394,12 @@ def partidas(monkeypatch):
 
 def test_incidente_248_sobe_sozinho_sem_ninguem_clicar(ambiente, partidas):
     msgs = ambiente.ciclo(**boot(228))
-    assert len(msgs) == 1 and "nao subiu apos o reboot de" in msgs[0]
+    assert len(msgs) == 1 and "não subiu após o reboot de" in msgs[0]
     assert partidas.chamadas == []           # cedo demais: o boot ainda esta assentando
     ambiente.passar(0.15)
     msgs = ambiente.ciclo(**boot(228 + 540))
     assert partidas.chamadas == ["RM.Host.Service"]
-    assert any("iniciando RM.Host.Service sozinho (1a tentativa; nao subiu apos o reboot" in m
+    assert any("RMon iniciando RM.Host.Service automaticamente (1ª tentativa; não subiu após o reboot" in m
                and m.endswith(": subiu") for m in msgs)
     assert ("acao", "svc:RM.Host.Service") in kinds(ambiente.banco)
     ambiente.passar(0.02)
@@ -410,14 +410,14 @@ def test_incidente_248_sobe_sozinho_sem_ninguem_clicar(ambiente, partidas):
 def test_guardiao_nunca_desiste(ambiente, partidas):
     # o .188 em 16/10: o Elastic Agent estourou os 30 s do Windows por uma hora
     # depois do boot e o limite antigo de 3 tentativas ja tinha desistido
-    partidas.resposta[0] = (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
+    partidas.resposta[0] = (False, "não subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
     up, minutos, canal, t0 = 700, [], [], ambiente.relogio[0]
     for i in range(6 * 60):                  # 6 h de coleta a cada minuto
         antes = len(partidas.chamadas)
         msgs = ambiente.ciclo(**boot(up))
         if len(partidas.chamadas) > antes:
             minutos.append(round((ambiente.relogio[0] - t0) / 60))
-            canal.append(any("iniciando RM.Host.Service sozinho" in m for m in msgs))
+            canal.append(any("RMon iniciando RM.Host.Service automaticamente" in m for m in msgs))
             if len(minutos) == 4:
                 ambiente.reiniciar()         # deploy do RMon no meio: a conta continua
         ambiente.passar(1 / 60)
@@ -432,9 +432,9 @@ def test_guardiao_nunca_desiste(ambiente, partidas):
 
 
 def test_texto_da_falha_diz_quando_tenta_de_novo(ambiente, partidas):
-    partidas.resposta[0] = (False, "nao subiu (Stopped)")
+    partidas.resposta[0] = (False, "não subiu (Stopped)")
     msgs = ambiente.ciclo(**boot(700))
-    assert any("(1a tentativa;" in m and "tento de novo em 2 min, sem desistir" in m for m in msgs)
+    assert any("(1ª tentativa;" in m and "nova tentativa em 2 min, sem desistir" in m for m in msgs)
 
 
 def test_host_que_nao_respondeu_repete_no_ciclo_seguinte(ambiente, partidas):
@@ -447,7 +447,7 @@ def test_host_que_nao_respondeu_repete_no_ciclo_seguinte(ambiente, partidas):
     ambiente.passar(1 / 60)
     msgs = ambiente.ciclo(**boot(760))
     assert partidas.chamadas == ["RM.Host.Service"] * 2
-    assert any("(1a tentativa;" in m and m.endswith(": subiu") for m in msgs)
+    assert any("(1ª tentativa;" in m and m.endswith(": subiu") for m in msgs)
 
 
 def test_servico_em_transicao_espera_e_preso_e_reiniciado(ambiente, partidas):
@@ -460,7 +460,7 @@ def test_servico_em_transicao_espera_e_preso_e_reiniciado(ambiente, partidas):
     ambiente.passar(2 / 60)
     msgs = ambiente.ciclo(**parando)
     assert partidas.chamadas == ["restart:Elastic Agent"]
-    assert any("reiniciando Elastic Agent sozinho (1a tentativa; preso em StopPending desde" in m for m in msgs)
+    assert any("RMon reiniciando Elastic Agent automaticamente (1ª tentativa; preso em StopPending desde" in m for m in msgs)
 
 
 def test_partida_desligada_so_avisa(ambiente, partidas):
@@ -482,7 +482,7 @@ def test_servico_que_caiu_longe_do_boot_tambem_volta(ambiente, partidas):
     ambiente.ciclo(**boot(5 * HORA, status="Running"))
     msgs = ambiente.ciclo(**boot(5 * HORA + 60))
     assert partidas.chamadas == ["RM.Host.Service"]
-    assert any("iniciando RM.Host.Service sozinho (1a tentativa; parado desde" in m for m in msgs)
+    assert any("RMon iniciando RM.Host.Service automaticamente (1ª tentativa; parado desde" in m for m in msgs)
 
 
 def test_desabilitado_ou_inexistente_nao_e_mexido(ambiente, partidas):
@@ -520,8 +520,8 @@ def com_agente(uptime, status="Stopped"):
 def test_agente_parado_a_qualquer_hora_sobe_sozinho(ambiente, partidas):
     msgs = ambiente.ciclo(**com_agente(5 * HORA))
     assert partidas.chamadas == ["Elastic Agent"]
-    assert any("agente de coleta Elastic Agent = Stopped" in m for m in msgs)
-    assert any("iniciando Elastic Agent sozinho (1a tentativa; parado desde" in m for m in msgs)
+    assert any("agente de coleta Elastic Agent parado" in m for m in msgs)
+    assert any("RMon iniciando Elastic Agent automaticamente (1ª tentativa; parado desde" in m for m in msgs)
     ambiente.passar(1 / 60)
     assert "resolvido" in ambiente.ciclo(**com_agente(5 * HORA + 60, "Running"))[0]
 
@@ -535,7 +535,7 @@ def test_agente_logo_apos_o_boot_espera_assentar(ambiente, partidas):
 
 
 def test_agente_que_nao_sobe_segue_sendo_tentado(ambiente, partidas):
-    partidas.resposta[0] = (False, "nao subiu (Stopped)")
+    partidas.resposta[0] = (False, "não subiu (Stopped)")
     for i in range(12):
         ambiente.ciclo(**com_agente(5 * HORA + i * 600))
         ambiente.passar(10 / 60)
@@ -545,10 +545,10 @@ def test_agente_que_nao_sobe_segue_sendo_tentado(ambiente, partidas):
 
 def test_agente_mudo_para_o_elastic_e_reiniciado(ambiente, partidas, monkeypatch):
     monkeypatch.setattr(scheduler, "padrao_cluster", lambda *a, **k: {
-        "app-34": {"PADRAO:elastic": "agente do Elastic (h34) sem mandar dados nos ultimos 15 min"}})
+        "app-34": {"PADRAO:elastic": "agente do Elastic (h34) sem mandar dados nos últimos 15 min"}})
     msgs = ambiente.ciclo(**com_agente(5 * HORA, "Running"))
     assert partidas.chamadas == ["restart:Elastic Agent"]
-    assert any("reiniciando Elastic Agent sozinho (1a tentativa; no ar, mas sem mandar dados" in m
+    assert any("RMon reiniciando Elastic Agent automaticamente (1ª tentativa; no ar, mas sem mandar dados" in m
                for m in msgs)
     assert ("acao", "PADRAO:elastic") in kinds(ambiente.banco)
     ambiente.passar(1 / 60)
@@ -576,8 +576,8 @@ def test_subir_servicos_le_o_estado_de_cada_um(monkeypatch):
                                  allowed=["Elastic Agent", "RM.Host.Service1", "x'; Stop-Computer"])
     assert r["RM.Host.Service"] == (True, "subiu")
     assert r["RM.Host.Service1"][0] is True
-    assert r["Elastic Agent"] == (False, "nao subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
-    assert r["Outro"][0] is False and "nao monitorado" in r["Outro"][1]
+    assert r["Elastic Agent"] == (False, "não subiu (Stopped): Tempo limite esgotado (30000 milissegundos)")
+    assert r["Outro"][0] is False and "não monitorado" in r["Outro"][1]
     assert r["x'; Stop-Computer"][0] is False             # nome fora do padrao nao chega ao script
     assert len(scripts) == 1 and "[void]$itens.Add(@('restart', 'Elastic Agent'))" in scripts[0]
     assert "Stop-Computer" not in scripts[0] and "Start-Service" not in scripts[0]

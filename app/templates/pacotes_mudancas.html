@@ -5,11 +5,11 @@
   <div>
     <h1>Mudancas de software</h1>
     <div class="sub">
-      {{ eventos|length }} evento(s) nos ultimos {{ dias }} dia(s) &middot;
-      o que foi instalado, atualizado ou removido em cada host
+      {{ eventos|length }} evento(s) nos últimos {{ dias }} dia(s) &middot;
+      o que foi instalado, atualizado ou removido em cada servidor
     </div>
   </div>
-  <a class="btn" href="/pacotes?ambiente={{ ambiente }}">&#8592; Inventario</a>
+  <a class="btn" href="/pacotes?ambiente={{ ambiente }}">&#8592; Inventário</a>
 </div>
 
 <form class="toolbar" method="get" action="/pacotes/mudancas">
@@ -22,7 +22,7 @@
   {% else %}<input type="hidden" name="ambiente" value="{{ ambiente }}">{% endif %}
   <select name="servidor" class="input">
     <option value="">Todos os servidores</option>
-    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s }}</option>{% endfor %}
+    {% for s in servidores %}<option value="{{ s }}" {{ 'selected' if servidor==s else '' }}>{{ s | nome }}</option>{% endfor %}
   </select>
   <select name="dias" class="input">
     {% for d in [7, 30, 90, 365] %}<option value="{{ d }}" {{ 'selected' if dias==d else '' }}>{{ d }} dias</option>{% endfor %}
@@ -32,20 +32,20 @@
 
 {% if not eventos %}
   <div class="alert ok small">
-    Nenhuma mudanca registrada no periodo. O historico comeca na segunda coleta de
-    cada host: a primeira e apenas a fotografia inicial do que ja estava instalado.
+    Nenhuma mudança registrada no período. O histórico começa na segunda leitura de
+    cada servidor: a primeira é só a fotografia do que já estava instalado.
   </div>
 {% else %}
 <div class="table-wrap">
   <table class="tbl">
     <thead><tr>
-      <th>Quando</th><th>Servidor</th><th>O que houve</th><th>Pacote</th><th>Versao</th>
+      <th>Quando</th><th>Servidor</th><th>O que houve</th><th>Pacote</th><th>Versão</th>
     </tr></thead>
     <tbody>
       {% for e in eventos %}
       <tr>
         <td class="muted small">{{ e.ts | dt }}</td>
-        <td>{{ e.server }}</td>
+        <td>{{ e.server | nome }}</td>
         <td>
           {% if e.kind == 'downgraded' %}<span class="pill red">{{ labels.get(e.kind, e.kind) }}</span>
           {% elif e.kind == 'removed' %}<span class="pill amber">{{ labels.get(e.kind, e.kind) }}</span>

@@ -56,7 +56,7 @@ def _descobrir(cur) -> None:
     _col_inicio = next((c for c in _COLS_INICIO if c in _colunas), None)
     if _col_inicio is None:
         log.warning("GJOBXEXECUCAO sem coluna de inicio conhecida (%s): a idade da "
-                    "fila fica indisponivel", ", ".join(_COLS_INICIO))
+                    "fila fica indisponível", ", ".join(_COLS_INICIO))
 
 
 def _coluna_inicio(cur) -> str | None:

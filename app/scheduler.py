@@ -11,6 +11,7 @@ from typing import Iterable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
+from . import nomes as exibicao
 from .collector import SEM_RESPOSTA, collect_server, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
@@ -159,10 +160,10 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
             donos = _lista(b.get("running"))
             if "running" not in b:
                 if legado_no_ar:
-                    p[chave] = f"{nome} nao existe em {b.get('path')} com o servico no ar"
+                    p[chave] = f"{nome} não existe em {b.get('path')} com o serviço no ar"
             elif donos:
                 quem = ", ".join(donos[:3]) + ("..." if len(donos) > 3 else "")
-                p[chave] = f"{nome} nao existe em {b.get('path')} com {quem} no ar"
+                p[chave] = f"{nome} não existe em {b.get('path')} com {quem} no ar"
             continue
         # Recem-gerado pode ainda estar sendo escrito. A prova de que parou de
         # crescer sao duas coletas iguais; a idade fica so como rede para quem
@@ -173,11 +174,11 @@ def broker_problems(r: dict, th: dict, ref: dict[str, int] | None = None,
                 continue
         maior = int(ref.get(nome) or 0)
         if min_kb and tamanho < min_kb * 1024:
-            p[chave] = (f"{nome} com {_kb(tamanho)} (minimo esperado {_kb(min_kb * 1024)}): "
-                        "cache truncado, customizacoes nao carregam")
+            p[chave] = (f"{nome} com {_kb(tamanho)} (mínimo esperado {_kb(min_kb * 1024)}): "
+                        "cache truncado, customizações não carregam")
         elif maior and min_pct and tamanho < maior * min_pct / 100:
-            p[chave] = (f"{nome} com {_kb(tamanho)}, contra {_kb(maior)} que este host ja teve: "
-                        "broker incompleto, customizacoes nao carregam")
+            p[chave] = (f"{nome} com {_kb(tamanho)}, contra {_kb(maior)} que este host já teve: "
+                        "broker incompleto, customizações não carregam")
     return p
 
 
@@ -295,11 +296,21 @@ def marcar_pos_boot(r: dict, desde: dict[str, float], agora: float, janela_s: fl
     return boot
 
 
+# Estado do servico (Win32_Service) em portugues, para a tela e as mensagens
+STATUS_SERVICO = {"Running": "em execução", "Stopped": "parado", "StartPending": "iniciando",
+                  "StopPending": "parando", "Paused": "pausado", "PausePending": "pausando",
+                  "ContinuePending": "retomando", "NOT_FOUND": "não encontrado no servidor"}
+
+
+def status_servico(st) -> str:
+    return STATUS_SERVICO.get(str(st), str(st or "desconhecido"))
+
+
 def texto_servico(s: dict) -> str:
-    tipo = "agente de coleta" if s.get("src") == "agente" else "servico"
-    texto = f"{tipo} {s['name']} = {s.get('status')}"
+    tipo = "agente de coleta" if s.get("src") == "agente" else "serviço"
+    texto = f"{tipo} {s['name']} {status_servico(s.get('status'))}"
     if s.get("nao_subiu"):
-        texto += f" (inicio automatico: nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])})"
+        texto += f" (início automático: não subiu após o reboot de {manutencao.hora(s['nao_subiu'])})"
     return texto
 
 
@@ -322,7 +333,7 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
         need = max(1, int(th.get("down_after", 3) or 1))
         streak = need if fail_streak is None else fail_streak
         if streak >= need:
-            p["DOWN"] = f"sem contato (WinRM) ha {streak} coletas: {(r.get('error') or '')[:100]}"
+            p["DOWN"] = f"sem contato (WinRM) há {streak} coletas: {(r.get('error') or '')[:100]}"
         # Sem WinRM o resto da coleta e lixo - menos o JobRunner lido do
         # Elasticsearch (app/elastic.py), que chega por outro caminho. E
         # justamente quando o JobRunner estoura o commit que o WinRM do host
@@ -340,19 +351,19 @@ def problems(r: dict, th: dict, fail_streak: int | None = None,
                 continue
             p[chave_servico(s)] = texto_servico(s)
     if r.get("app_ok") is False:
-        p["APP"] = "app_health (HTTP) falhou"
+        p["APP"] = "a aplicação RM não respondeu ao teste HTTP"
     mem = r.get("mem_pct")
     if mem is not None and mem >= th["mem_pct"]:
-        p["MEM"] = f"memoria em {mem}%"
+        p["MEM"] = f"memória em {mem}%"
     disks = r.get("disks") or []
     main = next((d for d in disks if str(d.get("drive", "")).upper().startswith("C")), disks[0] if disks else None)
     if main and (main.get("used_pct") or 0) >= th["disk_pct"]:
         p["DISK"] = f"disco {main.get('drive')} em {main.get('used_pct')}%"
     if r.get("app_ok") is True and r.get("app_ms") is not None and r["app_ms"] > th["app_ms"]:
-        p["APPSLOW"] = f"app_health lento: {r['app_ms']}ms"
+        p["APPSLOW"] = f"aplicação RM lenta: respondeu em {r['app_ms']} ms"
     commit = r.get("commit_pct")
     if commit is not None and commit >= th.get("commit_pct", 90):
-        p["COMMIT"] = (f"commit charge em {commit}% do limite (RAM + pagefile): "
+        p["COMMIT"] = (f"memória reservada em {commit}% do limite (RAM + arquivo de paginação): "
                        "nesse ponto o RM.Host falha ao gerar o broker (0x800705AF)")
     p.update(broker_problems(r, th, broker_ref, broker_estavel))
     p.update(jobrunner_problems(r.get("jobrunners"), th))
@@ -448,7 +459,7 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
                 acao = "restart"
             if s.get("nao_subiu"):
                 ref = float(s["nao_subiu"])
-                motivo = f"nao subiu apos o reboot de {manutencao.hora(s['nao_subiu'])}"
+                motivo = f"não subiu após o reboot de {manutencao.hora(s['nao_subiu'])}"
             else:
                 ref = desde.get(chave, agora)
                 motivo = (f"preso em {st} desde {manutencao.hora(ref)}" if acao == "restart"
@@ -475,12 +486,12 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
         if retorno.startswith(SEM_RESPOSTA):
             # o host nao respondeu: nada foi tentado, repete no proximo ciclo
             _tentado[(server.name, chave)].pop()
-            log.info("guardiao %s/%s: %s (repete no proximo ciclo)", server.name, s["name"], retorno)
+            log.info("guardiao %s/%s: %s (repete no próximo ciclo)", server.name, s["name"], retorno)
             continue
         verbo = "reiniciando" if acao == "restart" else "iniciando"
-        texto = f"{verbo} {s['name']} sozinho ({n}a tentativa; {motivo}): {retorno}"
+        texto = f"RMon {verbo} {s['name']} automaticamente ({n}ª tentativa; {motivo}): {retorno}"
         if not ok:
-            texto += f" - tento de novo em {int(_espera_s(n, teto_s) // 60)} min, sem desistir"
+            texto += f" - nova tentativa em {int(_espera_s(n, teto_s) // 60)} min, sem desistir"
         db.record_alert(server.name, "acao", chave, texto)
         log.info("guardiao %s/%s %s #%d -> %s (%s)", server.name, s["name"], acao, n, ok, retorno)
         if ok or n <= _AVISAR_ATE or n % _AVISAR_CADA == 0:
@@ -541,7 +552,7 @@ def jobrunner_problems(jr: dict | None, th: dict) -> dict[str, str]:
         estouro = bool(limite) and gb >= limite
         if not (alto or estouro):
             continue
-        texto = f"RM.Host.JobRunner PID {pid} com {gb:.1f} GB de memoria privada"
+        texto = f"RM.Host.JobRunner PID {pid} com {gb:.1f} GB de memória privada"
         ex = jobs.get(str(pid))
         if isinstance(ex, dict):
             texto += (f": job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}'"
@@ -551,11 +562,12 @@ def jobrunner_problems(jr: dict | None, th: dict) -> dict[str, str]:
             if ex.get("filtro"):
                 texto += f", filtro {ex['filtro'][:160]}"
         if alto:
-            p[f"jobrunner:{pid}"] = (texto + f" - acima de {aviso:g} GB; cancelar o job "
-                                     "antes que ele exploda e derrube o host")
+            p[f"jobrunner:{pid}"] = (texto + f" - acima de {aviso:g} GB: cancele o job "
+                                     "antes que ele derrube o servidor")
         if estouro:
-            p[f"jobrunner-crit:{pid}"] = (texto + f" - acima de {limite:g} GB: o commit do "
-                                          "host esgota em minutos, cancelar o job AGORA")
+            p[f"jobrunner-crit:{pid}"] = (texto + f" - acima de {limite:g} GB: a memória do "
+                                          "servidor esgota em minutos, cancele o job AGORA")
+
     return p
 
 
@@ -592,14 +604,14 @@ def fila_parada(fila: dict | None, th: dict) -> tuple[bool, str]:
     aguardando = fila.get("waiting") or 0
     if presas >= minimo:
         idade = fila.get("oldest_min")
-        return True, (f"{presas} execucao(oes) em andamento ha mais de {janela}min"
-                      + (f" (a mais antiga ha {idade}min)" if idade is not None else "")
-                      + f" e nenhuma conclusao nesses {janela}min")
+        return True, (f"{presas} execução(ões) em andamento há mais de {janela}min"
+                      + (f" (a mais antiga há {idade}min)" if idade is not None else "")
+                      + f" e nenhuma conclusão nesses {janela}min")
     if aguardando >= minimo:
         espera = fila.get("waiting_min")
-        return True, (f"{aguardando} execucao(oes) com a hora programada vencida sem ninguem "
-                      "iniciar" + (f" (a mais velha ha {espera}min)" if espera is not None else "")
-                      + f" e nenhuma conclusao em {janela}min")
+        return True, (f"{aguardando} execução(ões) com a hora programada vencida sem ninguém "
+                      "iniciar" + (f" (a mais velha há {espera}min)" if espera is not None else "")
+                      + f" e nenhuma conclusão em {janela}min")
     return False, ""
 
 
@@ -616,16 +628,16 @@ def job_problems(jb: dict | None, th: dict, fila_hist: list[dict] | None = None,
     if not isinstance(jb, dict):
         return p
     if jb.get("error"):
-        p["JOBSQL"] = f"nao deu para ler os jobs no SQL: {str(jb['error'])[:120]}"
+        p["JOBSQL"] = f"não deu para ler os jobs no SQL: {str(jb['error'])[:120]}"
     falhas, ok = jb.get("failed"), jb.get("ok")
     janela = jb.get("window_min")
     if falhas is not None and falhas >= th.get("jobs_failed", 3):
-        p["JOBS"] = (f"{falhas} execucoes de job com erro em {janela}min "
-                     "(validacao/regra de negocio, nao falha do servidor)")
+        p["JOBS"] = (f"{falhas} execuções de job com erro em {janela}min "
+                     "(validação/regra de negócio, não falha do servidor)")
     minimo = int(th.get("jobs_all_failed", 10) or 0)
     if minimo and falhas is not None and falhas >= minimo and not ok:
-        p["JOBFAIL"] = (f"{falhas} execucoes de job em {janela}min e NENHUMA concluida com "
-                        "sucesso: falha em bloco, nao validacao pontual")
+        p["JOBFAIL"] = (f"{falhas} execuções de job em {janela}min e NENHUMA concluída com "
+                        "sucesso: falha em bloco, não validação pontual")
 
     travada, motivo = fila_parada(jb.get("queue"), th)
     # Uma coleta so nao decide: a fila tem de aparecer travada em `jobs_stuck_checks`
@@ -850,14 +862,14 @@ def _fechar_manutencao(nome: str, host: str, janela: dict, agora: float) -> None
     """Fim da janela: uma mensagem so, com o que seguiu aberto."""
     abertos = {k: v for k, v in (_last.get(nome) or {}).items() if notifica(k)}
     db.record_alert(nome, "manutencao", "MANUT",
-                    f"fim da manutencao aberta em {manutencao.hora(janela.get('desde'))}: "
-                    + (f"{len(abertos)} problema(s) seguem abertos" if abertos else "sem pendencias"))
+                    f"fim da manutenção aberta em {manutencao.hora(janela.get('desde'))}: "
+                    + (f"{len(abertos)} problema(s) seguem abertos" if abertos else "sem pendências"))
     for k in abertos:
         # a mensagem abaixo e o aviso: o relogio do lembrete recomeca aqui
         _avisado.setdefault(nome, {})[k] = agora
     if not notify.enabled():
         return
-    cab = (f"\U0001F527 RMonitor — {nome} ({host}): fim da manutencao aberta por "
+    cab = (f"\U0001F527 RMonitor — {exibicao.com_ip(nome)}: fim da manutenção aberta por "
            f"{janela.get('por') or '?'} em {manutencao.hora(janela.get('desde'))}")
     if abertos:
         notify.send(cab + "\nSeguem abertos:\n" + "\n".join(
@@ -869,20 +881,20 @@ def _fechar_manutencao(nome: str, host: str, janela: dict, agora: float) -> None
 # Camada de seguranca do RDP (RDP-Tcp\SecurityLayer) e NLA, para o texto.
 _SECURITY_LAYER = {0: "RDP nativo, sem TLS", 1: "Negociar", 2: "TLS"}
 _NLA = {0: "desligada", 1: "ligada"}
-_CRIPTO = {1: "Baixo", 2: "Compativel com o cliente", 3: "Alto", 4: "FIPS"}
+_CRIPTO = {1: "Baixo", 2: "Compatível com o cliente", 3: "Alto", 4: "FIPS"}
 # Agente do Elastic calado ha mais que isso (a consulta de batimento olha 15 min)
 _ELASTIC_MUDO_S = 15 * 60
 
 
 def _texto_tls_recusado(n: dict) -> str:
     sl, cripto = n.get("security_layer"), n.get("min_encryption")
-    texto = (f"o SecurityLayer do RDP ja e {sl} ({_SECURITY_LAYER.get(sl, '?')}), mas o RDP deste no "
-             "recusa TLS (testado na porta 3389)")
+    texto = (f"a segurança do RDP (SecurityLayer) já é {sl} ({_SECURITY_LAYER.get(sl, '?')}), mas o RDP "
+             "deste servidor recusa TLS (testado na porta 3389)")
     if cripto == 1:
-        return texto + (": o nivel de criptografia do RDP e 1 (Baixo), e com ele o Windows so oferece o "
-                        "RDP nativo. Subir para 2 (Compativel com o cliente), como nos outros nos: WMI "
-                        "Win32_TSGeneralSetting, SetEncryptionLevel(2) - vale na hora, sem derrubar sessao")
-    return texto + ": conferir o nivel de criptografia e o certificado do RDP deste no"
+        return texto + (": o nível de criptografia do RDP é 1 (Baixo), e com ele o Windows só oferece o "
+                        "RDP nativo. Subir para 2 (Compatível com o cliente), como nos outros servidores: WMI "
+                        "Win32_TSGeneralSetting, SetEncryptionLevel(2) - vale na hora, sem derrubar sessão")
+    return texto + ": conferir o nível de criptografia e o certificado do RDP deste servidor"
 
 
 def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = None,
@@ -934,8 +946,8 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                 v = n.get(campo)
                 if v is not None and v != maioria:
                     marcar(nome, f"PADRAO:{campo}",
-                           f"{rotulo} = {v} ({explica.get(v, '?')}), diferente dos outros nos do "
-                           f"cluster {cluster} ({maioria}, {explica.get(maioria, '?')})")
+                           f"{rotulo} = {v} ({explica.get(v, '?')}), diferente dos outros servidores do "
+                           f"balanceamento {cluster} ({maioria}, {explica.get(maioria, '?')})")
         # SecurityLayer certo, mas o RDP recusando TLS de verdade na porta: conta
         # como fora (a criptografia diferente vai junto, num aviso so).
         for nome, n in nos:
@@ -950,8 +962,9 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
         for nome, n in ativos:
             ult = n.get("ultimo_1149_min")
             if "ultimo_1149_min" in n and (ult is None or ult > 7 * 24 * 60):
-                texto = (f"nao grava o evento 1149 (RDP autenticado), que {', '.join(gravam)} grava: o "
-                         "NLB nao consegue ver se este no autentica sem abrir sessao")
+                texto = (f"não registra o login do RDP (evento 1149), que "
+                         f"{', '.join(exibicao.titulo(g) for g in gravam)} registra: o balanceamento não "
+                         "consegue ver se este servidor aceita o login sem abrir a sessão")
                 sl = n.get("security_layer")
                 tls = (out.get(nome) or {}).pop("PADRAO:rdp_tls", None)
                 causa = (out.get(nome) or {}).pop("PADRAO:security_layer", None)
@@ -960,15 +973,15 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                 elif causa is not None:
                     texto += (f". Causa: SecurityLayer do RDP = {sl} "
                               f"({_SECURITY_LAYER.get(sl, '?')}); com 1 (Negociar), "
-                              "como nos outros nos, o Windows passa a gravar")
+                              "como nos outros servidores, o Windows passa a registrar")
                 elif sl in (1, 2) and n.get("rdp_tls") is True:
                     # corrigido e em vigor: o 1149 so aparece no proximo logon
-                    texto += (f". O SecurityLayer do RDP ja e {sl} ({_SECURITY_LAYER[sl]}) e o RDP ja "
+                    texto += (f". O SecurityLayer do RDP já é {sl} ({_SECURITY_LAYER[sl]}) e o RDP já "
                               "aceita TLS (testado na porta 3389): o aviso some sozinho no primeiro "
-                              "logon RDP novo neste no")
+                              "login novo neste servidor")
                 elif sl in (1, 2):
-                    texto += (f". O SecurityLayer do RDP no registro ja e {sl} ({_SECURITY_LAYER[sl]}), "
-                              "igual aos outros nos, mas o RMon ainda nao conseguiu testar se o RDP "
+                    texto += (f". O SecurityLayer do RDP no registro já é {sl} ({_SECURITY_LAYER[sl]}), "
+                              "igual aos outros servidores, mas o RMon ainda não conseguiu testar se o RDP "
                               "aceita TLS (porta 3389)")
                 marcar(nome, "PADRAO:1149", texto)
 
@@ -982,9 +995,9 @@ def padrao_cluster(coletas: list[tuple], vistos_es: dict[str, float] | None = No
                 ts = vistos_es.get(h)
                 marcar(s.name, "PADRAO:elastic",
                        f"agente do Elastic ({h}) sem mandar dados "
-                       + (f"desde {manutencao.hora(ts)}" if ts else "nos ultimos 15 min")
-                       + ", enquanto os outros servidores mandam: historico do JobRunner e RDP deste "
-                         "host ficam so com o WinRM")
+                       + (f"desde {manutencao.hora(ts)}" if ts else "nos últimos 15 min")
+                       + ", enquanto os outros servidores mandam: histórico do JobRunner e RDP deste "
+                         "host ficam só com o WinRM")
     return {k: v for k, v in out.items() if v}
 
 
@@ -1115,13 +1128,13 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                      if notifica(k) and k not in calados]
             for k in lembretes_devidos(atual, avisado, agora, intervalo):
                 aberto = _duracao(agora - desde.get(k, avisado[k]))
-                db.record_alert(nome, "reminder", k, f"segue aberto ha {aberto}: {atual[k]}")
+                db.record_alert(nome, "reminder", k, f"segue aberto há {aberto}: {atual[k]}")
                 avisado[k] = agora
-                msgs.append(f"⏰ segue aberto ha {aberto}: {atual[k]}")
+                msgs.append(f"⏰ segue aberto há {aberto}: {atual[k]}")
             msgs += iniciar_automatico(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
                                        _minutos(th, "autocorrecao_teto_min") * 60, desde, atual)
             if msgs and notify.enabled():
-                notify.send(f"RMonitor — {nome} ({server.host})\n" + "\n".join(msgs))
+                notify.send(f"RMonitor — {exibicao.com_ip(nome)}\n" + "\n".join(msgs))
 
         fechadas = manutencao.vencidas(agora, janelas)
         hosts = {s.name: s.host for s in inv.servers}
@@ -1139,7 +1152,7 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
                           hold=manutencao.ativas(agora, janelas),
                           es=batimento_nlb(inv, nomes_es, vistos_es, es_ativo))
         except Exception:  # noqa: BLE001
-            log.exception("NLB: falha no ciclo de avaliacao")
+            log.exception("NLB: falha no ciclo de avaliação")
 
 
 def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str, dict]],
@@ -1160,8 +1173,8 @@ def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str,
                 if critico(k) != criticos:
                     continue
                 t = (tempos.get(nome) or {}).get(k) or {}
-                ha = f" (ha {_duracao(agora - t['desde'])})" if t.get("desde") else ""
-                out.append(f"• {nome}: {texto[:160]}{ha}")
+                ha = f" (há {_duracao(agora - t['desde'])})" if t.get("desde") else ""
+                out.append(f"• {exibicao.titulo(nome)}: {texto[:160]}{ha}")
         return out
 
     def bloco(titulo: str, itens: list[str], limite: int = 15) -> list[str]:
@@ -1170,22 +1183,22 @@ def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str,
         extra = [f"... e mais {len(itens) - limite}"] if len(itens) > limite else []
         return [f"{titulo} ({len(itens)}):"] + itens[:limite] + extra
 
-    partes = [f"\U0001F4CB RMonitor — resumo diario {time.strftime('%d/%m', time.localtime(agora))}"]
+    partes = [f"\U0001F4CB RMonitor — resumo diário {time.strftime('%d/%m', time.localtime(agora))}"]
     crit, avisos = linhas(True), linhas(False)
-    partes += bloco("\U0001F534 Criticos abertos", crit)
+    partes += bloco("\U0001F534 Críticos abertos", crit)
     partes += bloco("⚠ Avisos abertos", avisos)
     if not crit and not avisos:
         partes.append("✅ Nenhum problema aberto.")
     ativas = manutencao.ativas(agora, janelas)
     if ativas:
-        partes.append("\U0001F527 Em manutencao: " + ", ".join(
-            f"{n} ate {manutencao.hora(j.get('ate'))}" for n, j in sorted(ativas.items())))
+        partes.append("\U0001F527 Em manutenção: " + ", ".join(
+            f"{exibicao.titulo(n)} até {manutencao.hora(j.get('ate'))}" for n, j in sorted(ativas.items())))
     if elastic_mudos:
         partes.append("📡 Elastic sem dados de: " + ", ".join(elastic_mudos)
-                      + " (agente parado: serie e RDP desses hosts so pelo WinRM)")
+                      + " (agente parado: histórico do JobRunner e acessos desses servidores só pelo WinRM)")
     abriram = sum(1 for a in ultimas24 if a.get("kind") == "raised")
     resolveram = sum(1 for a in ultimas24 if a.get("kind") == "resolved")
-    partes.append(f"Ultimas 24h: {abriram} alerta(s) aberto(s), {resolveram} resolvido(s).")
+    partes.append(f"Últimas 24h: {abriram} alerta(s) aberto(s), {resolveram} resolvido(s).")
     return "\n".join(partes)
 
 
@@ -1212,9 +1225,9 @@ def _elastic_mudos(inv: Inventory, agora: float) -> list[str]:
     for srv, nome in sorted(nomes.items()):
         ts = vistos.get(nome)
         if ts is None:
-            mudos.append(f"{srv} (nada em 7 dias)")
+            mudos.append(f"{exibicao.titulo(srv)} (nada em 7 dias)")
         elif agora - ts > limite:
-            mudos.append(f"{srv} (desde {manutencao.hora(ts)})")
+            mudos.append(f"{exibicao.titulo(srv)} (desde {manutencao.hora(ts)})")
     return mudos
 
 
@@ -1244,7 +1257,7 @@ def resumo_diario(inv: Inventory, forcar: bool = False) -> bool:
                          nomes, agora, _elastic_mudos(inv, agora))
     notify.send(texto)
     db.set_config("resumo_ultimo", hoje)
-    log.info("resumo diario enviado")
+    log.info("resumo diário enviado")
     return True
 
 
@@ -1264,11 +1277,11 @@ def poll_inventory(inv: Inventory, settings: Settings) -> None:
             try:
                 res = fut.result()
             except Exception as exc:  # noqa: BLE001
-                res = {"ok": False, "items": [], "error": f"inventario: {exc}"}
+                res = {"ok": False, "items": [], "error": f"inventário: {exc}"}
             gasto = int(res.get("ms") or 0)
             if not res.get("ok"):
                 db.record_inventory_run(server.name, False, 0, res.get("error"), gasto)
-                log.warning("inventario %s -> FALHA (%s)", server.name, res.get("error"))
+                log.warning("inventário %s -> FALHA (%s)", server.name, res.get("error"))
                 continue
 
             itens = res["items"]
@@ -1283,7 +1296,7 @@ def poll_inventory(inv: Inventory, settings: Settings) -> None:
                                     res.get("computer"), res.get("os"))
             if res.get("last_upgrade"):
                 db.set_inventory_upgrade(server.name, res["last_upgrade"])
-            log.info("inventario %s -> %d pacotes, %d mudanca(s) em %dms",
+            log.info("inventário %s -> %d pacotes, %d mudanca(s) em %dms",
                      server.name, len(itens), len(eventos), gasto)
             _notify_package_changes(server.name, server.host, eventos)
     scan_packages(settings)
@@ -1306,7 +1319,7 @@ def scan_packages(settings: Settings) -> int:
         e["pkg_key"] = packages.resolve(e["produto"], indice, vinculos)
     db.replace_repo_catalog(entradas)
     sem_casar = sum(1 for e in entradas if not e["pkg_key"])
-    log.info("repositorio de pacotes: %d arquivo(s), %d sem item correspondente",
+    log.info("repositório de pacotes: %d arquivo(s), %d sem item correspondente",
              len(entradas), sem_casar)
     return len(entradas)
 
@@ -1332,9 +1345,9 @@ def _notify_package_changes(name: str, host: str, eventos: list[dict]) -> None:
                  (f" {e.get('new_version')}" if e.get("new_version") else ""))
               for e in eventos[:12]]
     if len(eventos) > 12:
-        linhas.append(f"... e mais {len(eventos) - 12} mudanca(s)")
+        linhas.append(f"... e mais {len(eventos) - 12} mudança(s)")
     notify.send(f"\U0001F4E6 RMonitor \u2014 software alterado em "
-                f"{name} ({host})\n" + "\n".join(linhas))
+                f"{exibicao.com_ip(name)}\n" + "\n".join(linhas))
 
 
 def _url_stage(settings: Settings, inv: Inventory, task_id: int, segundos: int) -> str:
@@ -1373,7 +1386,7 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     if task["mode"] != "real":
         db.finish_task(task["id"], "ok" if plano["ok"] else "blocked",
                        checks=plano["checks"], comando=plano["comando"],
-                       output="pre-voo: nada foi executado no host",
+                       output="pré-voo: nada foi executado no host",
                        error=None if plano["ok"] else
                        "bloqueado por: " + ", ".join(plano["bloqueios"]))
         log.info("tarefa %d (%s, em seco) -> %s", task["id"], task["server"],
@@ -1401,9 +1414,9 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
              f"{'ok' if res.get('ok') else 'falhou'}")
     if notify.enabled():
         marca = "\u2705" if res.get("ok") else "\u274C"
-        notify.send(f"{marca} RMonitor \u2014 {task['server']}: {task.get('produto')} "
+        notify.send(f"{marca} RMonitor \u2014 {exibicao.titulo(task['server'])}: {task.get('produto')} "
                     f"{task.get('version')} ({task['action']}) "
-                    f"{'concluido' if res.get('ok') else 'FALHOU: ' + str(res.get('error'))[:200]}")
+                    f"{'concluído' if res.get('ok') else 'FALHOU: ' + str(res.get('error'))[:200]}")
 
 
 def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:

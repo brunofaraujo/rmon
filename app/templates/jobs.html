@@ -3,59 +3,66 @@
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Centro de Jobs</h1><div class="sub">pool RM &middot; janela de {{ window }} min (GJOBXEXECUCAO)</div></div>
+  <div><h1>Jobs do RM</h1><div class="sub">Execuções de todos os servidores nos últimos {{ window }} minutos, lidas do banco do RM</div></div>
   <div class="pills">
-    {% for m in [15, 60, 240, 1440] %}<a class="pill {{ 'green' if window==m else '' }}" href="/jobs?min={{ m }}">{{ m }}min</a>{% endfor %}
+    {% for m, rot in [(15, '15 min'), (60, '1 hora'), (240, '4 horas'), (1440, '24 horas')] %}<a class="pill {{ 'green' if window==m else '' }}" href="/jobs?min={{ m }}">{{ rot }}</a>{% endfor %}
   </div>
 </div>
 
 {% if not pool %}
-  <div class="alert">SQL nao configurado (RMON_SQL_*). Rode <code>definir-sql.sh</code>.</div>
+  <div class="alert">A leitura do banco do RM não está configurada (variáveis <code>RMON_SQL_*</code>). Rode <code>deploy/definir-sql.sh</code>.</div>
 {% elif pool.error %}
-  <div class="alert">Erro ao consultar o SQL: {{ pool.error }}</div>
+  <div class="alert">Não foi possível consultar o banco do RM: {{ pool.error }}</div>
 {% else %}
   <div class="kpis">
-    <div class="kpi ok"><div class="val txt-green">{{ pool.ok }}</div><div class="lbl">Sucesso</div></div>
+    <div class="kpi ok"><div class="val txt-green">{{ pool.ok }}</div><div class="lbl">Concluídos com sucesso</div></div>
     {# Erro de job e validacao/regra de negocio: ambar. O vermelho da tela fica
        reservado a fila travada, que e problema de servidor. #}
-    <div class="kpi {{ 'warn' if pool.failed else 'ok' }}"><div class="val {{ 'txt-amber' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Terminaram com erro</div></div>
-    <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total processado</div></div>
+    <div class="kpi {{ 'warn' if pool.failed else 'ok' }}" title="Em geral validação ou regra de negócio da própria aplicação, não falha do servidor"><div class="val {{ 'txt-amber' if pool.failed else '' }}">{{ pool.failed }}</div><div class="lbl">Terminaram com erro</div></div>
+    <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total executado</div></div>
     {% if fila and fila.get('pending') is not none %}
     {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
     <div class="kpi {{ 'bad' if presas else 'ok' }}">
       <div class="val {{ 'txt-red' if presas else '' }}">{{ fila.pending }}</div>
-      <div class="lbl">Na fila{% if presas %} &middot; {{ presas }} parada(s){% endif %}</div></div>
+      <div class="lbl">Na fila agora{% if presas %} &middot; {{ presas }} parado(s){% endif %}</div></div>
     {% endif %}
-    <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Solicitantes</div></div>
+    <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Usuários que pediram jobs</div></div>
   </div>
 
   {% set presas = fila and ((fila.stuck or 0) + (fila.waiting or 0)) %}
   <div class="alert {{ '' if presas else 'info' }} small">
     {% if fila and fila.error %}
-      Nao deu para ler a fila: {{ fila.error }}
+      Não foi possível ler a fila: {{ fila.error }}
     {% elif presas %}
-      <b>{{ fila.stuck or 0 }} execucao(oes) em andamento ha mais de {{ fila.window_min }}min</b>{% if fila.waiting %} e <b>{{ fila.waiting }}</b> com a hora programada vencida sem ninguem iniciar{% endif %}{% if fila.oldest_min is not none %}, a mais antiga ha <b>{{ fila.oldest_min }}min</b>{% endif %}.
-      Concluiram {{ fila.done_recent }} nesses {{ fila.window_min }}min{% if fila.since_last_min is not none %} (ultima ha {{ fila.since_last_min }}min){% endif %}.
-      Fila que nao anda e o que dispara alerta &mdash; job que <i>termina</i> com erro, nao.
+      <b>Fila parada:</b> {{ fila.stuck or 0 }} execução(ões) em andamento há mais de {{ fila.window_min }} min{% if fila.waiting %}
+      e <b>{{ fila.waiting }}</b> com a hora programada vencida sem ninguém iniciar{% endif %}{% if fila.oldest_min is not none %}; a mais antiga há <b>{{ fila.oldest_min }} min</b>{% endif %}.
+      Só {{ fila.done_recent }} concluída(s) nesses {{ fila.window_min }} min{% if fila.since_last_min is not none %} (a última há {{ fila.since_last_min }} min){% endif %}.
     {% elif fila and fila.pending %}
-      Fila andando: <b>{{ fila.running }} em andamento</b> dentro do tempo normal e {{ fila.done_recent }} conclusao(oes) nos ultimos {{ fila.window_min }}min.
+      Fila andando: <b>{{ fila.running }} em andamento</b> dentro do tempo normal e {{ fila.done_recent }} concluída(s) nos últimos {{ fila.window_min }} min.
     {% else %}
-      Fila vazia: tudo que entrou ja terminou{% if fila and fila.done_recent %} ({{ fila.done_recent }} conclusao(oes) nos ultimos {{ fila.window_min }}min){% endif %}. Job que termina com erro fica registrado aqui, mas nao dispara alerta &mdash; e validacao/regra de negocio da aplicacao.
+      Fila vazia: tudo o que entrou já terminou{% if fila and fila.done_recent %} ({{ fila.done_recent }} concluída(s) nos últimos {{ fila.window_min }} min){% endif %}.
     {% endif %}
     {% if fila and fila.orphans %}
-      <span class="muted">&middot; {{ fila.orphans }} execucao(oes) orfa(s) (sem conclusao ha mais de {{ fila.residue_min }}min ou ja abortadas pelo RM): residuo de host reiniciado no meio, fora da conta de fila.</span>
+      <span class="muted">&middot; {{ fila.orphans }} execução(ões) abandonada(s) por servidor reiniciado no meio (sem conclusão há mais de {{ fila.residue_min }} min ou já canceladas pelo RM): ficam fora da conta da fila.</span>
     {% endif %}
+    <details class="ajuda">
+      <summary>O que gera alerta aqui</summary>
+      <div>
+        <p>Job que <b>termina com erro</b> fica registrado e em âmbar, mas não gera alerta: quase sempre é validação ou regra de negócio da aplicação.</p>
+        <p>Gera alerta a <b>fila parada</b> (execuções presas e nenhuma concluída na janela, confirmado em coletas seguidas) e a <b>falha em bloco</b> (muitas execuções e nenhuma com sucesso). Esses sim indicam o RM sem processar.</p>
+      </div>
+    </details>
   </div>
 
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr))">
     <div class="panel">
-      <h2>Por executor</h2>
+      <h2>Por servidor que executou</h2>
       <div class="table-wrap"><table class="tbl">
-        <thead><tr><th>Executor (SERVIDOR)</th><th>Servidor monitorado</th><th>OK</th><th>Falha</th><th>Total</th></tr></thead>
+        <thead><tr><th>Servidor</th><th>Sucesso</th><th>Com erro</th><th>Total</th></tr></thead>
         <tbody>
           {% for s in pool.by_server %}
-          <tr><td><b>{{ s.host }}</b></td>
-            <td class="muted small">{% if s.server %}<a class="linkish" href="/server/{{ s.server }}">{{ s.label }}</a>{% else %}—{% endif %}</td>
+          <tr><td>{% if s.server %}<a class="linkish srv" href="/server/{{ s.server }}">{{ s.label }}</a>{% if s.label | lower != (s.host or '') | lower %}<span class="srv-desc">no RM: {{ s.host }}</span>{% endif %}
+                  {% else %}<b>{{ s.host }}</b><span class="srv-desc">fora do monitoramento</span>{% endif %}</td>
             <td class="txt-green">{{ s.ok }}</td>
             <td class="{{ 'txt-amber' if s.failed else '' }}">{{ s.failed }}</td>
             <td class="mono">{{ s.total }}</td></tr>
@@ -65,29 +72,29 @@
     </div>
 
     <div class="panel">
-      <h2>Solicitantes (ranking)</h2>
+      <h2>Quem mais pediu jobs</h2>
       <div class="pills">
-        {% for rq in pool.top_requesters %}<a class="pill chip-link" href="/sessions?user={{ rq.user }}" title="Procurar a sessao RDP deste solicitante">{{ rq.user }} &middot; {{ rq.c }}</a>{% endfor %}
-        {% if not pool.top_requesters %}<span class="muted small">Sem execucoes na janela.</span>{% endif %}
+        {% for rq in pool.top_requesters %}<a class="pill chip-link" href="/sessions?user={{ rq.user }}" title="Procurar a sessão deste usuário">{{ rq.user }} &middot; {{ rq.c }}</a>{% endfor %}
+        {% if not pool.top_requesters %}<span class="muted small">Nenhuma execução no período.</span>{% endif %}
       </div>
     </div>
   </div>
 
   <div class="panel">
-    <h2>Execucoes com erro <span class="muted small">({{ pool.recent_failures|length }} &middot; em geral validacao/regra de negocio, nao falha do servidor)</span></h2>
+    <h2>Execuções que terminaram com erro <span class="muted small">{{ pool.recent_failures|length }} &middot; em geral validação ou regra de negócio, não falha do servidor</span></h2>
     {% if pool.recent_failures %}
     <div class="table-wrap scroll-y"><table class="tbl">
-      <thead><tr><th>Quando</th><th>IDJOB</th><th>Executor</th><th>Solicitante</th><th>Mensagem</th></tr></thead>
+      <thead><tr><th>Quando</th><th title="Código do job no RM (IDJOB)">Job</th><th>Servidor</th><th>Pedido por</th><th>Mensagem</th></tr></thead>
       <tbody>
         {% for f in pool.recent_failures %}
         <tr><td class="muted small">{{ f.when }}</td><td class="mono">{{ f.idjob }}</td>
           <td class="muted small">{{ f.servidor }}</td>
-          <td><a class="linkish" href="/sessions?user={{ f.user }}" title="Procurar a sessao RDP deste solicitante">{{ f.user }}</a></td>
+          <td><a class="linkish" href="/sessions?user={{ f.user }}" title="Procurar a sessão deste usuário">{{ f.user }}</a></td>
           <td class="muted small">{{ f.msg }}</td></tr>
         {% endfor %}
       </tbody>
     </table></div>
-    {% else %}<div class="alert ok small">Nenhuma execucao com erro na janela de {{ window }} min.</div>{% endif %}
+    {% else %}<div class="alert ok small">Nenhuma execução com erro nos últimos {{ window }} minutos.</div>{% endif %}
   </div>
 {% endif %}
 {% endblock %}
