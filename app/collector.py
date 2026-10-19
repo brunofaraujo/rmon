@@ -584,7 +584,7 @@ def logoff_session(server: ServerConfig, wc: WinRMConfig, session_id: int) -> tu
     try:
         sid = int(session_id)  # impede injecao no comando
     except (TypeError, ValueError):
-        return False, "id de sessao invalido"
+        return False, "id de sessão inválido"
     try:
         session = _winrm_session(server.host, wc, user, pw)
         r = _run_ps(session, f"logoff {sid}", _deadline(wc))
@@ -608,16 +608,16 @@ def service_action(server: ServerConfig, wc: WinRMConfig, service_name: str, act
     """
     permitido = set(server.services or []) | set(allowed or ())
     if service_name not in permitido:
-        return False, "servico nao monitorado neste servidor"
+        return False, "serviço não monitorado neste servidor"
     if not _re.fullmatch(r"[A-Za-z0-9 ._#$-]+", service_name or ""):
-        return False, "nome de servico invalido"
+        return False, "nome de serviço inválido"
     cmds = {
         "start": f"Start-Service -Name '{service_name}' -ErrorAction Stop; 'OK'",
         "stop": f"Stop-Service -Name '{service_name}' -Force -ErrorAction Stop; 'OK'",
         "restart": f"Restart-Service -Name '{service_name}' -Force -ErrorAction Stop; 'OK'",
     }
     if action not in cmds:
-        return False, "acao invalida"
+        return False, "ação inválida"
     user, pw = credential_for(server.cred)
     if not user or not pw:
         return False, f"sem credencial (perfil '{server.cred}')"
@@ -700,9 +700,9 @@ def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str,
     validos = []
     for acao, nome in itens:
         if nome not in permitido:
-            out[nome] = (False, "servico nao monitorado neste servidor")
+            out[nome] = (False, "serviço não monitorado neste servidor")
         elif acao not in ("start", "restart") or not _re.fullmatch(r"[A-Za-z0-9 ._#$-]+", nome or ""):
-            out[nome] = (False, "acao ou nome invalido")
+            out[nome] = (False, "ação ou nome inválido")
         else:
             validos.append((acao, nome))
     if not validos:
@@ -732,7 +732,7 @@ def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str,
         if st in SUBIU:
             out[nome] = (True, SUBIU[st])
         else:
-            out[nome] = (False, f"nao subiu ({st})" + (f": {str(d['erro'])[:180]}" if d.get("erro") else ""))
+            out[nome] = (False, f"não subiu ({st})" + (f": {str(d['erro'])[:180]}" if d.get("erro") else ""))
     return out
 
 
@@ -778,9 +778,9 @@ def jobrunner_alvo(coleta: dict | None, pid) -> dict | None:
 def script_encerrar_jobrunner(pid: int, inicio: str | None, processo: str) -> str:
     pid = int(pid)
     if pid <= 0:
-        raise ValueError("PID invalido")
+        raise ValueError("PID inválido")
     if not _re.fullmatch(r"[A-Za-z0-9._-]+", processo or ""):
-        raise ValueError("nome de processo invalido")
+        raise ValueError("nome de processo inválido")
     inicio = inicio if inicio and _INICIO_RE.fullmatch(str(inicio)) else ""
     return (_PS_KILL_JR.replace("__PID__", str(pid))
             .replace("__NAME__", _ps_str(processo)).replace("__START__", _ps_str(inicio)))
@@ -790,13 +790,13 @@ def interpretar_encerramento(saida: str, pid: int) -> tuple[bool, str]:
     linha = (saida or "").strip().splitlines()[-1:] or [""]
     cod, _, resto = linha[0].strip().partition(" ")
     if cod == "OK":
-        return True, f"PID {pid} encerrado ({resto or '?'} MB de memoria privada liberados)"
+        return True, f"PID {pid} encerrado ({resto or '?'} MB de memória privada liberados)"
     if cod == "GONE":
-        return False, f"o PID {pid} ja tinha terminado: nada a fazer"
+        return False, f"o PID {pid} já tinha terminado: nada a fazer"
     if cod == "NOT_JR":
-        return False, f"o PID {pid} agora e {resto or 'outro processo'}, nao um JobRunner: nada feito"
+        return False, f"o PID {pid} agora é {resto or 'outro processo'}, não um JobRunner: nada feito"
     if cod == "REUSED":
-        return False, (f"o PID {pid} e de um processo iniciado em {resto or '?'}, nao o que a "
+        return False, (f"o PID {pid} é de um processo iniciado em {resto or '?'}, não o que a "
                        "coleta viu (PID reaproveitado): nada feito")
     return False, (saida or "sem resposta do host").strip()[:200]
 
@@ -857,7 +857,7 @@ def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool
     para a auditoria.
     """
     if action not in _PS_NLB_ACTION:
-        return False, "acao invalida"
+        return False, "ação inválida"
     user, pw = credential_for(server.cred)
     if not user or not pw:
         return False, f"sem credencial (perfil '{server.cred}')"

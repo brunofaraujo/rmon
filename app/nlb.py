@@ -32,10 +32,10 @@ log =logging.getLogger("rmon.nlb")
 # StatusCode da classe WMI MicrosoftNLB_Node (wlbsctrl.h).
 STATUS = {
     1005: "parado",
-    1006: "convergindo",
-    1007: "convergido",
-    1008: "convergido (padrao)",
-    1009: "drenando",
+    1006: "entrando no balanceamento",
+    1007: "no balanceamento",
+    1008: "no balanceamento",
+    1009: "saindo (não aceita novos acessos)",
     1013: "suspenso",
 }
 # Recebendo (ou prestes a receber) trafego novo.
@@ -137,7 +137,7 @@ def settings_for(defaults: dict[str, Any] | None) -> dict[str, Any]:
 def status_label(code: Any) -> str:
     if code is None:
         return "desconhecido"
-    return STATUS.get(int(code), f"codigo {code}")
+    return STATUS.get(int(code), f"código {code}")
 
 
 # ---------------------------------------------------------------- vistas
@@ -236,8 +236,8 @@ def sick_reasons(v: dict, vistas: list[dict], cfg: dict, st: dict | None = None,
     auth, sess = v.get("auth"), v.get("sess")
     if auth is not None and sess is not None and auth >= cfg["auth_min"] \
             and sess < auth * float(cfg["session_ratio"]):
-        motivos.append(f"RDP autentica sem criar sessao: {auth} logon(s) autenticado(s) (1149) "
-                       f"e {sess} sessao(oes) criada(s) (21/25) em {jan}min")
+        motivos.append(f"aceita o login mas não abre a sessão: {auth} login(s) aceito(s) e só "
+                       f"{sess} sessão(ões) aberta(s) em {jan} min")
 
     # Sinal 2: comparacao com os pares, fora da caréncia de quem acabou de entrar.
     carencia = cfg["grace_min"] * 60
@@ -251,14 +251,14 @@ def sick_reasons(v: dict, vistas: list[dict], cfg: dict, st: dict | None = None,
         media = sum((p.get("users") or 0) for p in pares) / len(pares)
         novas = sum((p.get("sess") or 0) for p in pares)
         if media >= cfg["peer_users_min"] and novas >= cfg["peer_sess_min"]:
-            motivos.append(f"nenhuma sessao aqui enquanto os outros nos tem em media {media:.0f} "
-                           f"usuario(s) e criaram {novas} sessao(oes) em {jan}min")
+            motivos.append(f"nenhum usuário aqui, enquanto os outros servidores têm em média "
+                           f"{media:.0f} usuário(s) e abriram {novas} sessão(ões) em {jan} min")
 
     if not v["rm_ok"]:
         motivos.append("RM.Host fora do ar: " + (", ".join(v["rm_down"]) or "nenhum encontrado"))
     commit = v.get("commit")
     if commit is not None and commit >= cfg["commit_drain_pct"]:
-        motivos.append(f"commit charge em {commit}% do limite")
+        motivos.append(f"memória reservada em {commit}% do limite (RAM + arquivo de paginação)")
     gb = float(cfg.get("drain_jobrunner_gb") or 0)
     if gb and (v.get("jobrunner_gb") or 0) >= gb:
         motivos.append(f"RM.Host.JobRunner (PID {v.get('jobrunner_pid')}) com "
@@ -280,10 +280,10 @@ def rejoin_gaps(v: dict, st: dict, cfg: dict, cluster_vazio: bool = False) -> li
         falta.append("RM.Host fora do ar: " + (", ".join(v["rm_down"]) or "nenhum encontrado"))
     commit = v.get("commit")
     if commit is None or commit >= cfg["commit_ok_pct"]:
-        falta.append(f"commit em {commit}% (precisa < {cfg['commit_ok_pct']}%)")
+        falta.append(f"memória reservada em {commit}% (precisa ficar abaixo de {cfg['commit_ok_pct']}%)")
     up = v.get("uptime_min")
     if not cluster_vazio and (up is None or up < cfg["min_uptime_min"]):
-        falta.append(f"Windows no ar ha menos de {cfg['min_uptime_min']}min")
+        falta.append(f"ligado há menos de {cfg['min_uptime_min']} min")
     # Quem o RMon drenou por DOENCA tem de PROVAR que mudou: ou reiniciou
     # depois da drenagem, ou criou sessao de novo (RDP direto pelo IP, de
     # teste). Sem isso, o no que nao criava sessao voltaria ao balanceamento
@@ -292,7 +292,7 @@ def rejoin_gaps(v: dict, st: dict, cfg: dict, cluster_vazio: bool = False) -> li
     if st.get("owned") and st.get("drained_at") and st.get("drain_reason") not in ("unreachable", "reset"):
         reiniciou = v.get("boot_ts") is not None and v["boot_ts"] > st["drained_at"]
         if not reiniciou and not (v.get("sess") or 0):
-            falta.append("sem reboot nem sessao RDP nova desde a drenagem")
+            falta.append("não reiniciou nem abriu sessão nova desde que saiu do balanceamento")
     return falta
 
 
@@ -355,12 +355,12 @@ def elastic_confirma(v: dict, st: dict, cfg: dict, now: float) -> tuple[str, str
     # dias nao prova que o Windows travou agora
     desde = st.get("mudo_desde")
     if desde and float(ultimo) < float(desde) - ES_FOLGA_S:
-        return "sem_leitura", (f"o Elastic ja nao recebia dados deste host "
+        return "sem_leitura", (f"o Elastic já não recebia dados deste host "
                                f"{int((float(desde) - float(ultimo)) // 60)}min antes da falta de contato")
     idade = now - float(ultimo)
     if idade < cfg["reset_elastic_mudo_sec"]:
-        return "vivo", f"ultimo dado ha {max(0, int(idade))}s"
-    return "mudo", f"nada ha {int(idade // 60)}min"
+        return "vivo", f"último dado há {max(0, int(idade))}s"
+    return "mudo", f"nada há {int(idade // 60)}min"
 
 
 def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
@@ -425,8 +425,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
                 if _note(st, "sick", "unreachable"):
                     decisoes.append(_decision(
                         v, "unreachable_sick",
-                        "no doente e sem contato por WinRM: o RMon nao consegue drena-lo. "
-                        "Drene pelo console (nlb.exe drainstop) ou reinicie o servidor."))
+                        "servidor com problema e sem contato (WinRM): o RMon não consegue tirá-lo do "
+                        "balanceamento. Tire pelo console (nlb.exe drainstop) ou reinicie o servidor."))
             continue
         st["unreach"] = 0
         _clear(st, "unreach")
@@ -435,7 +435,7 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         if status is None:
             if v.get("nlb_error") and _note(st, "nlb", "error"):
                 decisoes.append(_decision(v, "nlb_error",
-                                          f"nao deu para ler o estado do NLB: {v['nlb_error']}"))
+                                          f"não deu para ler o estado do NLB: {v['nlb_error']}"))
             continue
         _clear(st, "nlb")
 
@@ -458,7 +458,7 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             else:
                 if (st.get("notes") or {}).get("sick") not in (None, "drained"):
                     decisoes.append(_decision(v, "recovered",
-                                              "voltou a ficar saudavel sem sair do NLB"))
+                                              "voltou a ficar saudável sem sair do NLB"))
                 st["bad_since"] = None
                 st["bad_reasons"] = []
                 _clear(st, "sick")
@@ -478,9 +478,9 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         if not dono and not cfg.get("rejoin_unowned") and _note(st, "out", "unowned"):
             decisoes.append(_decision(
                 v, "out_unowned",
-                f"fora do NLB ({status_label(status)}) sem ter sido drenado pelo RMon: "
-                "reingresse manualmente (nlb.exe start) ou pela tela /nlb"
-                + ("" if falta else ". Ele ja esta apto")))
+                f"fora do balanceamento ({status_label(status)}) sem ter sido retirado pelo RMon: "
+                "devolva pela tela Balanceamento ou no console (nlb.exe start)"
+                + ("" if falta else ". Ele já está pronto para voltar")))
         if falta:
             st["good_since"] = None
             _clear(st, "rejoin")
@@ -504,15 +504,15 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             continue
         vv = {**v, "cluster": st.get("cluster")}
         cl = vv["cluster"] or "-"
-        resumo = f"sem contato (WinRM) ha {st['unreach']} coletas seguidas e ainda no NLB"
+        resumo = f"sem contato (WinRM) há {st['unreach']} coletas seguidas e ainda no balanceamento"
         ativos, saudaveis = _floor(vv, vistas, saude, retirados)
         if len(saudaveis) < cfg["min_healthy_remaining"] or len(ativos) < cfg["min_active_remaining"]:
             if _note(st, "unreach", f"floor:{len(ativos)}:{len(saudaveis)}"):
                 decisoes.append(_decision(
                     vv, "blocked",
-                    f"{resumo}, mas tira-lo do NLB deixaria {len(ativos)} no(s) ativo(s) e "
-                    f"{len(saudaveis)} saudavel(is) (minimos {cfg['min_active_remaining']} e "
-                    f"{cfg['min_healthy_remaining']}): fica no NLB"))
+                    f"{resumo}, mas tirá-lo deixaria só {len(ativos)} servidor(es) no balanceamento, "
+                    f"{len(saudaveis)} saudável(is) (mínimo: {cfg['min_active_remaining']} e "
+                    f"{cfg['min_healthy_remaining']}): continua no balanceamento"))
             continue
         es, es_txt = elastic_confirma(v, st, cfg, now)
         if es == "vivo":
@@ -521,30 +521,30 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
                 decisoes.append(_decision(
                     vv, "unreachable_alive",
                     f"{resumo}, mas o Elastic ainda recebe dados dele ({es_txt}): o Windows "
-                    "esta de pe e so o WinRM travou. Nao reiniciado; se os usuarios reclamarem, "
+                    "está de pé e só o WinRM travou. Não reiniciado; se os usuários reclamarem, "
                     "reinicie pelo console"))
             continue
         st["resets"] = [t for t in (st.get("resets") or []) if now - t < 86400]
         vm = v.get("incus_vm") or ""
         impede = None
         if es != "mudo":
-            impede = ("sem_es", f"sem a confirmacao do Elastic ({es_txt}) o RMon nao reinicia")
+            impede = ("sem_es", f"sem a confirmação do Elastic ({es_txt}) o RMon não reinicia")
         elif not vm or not incus.configurado(cfg):
-            impede = ("sem_vm", f"Elastic tambem sem dados ({es_txt}) e o RMon nao tem como "
-                                "reinicia-lo (servidor fisico, sem hypervisor configurado)")
+            impede = ("sem_vm", f"Elastic também sem dados ({es_txt}) e o RMon não tem como "
+                                "reiniciá-lo (servidor físico, sem hypervisor configurado)")
         elif len(st["resets"]) >= cfg["reset_max_day"]:
-            impede = ("flapping", f"Elastic sem dados ({es_txt}), mas o RMon ja reiniciou a VM "
-                                  f"{len(st['resets'])}x em 24h: so aviso")
+            impede = ("flapping", f"Elastic sem dados ({es_txt}), mas o RMon já reiniciou a VM "
+                                  f"{len(st['resets'])}x em 24h: só aviso")
         if impede:
             if _note(st, "unreach", "crit:" + impede[0]):
                 decisoes.append(_decision(
                     vv, "unreachable_crit",
                     f"{resumo}: {impede[1]}. Reinicie pelo console/iLO/hypervisor - ele segue "
-                    "recebendo usuarios"))
+                    "recebendo usuários"))
             continue
         retirados.add(v["name"])
         msg = (f"{resumo}; Elastic sem dados ({es_txt}): reinicia a VM {vm} pelo Incus. "
-               "Ela volta fora do NLB e o RMon a reingressa quando estiver apta")
+               "Ela volta fora do balanceamento e o RMon a devolve quando estiver pronta")
         if auto:
             agiu.add(cl)
             if st.get("last_try") and now - st["last_try"] < retry:
@@ -566,7 +566,7 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         resumo = "; ".join(motivos)
         if em_hold(v["name"]):
             if _note(st, "sick", "hold"):
-                decisoes.append(_decision(v, "blocked", f"doente, mas em manutencao (hold): {resumo}"))
+                decisoes.append(_decision(v, "blocked", f"com problema, mas em manutenção: {resumo}"))
             continue
         if auto and cl in agiu:
             continue
@@ -574,17 +574,17 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             if _note(st, "sick", "flapping"):
                 decisoes.append(_decision(
                     v, "blocked",
-                    f"doente, mas ja foi drenado {len(st['drains'])}x em 24h (flapping): "
-                    f"so aviso. Motivo: {resumo}"))
+                    f"com problema, mas já saiu do balanceamento {len(st['drains'])}x em 24h "
+                    f"(instável): só aviso. Motivo: {resumo}"))
             continue
         ativos, saudaveis = _floor(v, vistas, saude, retirados)
         if len(saudaveis) < cfg["min_healthy_remaining"] or len(ativos) < cfg["min_active_remaining"]:
             if _note(st, "sick", f"floor:{len(ativos)}:{len(saudaveis)}"):
                 decisoes.append(_decision(
                     v, "blocked",
-                    f"doente, mas drenar deixaria {len(ativos)} no(s) ativo(s) e "
-                    f"{len(saudaveis)} saudavel(is) (minimos {cfg['min_active_remaining']} e "
-                    f"{cfg['min_healthy_remaining']}): fica no NLB. Motivo: {resumo}"))
+                    f"com problema, mas tirá-lo deixaria só {len(ativos)} servidor(es) no "
+                    f"balanceamento, {len(saudaveis)} saudável(is) (mínimo: {cfg['min_active_remaining']} e "
+                    f"{cfg['min_healthy_remaining']}): continua. Motivo: {resumo}"))
             continue
         if auto:
             ultimo = cst.get("last_auto") or 0
@@ -592,8 +592,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
                 if _note(st, "sick", "cooldown"):
                     decisoes.append(_decision(
                         v, "blocked",
-                        f"doente, mas houve drenagem automatica neste cluster ha "
-                        f"{int((now - ultimo) / 60)}min (cooldown {cfg['cooldown_min']}min). "
+                        f"com problema, mas outro servidor deste grupo saiu do balanceamento há "
+                        f"{int((now - ultimo) / 60)} min (intervalo mínimo: {cfg['cooldown_min']} min). "
                         f"Motivo: {resumo}"))
                 continue
             agiu.add(cl)
@@ -607,8 +607,8 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
             if _note(st, "sick", "would_drain"):
                 decisoes.append(_decision(
                     v, "would_drain",
-                    f"[modo alerta] drenaria agora (sobram {len(ativos)} ativo(s), "
-                    f"{len(saudaveis)} saudavel(is)): {resumo}"))
+                    f"[modo alerta] tiraria do balanceamento agora (sobram {len(ativos)} servidor(es), "
+                    f"{len(saudaveis)} saudável(is)): {resumo}"))
 
     # ---- reingresso: um por cluster por ciclo
     voltando: set[str] = set()
@@ -621,13 +621,13 @@ def evaluate(vistas: list[dict], state: dict, cfg: dict, now: float,
         if auto:
             if st.get("last_try") and now - st["last_try"] < retry:
                 continue
-            decisoes.append(_decision(v, "rejoin", "RM.Host no ar e commit normal",
+            decisoes.append(_decision(v, "rejoin", "RM.Host no ar e memória normal",
                                       action="rejoin", new=_note(st, "rejoin", "rejoining")))
         elif _note(st, "rejoin", "would"):
             decisoes.append(_decision(
                 v, "would_rejoin",
-                "[modo alerta] reingressaria agora: RM.Host no ar, commit normal, apto ha "
-                f"{int((now - st['good_since']) / 60)}min"))
+                "[modo alerta] devolveria ao balanceamento agora: RM.Host no ar, memória normal, "
+                f"pronto há {int((now - st['good_since']) / 60)} min"))
     return decisoes, st_all
 
 
@@ -680,14 +680,15 @@ def floor_ok(vistas: list[dict], alvo: str, cfg: dict) -> tuple[bool, str]:
     """A drenagem MANUAL de `alvo` respeita o piso? (mesma regra da automatica)"""
     v = next((x for x in vistas if x["name"] == alvo), None)
     if v is None:
-        return False, "no desconhecido"
+        return False, "servidor desconhecido"
     cl = v.get("cluster")
     ativos = [p for p in vistas if p["name"] != alvo and p.get("cluster") == cl
               and p["reachable"] and p.get("status") in ATIVOS]
     saudaveis = [p for p in ativos if not sick_reasons(p, vistas, cfg)]
     if len(saudaveis) < cfg["min_healthy_remaining"] or len(ativos) < cfg["min_active_remaining"]:
-        return False, (f"restariam {len(ativos)} no(s) ativo(s) e {len(saudaveis)} saudavel(is) "
-                       f"(minimos {cfg['min_active_remaining']} e {cfg['min_healthy_remaining']})")
+        return False, (f"sobrariam só {len(ativos)} servidor(es) no balanceamento e "
+                       f"{len(saudaveis)} saudável(is) (mínimo: {cfg['min_active_remaining']} e "
+                       f"{cfg['min_healthy_remaining']})")
     return True, ""
 
 
@@ -701,9 +702,16 @@ ICON = {"drain": "\U0001F500", "reset_unreachable": "\U0001F504", "rejoin": "✅
         "failed": "❌"}
 
 
+# Nome de cada acao do NLB na tela e nas mensagens
+ACAO_LABEL = {"drain": "retirada do balanceamento", "rejoin": "volta ao balanceamento",
+              "reset": "reinício da VM"}
+
+
 def _message(d: dict) -> str:
+    from . import nomes
     cl = f" [{d['cluster']}]" if d.get("cluster") else ""
-    return f"{ICON.get(d['kind'], '')} NLB{cl} — {d['server']} ({d['host']}): {d['msg']}"
+    return (f"{ICON.get(d['kind'], '')} Balanceamento{cl} — {nomes.titulo(d['server'])} "
+            f"({d['host']}): {d['msg']}")
 
 
 def load_state() -> dict:
@@ -763,11 +771,11 @@ def checar_incus(inv, cfg: dict, state: dict, now: float) -> None:
     if bool(antes.get("ok")) != r["ok"]:
         from . import db, notify
         txt = ("canal com o hypervisor OK: " if r["ok"] else
-               "canal com o hypervisor FALHOU (no travado sem contato nao sera reiniciado): ")
+               "canal com o hypervisor FALHOU (servidor travado sem contato não será reiniciado): ")
         db.audit("rmon-nlb", "nlb_incus_" + ("ok" if r["ok"] else "falhou"),
                  (txt + r["detail"])[:900])
         if notify.enabled():
-            notify.send(("\U0001F7E2 " if r["ok"] else "⚠️ ") + "NLB — " + txt + r["detail"][:300])
+            notify.send(("\U0001F7E2 " if r["ok"] else "⚠️ ") + "Balanceamento — " + txt + r["detail"][:300])
 
 
 def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
@@ -796,14 +804,15 @@ def run_cycle(inv, coletas: dict[str, dict], now: float | None = None,
                     ok, detalhe = execute(servidores[d["server"]], inv.winrm, d["action"])
                 state, falha_nova = apply_result(state, d, ok, now, detalhe)
                 if not ok:
-                    d = {**d, "msg": f"{d['action']} FALHOU: {detalhe[:200]}"}
+                    d = {**d, "msg": f"{ACAO_LABEL.get(d['action'], d['action'])} FALHOU: {detalhe[:200]}"}
                 elif d["action"] == "reset":
                     d = {**d, "msg": d["msg"].replace("reinicia a VM", "VM reiniciada")
                          + (f" ({detalhe[:120]})" if detalhe else "")}
                 elif d["action"] == "drain":
-                    d = {**d, "msg": "drenado (nlb.exe drainstop): " + d["msg"].split(": ", 1)[-1]}
+                    d = {**d, "msg": "retirado do balanceamento (nlb.exe drainstop): "
+                         + d["msg"].split(": ", 1)[-1]}
                 else:
-                    d = {**d, "msg": "reingressado (nlb.exe start)"}
+                    d = {**d, "msg": "devolvido ao balanceamento (nlb.exe start)"}
                 d["notify"] = ok or falha_nova
                 _record(d, ok)
                 log.warning("NLB %s %s -> %s (%s)", d["server"], d["action"], ok, detalhe[:200])
@@ -829,7 +838,7 @@ def manual(inv, coletas: dict[str, dict], nome: str, acao: str, user: str) -> tu
     cfg = settings_for(inv.defaults)
     servidores = {s.name: s for s in nlb_servers(inv)}
     if nome not in servidores:
-        return False, "servidor fora do NLB monitorado"
+        return False, "servidor fora do balanceamento monitorado"
     now = time.time()
     with _LOCK:
         state = load_state()
@@ -839,10 +848,10 @@ def manual(inv, coletas: dict[str, dict], nome: str, acao: str, user: str) -> tu
             _clear(st, "sick", "out", "rejoin")
             save_state(state)
             db.audit(user, f"nlb_{acao}", nome)
-            return True, ("em manutencao: o RMon nao drena nem reingressa este no"
-                          if acao == "hold" else "liberado para a automacao")
+            return True, ("em manutenção: o RMon não tira nem devolve este servidor ao balanceamento"
+                          if acao == "hold" else "liberado para a automação")
         if acao not in ("drain", "rejoin"):
-            return False, "acao invalida"
+            return False, "ação inválida"
         vistas = views_from(inv, coletas, now)
         if acao == "drain":
             ok, motivo = floor_ok(vistas, nome, cfg)
@@ -852,7 +861,8 @@ def manual(inv, coletas: dict[str, dict], nome: str, acao: str, user: str) -> tu
         ok, detalhe = execute(servidores[nome], inv.winrm, acao)
         d = {"server": nome, "host": servidores[nome].host, "cluster": st.get("cluster"),
              "action": acao, "kind": acao, "by": user, "notify": True,
-             "msg": f"{'drenado' if acao == 'drain' else 'reingressado'} manualmente por {user}"}
+             "msg": (f"{'retirado do' if acao == 'drain' else 'devolvido ao'} balanceamento "
+                     f"manualmente por {user}")}
         state, _ = apply_result(state, d, ok, now, detalhe)
         st = state["nodes"][nome]
         st["hold"] = acao == "drain" if ok else st.get("hold")
@@ -860,6 +870,7 @@ def manual(inv, coletas: dict[str, dict], nome: str, acao: str, user: str) -> tu
             st["owned"] = False      # manutencao: nao e drenagem do RMon
         save_state(state)
         if not ok:
-            d["msg"] = f"{acao} manual por {user} FALHOU: {detalhe[:200]}"
+            d["msg"] = f"{ACAO_LABEL.get(acao, acao)} manual por {user} FALHOU: {detalhe[:200]}"
+
         _record(d, ok)
         return ok, detalhe or ("ok" if ok else "falhou")

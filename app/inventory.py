@@ -363,8 +363,8 @@ def _resumo_instalacao(base: str | None,
     atrasados = [(v, q) for v, q in linha if compare_versions(v, base) < 0]
     proprios = total - sum(q for _, q in linha)
     resumo = (f"{total} assemblies TOTVS: {na_base} na versao base, "
-              f"{acima} em patch mais novo, {sum(q for _, q in atrasados)} atras da base, "
-              f"{proprios} com versionamento proprio")
+              f"{acima} em patch mais novo, {sum(q for _, q in atrasados)} atrás da base, "
+              f"{proprios} com versionamento próprio")
     if not atrasados:
         return resumo, None
     atrasados.sort(key=lambda x: version_tuple(x[0]))
@@ -373,7 +373,7 @@ def _resumo_instalacao(base: str | None,
     residuo = {
         "name": NOME_RESIDUO, "version": mais_antiga, "publisher": "TOTVS",
         "install_date": None, "arch": None, "source": "rm",
-        "detail": (f"{quantos} arquivo(s) em {len(atrasados)} versao(oes) anteriores "
+        "detail": (f"{quantos} arquivo(s) em {len(atrasados)} versão(ões) anteriores "
                    f"a base (mais antiga: {mais_antiga})"),
     }
     return resumo, residuo
@@ -510,8 +510,8 @@ FONTE_LABEL = {"rm": "produto", "assembly": "biblioteca", "custom": "customizaca
 # Custom - sao dois itens de verdade, cada um na sua secao.
 GRUPO_LABEL = {
     "rm": "Produto RM",
-    "custom": "Customizacoes do cliente",
-    "assembly": "Bibliotecas e executaveis",
+    "custom": "Customizações do cliente",
+    "assembly": "Bibliotecas e executáveis",
     "registry": "Instaladores (registro do Windows)",
     "hotfix": "Hotfixes do Windows",
 }

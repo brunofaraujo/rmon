@@ -118,9 +118,9 @@
          proposito) fica ambar, nao vermelho */
       var grave = sv.bad === undefined ? true : sv.bad;
       t.push('<span class="tv-tag ' + (grave ? "bad" : "warn") + '"><span class="d"></span>' + esc(sv.n) + " " +
-        esc((sv.st || "").toLowerCase() === "not_found" ? "ausente" : "parado") + "</span>");
+        esc((sv.st || "").toLowerCase() === "not_found" ? "não encontrado" : "parado") + "</span>");
     }
-    if (s.app === false) { t.push('<span class="tv-tag bad">App fora do ar</span>'); }
+    if (s.app === false) { t.push('<span class="tv-tag bad">Aplicação RM sem resposta</span>'); }
     for (i = 0; i < s.disks.length; i++) {
       var dk = s.disks[i];
       if (dk.p >= th.disk - 12) {
@@ -128,9 +128,9 @@
           (dk.free !== null && dk.free !== undefined ? " &middot; " + dk.free + "GB" : "") + "</span>");
       }
     }
-    if (s.stale) { t.push('<span class="tv-tag warn">coleta ha ' + fmtAge(s.age) + "</span>"); }
+    if (s.stale) { t.push('<span class="tv-tag warn">última coleta há ' + fmtAge(s.age) + "</span>"); }
     if (s.events) {
-      t.push('<span class="tv-tag warn">' + s.events + " " + plural(s.events, "ocorrencia", "ocorrencias") + "</span>");
+      t.push('<span class="tv-tag warn">' + s.events + " " + plural(s.events, "erro no Windows", "erros no Windows") + "</span>");
     }
     var pre = familiaComum(s.svcs);
     var marcou = false;
@@ -150,7 +150,7 @@
     }
     if (s.app === true) {
       var lento = s.app_ms !== null && s.app_ms > th.app_ms_limit;
-      t.push('<span class="tv-tag ' + (lento ? "warn" : "good") + '">App ' +
+      t.push('<span class="tv-tag ' + (lento ? "warn" : "good") + '">Aplicação ' +
         (s.app_ms !== null && s.app_ms !== undefined ? s.app_ms + "ms" : "OK") + "</span>");
     }
     for (i = 0; i < s.disks.length; i++) {
@@ -169,10 +169,10 @@
   function rodapeHTML(s) {
     var t = [];
     if (s.jobs) {
-      if (s.jobs.err) { t.push('<span class="jb warn">jobs: erro SQL</span>'); }
+      if (s.jobs.err) { t.push('<span class="jb warn">jobs: banco do RM inacessível</span>'); }
       else {
         var falhou = s.jobs.failed > 0;
-        t.push('<span class="jb' + (falhou ? " warn" : "") + '">jobs ' + s.jobs.win + "min: " +
+        t.push('<span class="jb' + (falhou ? " warn" : "") + '">jobs ' + s.jobs.win + " min: " +
           s.jobs.ok + " ok" + (falhou ? " &middot; " + s.jobs.failed + " com erro" : "") + "</span>");
       }
       // Fila parada e outra historia: execucao presa ha tempo demais, ou com a
@@ -180,12 +180,12 @@
       // Fila apenas cheia (jobs em curso) nao entra - nem execucao orfa de host
       // reiniciado, que o backend ja separa e nao manda em `qs`.
       if (s.jobs.qs) {
-        t.push('<span class="jb warn">fila: ' + s.jobs.qs + " parada(s)" +
-          (s.jobs.qmin ? " ha " + s.jobs.qmin + "min" : "") + "</span>");
+        t.push('<span class="jb warn">fila parada: ' + s.jobs.qs + " job(s)" +
+          (s.jobs.qmin ? " há " + s.jobs.qmin + " min" : "") + "</span>");
       }
     }
     if (s.users !== null && s.users !== undefined) {
-      t.push("<span>" + s.users + " " + plural(s.users, "usuario", "usuarios") + "</span>");
+      t.push("<span>" + s.users + " " + plural(s.users, "usuário", "usuários") + "</span>");
     }
     return t.join("");
   }
@@ -197,21 +197,21 @@
     // janela de manutencao: o host pode estar fora de proposito (reboot,
     // atualizacao) e nao deve acender a TV do NOC
     var manut = s.manut ? " manut" : "";
-    if (s.manut) { estado = "manutencao"; }
-    var nome = String(s.name || "");
+    if (s.manut) { estado = "manutenção"; }
+    var nome = String(s.label || s.name || "");
     var cls = nome.length > 22 ? " extenso" : (nome.length > 15 ? " longo" : "");
     function head(pill) {
       return '<div class="tvc-hd"><span class="d"></span>' +
         '<div class="tvc-id"><span class="n' + cls + '">' + esc(nome) + "</span>" +
-        '<span class="ip">' + esc(s.host) + "</span></div>" +
+        '<span class="ip" title="' + esc(s.host) + '">' + esc(s.desc || s.host) + "</span></div>" +
         (pill ? '<span class="s">' + pill + "</span>" : "") + "</div>";
     }
 
     if (!s.up && s.manut) {
       return '<article class="tvc sev0 manut">' + head(estado) +
-        '<div class="tvc-down manut"><b>EM MANUTENCAO</b><span>ate ' + esc(s.manut) +
+        '<div class="tvc-down manut"><b>EM MANUTENÇÃO</b><span>até ' + esc(s.manut) +
         " &middot; sem coleta agora</span></div>" +
-        '<div class="tvc-ft"><span>ultima coleta ' + (s.ts ? "ha " + fmtAge(s.age) : "-") + "</span></div></article>";
+        '<div class="tvc-ft"><span>última coleta ' + (s.ts ? "há " + fmtAge(s.age) : "-") + "</span></div></article>";
     }
 
     if (!s.up) {
@@ -221,18 +221,18 @@
       // o bloco ja anuncia o estado: etiqueta so repetiria
       return '<article class="tvc sev' + (inst ? 1 : 2) + '">' + head("") +
         '<div class="tvc-down' + (inst ? " instavel" : "") + '"><b>' +
-        (inst ? "COLETA INSTAVEL" : "SEM CONTATO") + "</b><span>" +
-        esc(s.err || "servidor inacessivel") + "</span></div>" +
-        '<div class="tvc-ft alerta"><span>ultima coleta ' + (s.ts ? "ha " + fmtAge(s.age) : "-") + "</span></div></article>";
+        (inst ? "COLETA INSTÁVEL" : "SEM CONTATO") + "</b><span>" +
+        esc(s.err || "servidor inacessível") + "</span></div>" +
+        '<div class="tvc-ft alerta"><span>última coleta ' + (s.ts ? "há " + fmtAge(s.age) : "-") + "</span></div></article>";
     }
 
     var rod = rodapeHTML(s);
     // no cartao apertado o rodape so sobrevive se tiver algo a dizer
     var alerta = s.jobs && (s.jobs.err || s.jobs.failed > 0) ? " alerta" : "";
     return '<article class="tvc sev' + s.sev + manut + '">' + head(estado) +
-      '<div class="tvc-bars">' + barHTML("CPU", s.cpu, 90) + barHTML("MEM", s.mem, th.mem) + "</div>" +
+      '<div class="tvc-bars">' + barHTML("CPU", s.cpu, 90) + barHTML("Memória", s.mem, th.mem) + "</div>" +
       (mostraTags ? '<div class="tvc-tags">' + tagsHTML(s, th) + "</div>" : "") +
-      '<div class="tvc-ft' + alerta + '"><span class="up">uptime ' + fmtDur(s.uptime) + "</span>" +
+      '<div class="tvc-ft' + alerta + '"><span class="up">ligado há ' + fmtDur(s.uptime) + "</span>" +
       '<span class="jobs">' + rod + "</span>" +
       '<span class="hr">' + fmtClock(s.ts) + "</span></div>" +
       "</article>";
@@ -367,12 +367,12 @@
     var s = d.summary;
     var cls, txt;
     if (s.crit) { cls = "crit"; txt = s.crit + " " + plural(s.crit, "SERVIDOR EM FALHA", "SERVIDORES EM FALHA"); }
-    else if (s.warn) { cls = "warn"; txt = s.warn + " " + plural(s.warn, "SERVIDOR EM ATENCAO", "SERVIDORES EM ATENCAO"); }
+    else if (s.warn) { cls = "warn"; txt = s.warn + " " + plural(s.warn, "SERVIDOR PEDE ATENÇÃO", "SERVIDORES PEDEM ATENÇÃO"); }
     else { cls = "ok"; txt = "TUDO OPERACIONAL"; }
     el.status.className = "tv-status " + cls;
     el.status.innerHTML = '<span class="ring"></span><b>' + txt + "</b>" +
-      "<small>" + s.online + "/" + s.total + " online &middot; coleta a cada " + d.poll + "s" +
-      " &middot; atualizado " + fmtClock(d.ts) + "</small>";
+      "<small>" + s.online + " de " + s.total + " respondendo &middot; coleta a cada " + d.poll + " s" +
+      " &middot; atualizado às " + fmtClock(d.ts) + "</small>";
   }
 
   function kpi(cls, valor, rotulo) {
@@ -383,11 +383,11 @@
     var s = d.summary;
     el.kpis.innerHTML =
       kpi("", s.total, "Servidores") +
-      kpi(s.online === s.total ? "ok" : "", s.online, "Online") +
+      kpi(s.online === s.total ? "ok" : "", s.online, "Respondendo") +
       kpi(s.offline ? "bad" : "ok", s.offline, "Sem contato") +
-      kpi(s.services_down ? "bad" : "ok", s.services_down, "Servicos parados") +
-      kpi(s.events ? "warn" : "ok", s.events, "Ocorrencias 24h") +
-      (s.maint ? kpi("", s.maint, "Em manutencao") : "");
+      kpi(s.services_down ? "bad" : "ok", s.services_down, "Serviços parados") +
+      kpi(s.events ? "warn" : "ok", s.events, "Erros do Windows 24h") +
+      (s.maint ? kpi("", s.maint, "Em manutenção") : "");
   }
 
   function renderTicker() {
@@ -401,7 +401,7 @@
     if (!lista.length) {
       el.ticker.className = "tv-ticker ok";
       ico.textContent = "✔";
-      msg.innerHTML = "Todos os servicos monitorados estao operacionais.";
+      msg.innerHTML = "Todos os serviços monitorados estão funcionando.";
       cnt.textContent = "";
       return;
     }
@@ -443,7 +443,7 @@
         app_ms_limit: d.thresholds ? d.thresholds.app_ms : 3000
       };
       if (!d.servers.length) {
-        el.grid.innerHTML = '<div class="tv-empty">Nenhum servidor no inventario.</div>';
+        el.grid.innerHTML = '<div class="tv-empty">Nenhum servidor no inventário.</div>';
       } else {
         var html = "";
         for (var i = 0; i < d.servers.length; i++) { html += cardHTML(d.servers[i], th, mostraTags); }
@@ -503,8 +503,8 @@
   }
 
   // ------------------------------------------------------------- relogio
-  var DIAS = ["domingo", "segunda-feira", "terca-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sabado"];
-  var MESES = ["janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+  var DIAS = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+  var MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
     "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
 
   function relogio() {

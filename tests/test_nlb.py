@@ -59,7 +59,7 @@ def test_auth_sem_sessao_14_10():
     """srv06n na manha de 14/10: 7 a 18 logons autenticados, 0 sessoes."""
     v = no("n1", users=0, auth=7, sess=0)
     motivos = nlb.sick_reasons(v, [v] + saudaveis(), cfg())
-    assert any("autentica sem criar sessao" in m for m in motivos)
+    assert any("aceita o login mas não abre a sessão" in m for m in motivos)
 
 
 def test_criacao_parcial_13_10_17h():
@@ -77,7 +77,7 @@ def test_no_sem_1149_pego_pela_comparacao_com_os_pares():
     """O .188 nao registra o 1149: sobra o sinal 'ninguem entra aqui'."""
     v = no("n1", users=0, auth=0, sess=0)
     motivos = nlb.sick_reasons(v, [v] + saudaveis(), cfg())
-    assert any("nenhuma sessao aqui" in m for m in motivos)
+    assert any("nenhum usuário aqui" in m for m in motivos)
 
 
 def test_pares_quietos_nao_acusam_ninguem():
@@ -96,7 +96,7 @@ def test_rm_host_parado_e_commit_no_teto():
     v = no("n1", rm=False, commit=97)
     motivos = nlb.sick_reasons(v, [v] + saudaveis(), cfg())
     assert any("RM.Host fora do ar" in m for m in motivos)
-    assert any("commit" in m for m in motivos)
+    assert any("memória reservada" in m for m in motivos)
 
 
 def test_jobrunner_so_drena_se_ligado():
@@ -161,7 +161,7 @@ def test_drena_e_so_reingressa_depois_do_reboot():
     fora = no("n1", status=1009, users=0, auth=0, sess=0, uptime_min=3100, now=t2)
     d, st = rodar([fora] + saudaveis(t2), st, c, t2)
     assert d == []
-    assert any("sem reboot" in g for g in st["nodes"]["n1"]["rejoin_gaps"])
+    assert any("não reiniciou" in g for g in st["nodes"]["n1"]["rejoin_gaps"])
 
     # reiniciou (NLB guardou o estado parado): apto, espera 10 min e volta
     t3 = t2 + 30 * MIN
@@ -193,7 +193,7 @@ def test_reingresso_bloqueado_com_rm_host_parado_ou_commit_alto():
     c = cfg()
     v = no("n1", status=1005, rm=False, commit=90, uptime_min=60)
     falta = nlb.rejoin_gaps(v, {}, c)
-    assert any("RM.Host" in f for f in falta) and any("commit" in f for f in falta)
+    assert any("RM.Host" in f for f in falta) and any("memória reservada" in f for f in falta)
 
 
 def test_falha_ao_drenar_avisa_uma_vez_e_tenta_de_novo_depois():
@@ -228,7 +228,7 @@ def test_dois_nos_doentes_13_10_o_segundo_fica():
               no("n2", users=4, auth=27, sess=8, now=t2), no("n3", users=17, sess=8, now=t2)]
     d, st = rodar(vistas, st, c, t2)
     assert kinds(d) == ["blocked"] and d[0]["server"] == "n2"
-    assert "deixaria 1 no(s) ativo(s)" in d[0]["msg"]
+    assert "deixaria só 1 servidor(es)" in d[0]["msg"]
 
 
 def test_modo_alerta_simula_o_piso_para_o_segundo_doente():
@@ -271,7 +271,7 @@ def test_cooldown_entre_drenagens_automaticas():
     vistas = [no("n1", status=1009, users=0, auth=0, sess=0, now=t),
               no("n2", users=0, auth=9, sess=0, now=t), no("n3", users=17, sess=8, now=t)]
     d, _ = rodar(vistas, st, c, t)
-    assert kinds(d) == ["blocked"] and "cooldown" in d[0]["msg"]
+    assert kinds(d) == ["blocked"] and "intervalo mínimo" in d[0]["msg"]
 
 
 def test_flapping_vira_so_aviso():
@@ -279,7 +279,7 @@ def test_flapping_vira_so_aviso():
     st = {"nodes": {"n1": {"bad_since": T0, "drains": [T0 - 3600, T0 - 7200]}}}
     t = T0 + 20 * MIN
     d, _ = rodar(doente(t), st, c, t)
-    assert kinds(d) == ["blocked"] and "flapping" in d[0]["msg"]
+    assert kinds(d) == ["blocked"] and "instável" in d[0]["msg"]
 
 
 def test_manutencao_nao_e_tocada():
@@ -315,7 +315,7 @@ def test_fora_do_nlb_sem_dono_avisa_e_nao_reingressa_por_padrao():
     c = cfg(mode="auto")
     v = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=60, commit=10)
     d, st = rodar([v] + saudaveis(), {}, c, T0)
-    assert kinds(d) == ["out_unowned"] and "ja esta apto" in d[0]["msg"]
+    assert kinds(d) == ["out_unowned"] and "já está pronto para voltar" in d[0]["msg"]
     d, st = rodar([v] + saudaveis(), st, c, T0 + 30 * MIN)
     assert d == []
 
@@ -342,7 +342,7 @@ def test_drenagem_manual_respeita_o_piso():
     c = cfg()
     vistas = [no("n1"), no("n2", status=1005), no("n3")]
     ok, motivo = nlb.floor_ok(vistas, "n1", c)
-    assert not ok and "restariam 1" in motivo
+    assert not ok and "sobrariam só 1" in motivo
     ok, _ = nlb.floor_ok([no("n1"), no("n2"), no("n3")], "n1", c)
     assert ok
 
@@ -397,7 +397,7 @@ def test_sem_contato_e_elastic_mudo_reinicia_a_vm_na_terceira_coleta():
     d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3)
     assert kinds(d) == ["reset_unreachable"] and d[0]["action"] == "reset"
     assert d[0]["server"] == "n1" and d[0]["vm"] == "vm-n1" and d[0]["notify"]
-    assert "sem contato" in d[0]["msg"] and "nada ha 3min" in d[0]["msg"]
+    assert "sem contato" in d[0]["msg"] and "nada há 3min" in d[0]["msg"]
 
 
 def test_sem_contato_respeita_a_janela_configurada():
@@ -416,14 +416,14 @@ def test_elastic_ainda_recebendo_dados_nao_reinicia():
         d_i, st = rodar([mudo("n1", t, es_ts=t - 20)] + saudaveis(t), st, c, t)
         d += d_i
     assert kinds(d) == ["unreachable_alive"] and d[0]["action"] is None
-    assert "so o WinRM travou" in d[0]["msg"]
+    assert "só o WinRM travou" in d[0]["msg"]
 
 
 def test_elastic_fora_do_ar_nao_autoriza_reset():
     c = cfg(mode="auto")
     d, _ = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3, es_ok=False)
     assert kinds(d) == ["unreachable_crit"] and d[0]["action"] is None
-    assert "sem a confirmacao do Elastic" in d[0]["msg"]
+    assert "sem a confirmação do Elastic" in d[0]["msg"]
 
 
 def test_host_que_o_elastic_nunca_viu_nao_e_reiniciado():
@@ -438,7 +438,7 @@ def test_servidor_fisico_so_gera_alerta_critico():
     """.34 (HPE fisico, iLO sem rede): nao ha como reinicia-lo."""
     c = cfg(mode="auto")
     d, st = ciclos_sem_contato(c, conhecido(c), T0 + MIN, 3, vm=False)
-    assert kinds(d) == ["unreachable_crit"] and "servidor fisico" in d[0]["msg"]
+    assert kinds(d) == ["unreachable_crit"] and "servidor físico" in d[0]["msg"]
     t = T0 + 4 * MIN
     d, _ = rodar([mudo("n1", t, vm=False)] + saudaveis(t), st, c, t)
     assert d == []                                       # avisa uma vez por episodio
@@ -506,7 +506,7 @@ def test_dois_sem_contato_nenhum_e_reiniciado_pelo_piso():
         t = T0 + (i + 1) * MIN
         d, st = rodar([mudo("n1", t), mudo("n2", t), no("n3", users=17, sess=8, now=t)], st, c, t)
     assert kinds(d) == ["blocked", "blocked"]
-    assert all("deixaria 1 no(s) ativo(s)" in x["msg"] for x in d)
+    assert all("deixaria só 1 servidor(es)" in x["msg"] for x in d)
 
 
 def test_sem_contato_nao_depende_de_cooldown_nem_de_flapping_da_drenagem():
@@ -534,7 +534,7 @@ def test_vm_reiniciada_volta_fora_do_nlb_e_e_reingressada():
     t2 = t + 8 * MIN
     volta = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=4, commit=20, now=t2)
     d, st = rodar([volta] + saudaveis(t2), st, c, t2)
-    assert d == [] and "Windows no ar ha menos de 10min" in st["nodes"]["n1"]["rejoin_gaps"][0]
+    assert d == [] and "ligado há menos de 10 min" in st["nodes"]["n1"]["rejoin_gaps"][0]
     t3 = t2 + 20 * MIN
     volta = no("n1", status=1005, users=0, auth=0, sess=0, uptime_min=24, commit=20, now=t3)
     d, st = rodar([volta] + saudaveis(t3), st, c, t3)
@@ -679,4 +679,4 @@ def test_agente_do_elastic_ja_parado_antes_nao_confirma_reset():
     st = {"nodes": {"n1": {"last_status": 1007, "cluster": "vip", "host_id": 1,
                            "es_last": T0 - 3 * 86400}}}
     d, _ = ciclos_sem_contato(c, st, T0, 3)
-    assert kinds(d) == ["unreachable_crit"] and "ja nao recebia dados" in d[0]["msg"]
+    assert kinds(d) == ["unreachable_crit"] and "já não recebia dados" in d[0]["msg"]

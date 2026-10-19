@@ -1,17 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Catalogo de versoes - RMonitor{% endblock %}
+{% block title %}Catálogo de versões - RMonitor{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Versoes disponiveis</h1>
+    <h1>Versões disponíveis</h1>
     <div class="sub">
-      o que ja foi baixado do TDN &middot; repositorio: <code>{{ pasta }}</code>
+      o que já foi baixado do TDN &middot; repositório: <code>{{ pasta }}</code>
     </div>
   </div>
   <div class="pills">
-    <a class="btn" href="/pacotes">&#8592; Inventario</a>
+    <a class="btn" href="/pacotes">&#8592; Inventário</a>
     <form method="post" action="/pacotes/catalogo/varrer" style="display:inline">
-      <button class="btn primary" type="submit">&#8635; Ler repositorio</button>
+      <button class="btn primary" type="submit">&#8635; Ler repositório</button>
     </form>
   </div>
 </div>
@@ -19,23 +19,23 @@
 {% if flash %}<div class="alert info small">{{ flash }}</div>{% endif %}
 
 <div class="alert info small">
-  O RMon <b>nao acessa o TDN</b>: automatizar login no portal com a credencial de
-  alguem seria fragil e inseguro. Baixar o pacote ja e a declaracao de que aquela
-  versao existe &mdash; coloque o arquivo em <code>{{ pasta }}</code> e ele vira
-  "disponivel" aqui. A versao sai do nome do arquivo
+  O RMon <b>não acessa o TDN</b>: automatizar login no portal com a credencial de
+  alguém seria frágil e inseguro. Baixar o pacote já é a declaração de que aquela
+  versão existe &mdash; coloque o arquivo em <code>{{ pasta }}</code> e ele vira
+  "disponível" aqui. A versão sai do nome do arquivo
   (ex.: <code>TOTVS_CES_RM_Office365_CNI_12.1.2602.002.exe</code>).
 </div>
 
 <div class="panel">
-  <h2>Repositorio <span class="muted small">({{ catalogo|selectattr('origin','equalto','repo')|list|length }} arquivo(s))</span></h2>
+  <h2>Repositório <span class="muted small">({{ catalogo|selectattr('origin','equalto','repo')|list|length }} arquivo(s))</span></h2>
   {% set repo = catalogo|selectattr('origin','equalto','repo')|list %}
   {% if not repo %}
     <div class="muted small">Nenhum pacote reconhecido em <code>{{ pasta }}</code>.</div>
   {% else %}
   <div class="table-wrap"><table class="tbl">
     <thead><tr>
-      <th>Produto</th><th>Disponivel</th><th>Instalado (maior do parque)</th>
-      <th>Item do inventario</th><th>Arquivo</th>
+      <th>Produto</th><th>Disponível</th><th>Instalado (maior versão entre os servidores)</th>
+      <th>Item do inventário</th><th>Arquivo</th>
     </tr></thead>
     <tbody>
       {% for e in repo %}
@@ -47,7 +47,7 @@
           <form method="post" action="/pacotes/catalogo/vincular" class="inline-form">
             <input type="hidden" name="produto" value="{{ e.produto }}">
             <select name="pkg_key" class="input small-select">
-              <option value="">(sem vinculo)</option>
+              <option value="">(sem vínculo)</option>
               {% for i in itens %}
               <option value="{{ i.key }}" {{ 'selected' if i.key == e.pkg_key else '' }}>{{ i.name }}</option>
               {% endfor %}
@@ -61,8 +61,8 @@
     </tbody>
   </table></div>
   <div class="muted small" style="margin-top:.6rem">
-    Sem vinculo, o pacote nao vira "disponivel" na matriz. O vinculo e por produto,
-    nao por arquivo: vale tambem para a proxima versao do mesmo pacote.
+    Sem vínculo, o pacote não vira "disponível" na matriz. O vínculo é por produto,
+    não por arquivo: vale também para a próxima versão do mesmo pacote.
   </div>
   {% endif %}
 </div>
@@ -70,31 +70,31 @@
 <div class="panel">
   <h2>Registro manual</h2>
   <p class="muted small">
-    Para o que o nome do arquivo nao revela, ou para marcar uma versao como alvo
+    Para o que o nome do arquivo não revela, ou para marcar uma versão como alvo
     antes de baixar.
   </p>
   <form method="post" action="/pacotes/catalogo/manual" class="toolbar">
     <input class="input" type="text" name="produto" placeholder="Produto (ex.: BibliotecaRM)" required>
-    <input class="input" type="text" name="version" placeholder="Versao (ex.: 12.1.2606.120)" required>
+    <input class="input" type="text" name="version" placeholder="Versão (ex.: 12.1.2606.120)" required>
     <select name="pkg_key" class="input">
       <option value="">(vincular depois)</option>
       {% for i in itens %}<option value="{{ i.key }}">{{ i.name }}</option>{% endfor %}
     </select>
     <input class="input" type="url" name="url" placeholder="Link do TDN (opcional)">
-    <input class="input" type="text" name="nota" placeholder="Observacao (opcional)">
+    <input class="input" type="text" name="nota" placeholder="Observação (opcional)">
     <button class="btn primary" type="submit">Registrar</button>
   </form>
 
   {% set manual = catalogo|selectattr('origin','equalto','manual')|list %}
   {% if manual %}
   <div class="table-wrap"><table class="tbl">
-    <thead><tr><th>Produto</th><th>Versao</th><th>Item</th><th>Link</th><th>Nota</th><th></th></tr></thead>
+    <thead><tr><th>Produto</th><th>Versão</th><th>Item</th><th>Link</th><th>Nota</th><th></th></tr></thead>
     <tbody>
       {% for e in manual %}
       <tr>
         <td><b>{{ e.produto }}</b></td>
         <td class="mono">{{ e.version }}</td>
-        <td class="muted small">{{ e.pkg_key or '(sem vinculo)' }}</td>
+        <td class="muted small">{{ e.pkg_key or '(sem vínculo)' }}</td>
         <td class="muted small">{% if e.url %}<a href="{{ e.url }}" target="_blank" rel="noopener noreferrer">TDN</a>{% endif %}</td>
         <td class="muted small">{{ e.nota or '' }}</td>
         <td>

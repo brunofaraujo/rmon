@@ -14,9 +14,9 @@
     <input class="input" type="email" name="email" value="{{ u.email or '' }}" style="width:100%;margin:.3rem 0 .8rem">
     <label class="muted small">Login</label>
     <input class="input" type="text" value="{{ u.username }}" disabled style="width:100%;margin:.3rem 0 .8rem;opacity:.7">
-    <label class="muted small">Papel</label>
-    <div style="margin:.4rem 0 1rem"><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span>
-      <span class="faint small">(alterado por um administrador)</span></div>
+    <label class="muted small">Perfil</label>
+    <div style="margin:.4rem 0 1rem"><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ 'Administrador' if u.role == 'admin' else 'Somente leitura' }}</span>
+      <span class="faint small">(só um administrador pode mudar)</span></div>
     <button type="submit" class="btn primary">Salvar</button>
   </form>
 </div>

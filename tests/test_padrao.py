@@ -27,7 +27,7 @@ def test_o_caso_do_188():
     p = scheduler.padrao_cluster([no("app-34"), no("app-188", sl=0, u1149=None), no("app-190", u1149=40)])
     assert set(p) == {"app-188"}
     texto = p["app-188"]["PADRAO:1149"]
-    assert "app-34, app-190 grava" in texto and "SecurityLayer do RDP = 0 (RDP nativo, sem TLS)" in texto
+    assert "app-34, app-190 registra" in texto and "SecurityLayer do RDP = 0 (RDP nativo, sem TLS)" in texto
     # a causa vai junto no mesmo aviso, nao em dois
     assert "PADRAO:security_layer" not in p["app-188"]
 
@@ -38,8 +38,8 @@ def test_188_ja_corrigido_sem_teste_da_porta():
     texto = p["app-188"]["PADRAO:1149"]
     # sem o teste da porta 3389 nao da para prometer que some sozinho
     assert "Causa" not in texto
-    assert "registro ja e 1 (Negociar), igual aos outros nos" in texto
-    assert "ainda nao conseguiu testar" in texto and "some sozinho" not in texto
+    assert "registro já é 1 (Negociar), igual aos outros servidores" in texto
+    assert "ainda não conseguiu testar" in texto and "some sozinho" not in texto
 
 
 def test_188_tls_recusado_pela_criptografia_baixa():
@@ -50,8 +50,8 @@ def test_188_tls_recusado_pela_criptografia_baixa():
                                   no("app-190", u1149=40, rdp_tls=True, min_encryption=2)])
     assert set(p) == {"app-188"} and set(p["app-188"]) == {"PADRAO:1149"}
     texto = p["app-188"]["PADRAO:1149"]
-    assert "Causa: o SecurityLayer do RDP ja e 1 (Negociar), mas o RDP deste no recusa TLS" in texto
-    assert "criptografia do RDP e 1 (Baixo)" in texto and "SetEncryptionLevel(2)" in texto
+    assert "Causa: a segurança do RDP (SecurityLayer) já é 1 (Negociar), mas o RDP deste servidor recusa TLS" in texto
+    assert "criptografia do RDP é 1 (Baixo)" in texto and "SetEncryptionLevel(2)" in texto
     assert "some sozinho" not in texto
 
 
@@ -69,7 +69,7 @@ def test_tls_recusado_acusa_mesmo_gravando_1149():
 def test_corrigido_e_em_vigor_aguarda_o_primeiro_logon():
     p = scheduler.padrao_cluster([no("app-34"), no("app-188", u1149=None, rdp_tls=True), no("app-190")])
     texto = p["app-188"]["PADRAO:1149"]
-    assert "ja aceita TLS" in texto and "primeiro logon RDP novo" in texto
+    assert "já aceita TLS" in texto and "primeiro login novo" in texto
 
 
 def test_configuracao_diferente_mesmo_gravando():
@@ -114,16 +114,16 @@ def test_agente_do_elastic_parado_enquanto_os_outros_mandam():
     nomes = {"a": "ha", "b": "hb", "c": "hc"}
     p = scheduler.padrao_cluster(coletas, {"ha": AGORA - 5, "hb": AGORA - 3600}, nomes, True, AGORA)
     assert set(p) == {"b", "c"}
-    assert "desde" in p["b"]["PADRAO:elastic"] and "ultimos 15 min" in p["c"]["PADRAO:elastic"]
+    assert "desde" in p["b"]["PADRAO:elastic"] and "últimos 15 min" in p["c"]["PADRAO:elastic"]
     # Elastic inteiro calado (ou desligado): ninguem e acusado
     assert scheduler.padrao_cluster(coletas, {"hb": AGORA - 3600}, nomes, True, AGORA) == {}
     assert scheduler.padrao_cluster(coletas, {"ha": AGORA}, nomes, False, AGORA) == {}
 
 
 def test_divergencia_vira_aviso_que_notifica():
-    r = {"reachable": True, "padrao": {"PADRAO:1149": "nao grava o 1149"}}
+    r = {"reachable": True, "padrao": {"PADRAO:1149": "não grava o 1149"}}
     p = scheduler.problems(r, dict(DEFAULT_ALERTS))
-    assert p == {"PADRAO:1149": "nao grava o 1149"}
+    assert p == {"PADRAO:1149": "não grava o 1149"}
     assert not scheduler.critico("PADRAO:1149") and scheduler.notifica("PADRAO:1149")
 
 
@@ -132,16 +132,16 @@ def test_pagina_e_faixa_mostram_quem_esta_fora(app_falso):  # noqa: F811
     srv.nlb = True
     app_falso.estado.coletas = [coleta(nlb={"status": 1008, "cluster": "vip", "security_layer": 0, "nla": 0,
                                             "ultimo_1149_min": None},
-                                       padrao={"PADRAO:1149": "nao grava o evento 1149 (RDP autenticado)"})]
+                                       padrao={"PADRAO:1149": "não grava o evento 1149 (RDP autenticado)"})]
     fontes.registrar([(srv, coleta())], {}, {}, False, time.time())
     fontes.registrar_padrao({"app-34": {"PADRAO:1149": "x"}})
     app_falso.entrar()
     html = app_falso.c.get("/fontes").text
-    assert "1 divergencia(s) do padrao" in html and "Fora do padrao: evento 1149" in html
-    assert "<b>nenhum no log</b>" in html and "0 <span class=\"small\">(RDP nativo, sem TLS)</span>" in html
-    assert "fora do padrao</span>" in html
+    assert "1 diferença(s) encontrada(s)" in html and "Configuração diferente: registro de login do RDP" in html
+    assert "<b>nenhum no log</b>" in html and "RDP nativo, sem TLS <span class=\"faint small\">(0)</span>" in html
+    assert "diferente dos outros</span>" in html
     html = app_falso.c.get("/").text
-    assert "1 servidor(es) fora do padrao de coleta" in html and "(app-34)" in html
+    assert "1 servidor(es) com configuração diferente dos outros" in html and "(app-34)" in html
 
 
 def test_pagina_mostra_tls_recusado(app_falso):  # noqa: F811
@@ -149,11 +149,11 @@ def test_pagina_mostra_tls_recusado(app_falso):  # noqa: F811
     srv.nlb = True
     app_falso.estado.coletas = [coleta(nlb={"status": 1008, "cluster": "vip", "security_layer": 1, "nla": 0,
                                             "ultimo_1149_min": None, "rdp_tls": False, "min_encryption": 1},
-                                       padrao={"PADRAO:1149": "nao grava o evento 1149"})]
+                                       padrao={"PADRAO:1149": "não grava o evento 1149"})]
     app_falso.entrar()
     html = app_falso.c.get("/fontes").text
-    assert "TLS em vigor (porta 3389)" in html
-    assert "<b>recusa</b> <span class=\"small\">(criptografia 1, Baixo: so RDP nativo)</span>" in html
+    assert "Aceita TLS na porta 3389" in html
+    assert "<b>não</b> <span class=\"small\">(criptografia no nível 1, Baixo: só RDP nativo)</span>" in html
 
 
 class _Sock:

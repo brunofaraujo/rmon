@@ -1,24 +1,25 @@
 {% extends "base.html" %}
-{% block title %}{{ name }} - RMonitor{% endblock %}
+{% block title %}{{ name | nome }} - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
+{% set titulo = name | nome %}
 <div class="page-head">
   <div>
     <h1 style="display:flex;align-items:center;gap:.6rem">
-      <span class="status-dot {{ 'up' if current and current.reachable else 'down' }}"></span>{{ name }}
+      <span class="status-dot {{ 'up' if current and current.reachable else 'down' }}"></span>{{ titulo }}
     </h1>
-    <div class="sub">{{ current.ts | dt if current else '-' }}</div>
+    <div class="sub">{{ descricao(name) or 'sem papel definido' }}{% if ip_de(name) %} &middot; <span class="mono">{{ ip_de(name) }}</span>{% endif %}{% if current %} &middot; última coleta {{ current.ts | dt }}{% endif %}</div>
   </div>
   <a class="btn" href="/">&larr; Painel</a>
 </div>
 
 {% set fsrv = fonte_do_servidor(name) %}
 {% if fsrv %}
-<div class="src-faixa" title="De onde veio cada dado desta tela no ultimo ciclo de coleta">
-  <span class="faint small">Fontes desta tela:</span>
-  <span class="src-tag winrm">WinRM</span><span class="small">{{ 'coleta ok' if fsrv.winrm_ok else 'sem resposta' }}: metricas, servicos, discos, broker{% if fsrv.jobrunner == 'winrm' %}, JobRunner atual{% endif %}</span>
+<div class="src-faixa" title="De onde veio cada dado desta tela na última coleta">
+  <span class="faint small">Origem dos dados desta tela:</span>
+  <span class="src-tag winrm">WinRM</span><span class="small">{{ 'respondeu' if fsrv.winrm_ok else 'sem resposta' }}: processador, memória, serviços, discos e broker{% if fsrv.jobrunner == 'winrm' %}, processos de job agora{% endif %}</span>
   {% if fsrv.jobrunner == 'elastic' or fsrv.elastic_host %}
-  <span class="src-tag elastic">Elastic</span><span class="small">{% if fsrv.elastic_visto %}agente {{ fsrv.elastic_host }}{% else %}{{ fsrv.elastic_host }} sem dados{% endif %}: historico do JobRunner{% if fsrv.jobrunner == 'elastic' %}, JobRunner atual{% endif %}{% if fsrv.nlb_auth == 'elastic' or fsrv.nlb_sess == 'elastic' %}, contagens de RDP do NLB{% endif %}</span>
+  <span class="src-tag elastic">Elastic</span><span class="small">{% if fsrv.elastic_visto %}agente {{ fsrv.elastic_host }}{% else %}{{ fsrv.elastic_host }} sem dados{% endif %}: histórico dos processos de job{% if fsrv.jobrunner == 'elastic' %}, processos de job agora{% endif %}{% if fsrv.nlb_auth == 'elastic' or fsrv.nlb_sess == 'elastic' %}, contagem de acessos do balanceamento{% endif %}</span>
   {% endif %}
   <a class="small" href="/fontes">ver todas</a>
 </div>
@@ -26,14 +27,14 @@
 {% if flash %}<div class="alert ok">{{ flash }}</div>{% endif %}
 {% if manut %}
 <div class="alert info" style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
-  <span>&#128295; <b>Em manutencao ate {{ manut.ate | dt }}</b> &middot; aberta por {{ manut.por }}{% if manut.motivo %}: {{ manut.motivo }}{% endif %}.
-    Os alertas deste host seguem registrados, mas nao notificam; o NLB nao mexe no no. No fim sai um resumo do que ficou aberto.</span>
+  <span>&#128295; <b>Em manutenção até {{ manut.ate | dt }}</b> &middot; aberta por {{ manut.por }}{% if manut.motivo %}: {{ manut.motivo }}{% endif %}.
+    Os alertas deste servidor continuam registrados, mas não são enviados, e o balanceamento não mexe nele. No fim sai um resumo do que ficou aberto.</span>
   <form method="post" action="/manutencao/iniciar" style="display:flex;gap:.4rem;align-items:center">
     <input type="hidden" name="server" value="{{ name }}"><input type="hidden" name="motivo" value="{{ manut.motivo }}">
-    <select class="input" name="minutos" title="Nova duracao, contada a partir de agora">
-      <option value="30">30 min</option><option value="60" selected>1 h</option><option value="120">2 h</option><option value="240">4 h</option>
+    <select class="input" name="minutos" title="Nova duração, contada a partir de agora">
+      <option value="30">30 min</option><option value="60" selected>1 hora</option><option value="120">2 horas</option><option value="240">4 horas</option>
     </select>
-    <button type="submit" class="btn small" title="A janela passa a terminar daqui a esse tempo">Renovar</button>
+    <button type="submit" class="btn small" title="A manutenção passa a terminar daqui a esse tempo">Prorrogar</button>
   </form>
   <form method="post" action="/manutencao/encerrar">
     <input type="hidden" name="server" value="{{ name }}">
@@ -42,21 +43,21 @@
 </div>
 {% else %}
 <details class="grupo">
-  <summary>&#128295; <b>Manutencao</b> <span class="muted small">&middot; calar os alertas deste host durante reboot, atualizacao ou troca de hardware</span></summary>
+  <summary>&#128295; <b>Colocar em manutenção</b> <span class="muted small">&middot; silencia os alertas deste servidor durante reboot, atualização ou troca de hardware</span></summary>
   <div class="panel">
     <form method="post" action="/manutencao/iniciar" style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap">
       <input type="hidden" name="server" value="{{ name }}">
-      <div><label class="muted small">Duracao</label><br>
+      <div><label class="muted small">Duração</label><br>
         <select class="input" name="minutos">
-          <option value="30">30 min</option><option value="60" selected>1 h</option><option value="120">2 h</option>
-          <option value="240">4 h</option><option value="480">8 h</option><option value="1440">24 h</option>
+          <option value="30">30 min</option><option value="60" selected>1 hora</option><option value="120">2 horas</option>
+          <option value="240">4 horas</option><option value="480">8 horas</option><option value="1440">24 horas</option>
         </select></div>
       <div style="flex:1;min-width:220px"><label class="muted small">Motivo</label><br>
-        <input class="input" name="motivo" maxlength="200" placeholder="ex.: atualizacao do RM 12.1.2410" style="width:100%"></div>
-      <button type="submit" class="btn primary">Calar alertas</button>
+        <input class="input" name="motivo" maxlength="200" placeholder="ex.: atualização do RM 12.1.2410" style="width:100%"></div>
+      <button type="submit" class="btn primary">Silenciar alertas</button>
     </form>
-    <p class="faint small" style="margin:.6rem 0 0">A coleta continua e tudo fica no historico. Nenhuma transicao deste host notifica, nem os lembretes;
-      o NLB trata o no como em hold. Quando a janela acaba (ou voce encerra), sai <b>uma</b> mensagem dizendo o que seguiu aberto.</p>
+    <p class="faint small" style="margin:.6rem 0 0">A coleta continua e tudo fica no histórico, mas nada deste servidor é enviado ao Slack/Telegram, nem os lembretes;
+      o balanceamento não tira nem devolve o servidor. Quando a manutenção acaba (ou você encerra), sai <b>uma</b> mensagem com o que seguiu aberto.</p>
   </div>
 </details>
 {% endif %}
@@ -64,15 +65,15 @@
 {% macro painel_elastic() %}
 {% if es %}
 <div class="panel">
-  <h2 style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">Memoria do maior JobRunner
+  <h2 style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">Memória do maior processo de job (JobRunner)
     <span class="src-tag elastic">Elastic</span>
-    <span class="muted small">(historico do Elasticsearch &middot; host {{ es.nome }})</span>
-    <span class="pills" style="margin-left:auto">{% for h, rot in [(24, '24h'), (168, '7 dias'), (720, '30 dias')] %}<a class="pill chip-link {{ 'green' if es.horas == h else '' }}" href="?jr_h={{ h }}">{{ rot }}</a>{% endfor %}</span></h2>
+    <span class="muted small">histórico guardado no Elasticsearch</span>
+    <span class="pills" style="margin-left:auto">{% for h, rot in [(24, '24 horas'), (168, '7 dias'), (720, '30 dias')] %}<a class="pill chip-link {{ 'green' if es.horas == h else '' }}" href="?jr_h={{ h }}">{{ rot }}</a>{% endfor %}</span></h2>
   {% if es.graf %}
   {% set g = es.graf %}
   <svg class="es-graf" viewBox="0 0 {{ g.w }} {{ g.h }}" preserveAspectRatio="none" role="img"
-       aria-label="Memoria privada do maior RM.Host.JobRunner: pico de {{ g.pico_gb }} GB">
-    {% if g.critico_y is not none %}<line class="lim crit" x1="0" x2="{{ g.w }}" y1="{{ g.critico_y }}" y2="{{ g.critico_y }}"><title>critico: {{ jr_limite_gb }} GB</title></line>{% endif %}
+       aria-label="Memória do maior processo de job: pico de {{ g.pico_gb }} GB">
+    {% if g.critico_y is not none %}<line class="lim crit" x1="0" x2="{{ g.w }}" y1="{{ g.critico_y }}" y2="{{ g.critico_y }}"><title>crítico: {{ jr_limite_gb }} GB</title></line>{% endif %}
     {% if g.aviso_y is not none %}<line class="lim aviso" x1="0" x2="{{ g.w }}" y1="{{ g.aviso_y }}" y2="{{ g.aviso_y }}"><title>aviso: {{ jr_aviso_gb }} GB</title></line>{% endif %}
     <polygon class="area" points="{{ g.area }}"/>
     <polyline class="linha" points="{{ g.linha }}" vector-effect="non-scaling-stroke"/>
@@ -81,29 +82,29 @@
   <div class="muted small" style="display:flex;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
     <span>{{ g.t0 | dt }}</span>
     <span>pico de <b class="{{ 'txt-red' if jr_limite_gb and g.pico_gb >= jr_limite_gb else ('txt-amber' if jr_aviso_gb and g.pico_gb >= jr_aviso_gb else '') }}">{{ g.pico_gb }} GB</b>
-      (PID {{ g.pico_pid }}) em {{ g.pico_t | dt }} &middot; linhas: aviso {{ jr_aviso_gb }} GB, critico {{ jr_limite_gb }} GB</span>
+      (PID {{ g.pico_pid }}) em {{ g.pico_t | dt }} &middot; linhas tracejadas: aviso em {{ jr_aviso_gb }} GB, crítico em {{ jr_limite_gb }} GB</span>
     <span>{{ g.t1 | dt }}</span>
   </div>
   {% else %}
-  <div class="alert ok small">Nenhum JobRunner entre os maiores processos do host nesse periodo. O Elastic so guarda os processos do topo de memoria/CPU: quieto e bom sinal.</div>
+  <div class="alert ok small">Nenhum processo de job entre os que mais usaram memória neste período &mdash; bom sinal. O Elastic só guarda os processos que mais consomem memória e processador.</div>
   {% endif %}
-  <div class="faint small" style="margin-top:.4rem">Agente do Elastic neste host:
-    {% if es.fresco %}ultima metrica ha {{ [es.idade, 0] | max | int }}s
-    {% elif es.visto %}<span class="txt-amber">sem dados desde {{ es.visto | dt }}: o agente parou. A serie e as contagens de RDP voltam para o WinRM.</span>
-    {% else %}<span class="txt-amber">sem dados nos ultimos 7 dias (agente parado ou host sem agente).</span>{% endif %}
+  <div class="faint small" style="margin-top:.4rem">Agente do Elastic neste servidor:
+    {% if es.fresco %}último dado há {{ [es.idade, 0] | max | int }} s
+    {% elif es.visto %}<span class="txt-amber">sem dados desde {{ es.visto | dt }}: o agente parou. O histórico e a contagem de acessos voltam a vir só do WinRM.</span>
+    {% else %}<span class="txt-amber">sem dados nos últimos 7 dias (agente parado ou não instalado).</span>{% endif %}
     {% if es.erro %}&middot; <span class="txt-red">Elasticsearch com erro agora: {{ es.erro }}</span>{% endif %}</div>
 </div>
 {% endif %}
 {% endmacro %}
 
 {% if not current %}
-  <div class="alert">Sem dados para este servidor ainda.</div>
+  <div class="alert">Ainda não há dados deste servidor.</div>
 {% elif not current.reachable %}
-  <div class="alert">Sem contato via WinRM. Ultimo erro: {{ current.error }}</div>
+  <div class="alert">Sem contato com o servidor (WinRM). Último erro: {{ current.error }}</div>
   {% set jr = current.jobrunners %}
   {% if jr and jr.fonte == 'elastic' %}
   <div class="panel">
-    <h2>JobRunner do RM <span class="src-tag elastic">Elastic</span> <span class="muted small">(o WinRM nao responde: leitura do Elasticsearch)</span></h2>
+    <h2>Processos de job do RM (JobRunner) <span class="src-tag elastic">Elastic</span> <span class="muted small">o WinRM não responde: leitura do Elasticsearch</span></h2>
     <div class="pills">
       {% for p in jr.top %}
       {% set gb = (p.private_mb or 0) / 1024 %}
@@ -117,7 +118,7 @@
       {% for msg in jr_alerta.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
     </div>
     {% endif %}
-    <div class="muted small" style="margin-top:.4rem">Sem WinRM nao da para encerrar o processo daqui: cancele o job no RM (Gerenciamento de Jobs) ou atue no host.</div>
+    <div class="muted small" style="margin-top:.4rem">Sem WinRM não dá para encerrar o processo daqui: cancele o job no RM (Gerenciamento de Jobs) ou atue direto no servidor.</div>
   </div>
   {% endif %}
   {{ painel_elastic() }}
@@ -129,30 +130,30 @@
   <div class="panel">
     <div class="stat-row">
       <div class="stat">
-        <div class="v">{{ cpu }}%</div><div class="k">CPU</div>
+        <div class="v">{{ cpu }}%</div><div class="k">Processador</div>
         <div class="bar" style="margin-top:.5rem"><span class="{{ 'crit' if cpu>=90 else 'warn' if cpu>=75 else '' }}" style="width:{{ cpu }}%"></span></div>
       </div>
       <div class="stat">
-        <div class="v">{{ mem }}%</div><div class="k">Memoria</div>
+        <div class="v">{{ mem }}%</div><div class="k">Memória</div>
         <div class="bar" style="margin-top:.5rem"><span class="{{ 'crit' if mem>=90 else 'warn' if mem>=75 else '' }}" style="width:{{ mem }}%"></span></div>
       </div>
-      <div class="stat"><div class="v" style="font-size:1.1rem">{{ d.uptime_sec | dur }}</div><div class="k">Uptime</div></div>
-      <a class="stat" href="/sessions?server={{ name }}" title="Abrir a lista de sessoes deste servidor">
+      <div class="stat"><div class="v" style="font-size:1.1rem">{{ d.uptime_sec | dur }}</div><div class="k">Ligado há</div></div>
+      <a class="stat" href="/sessions?server={{ name }}" title="Abrir a lista de sessões deste servidor">
         <div class="v">&#128100; {{ d.users_count if d.users_count is not none else '-' }}</div>
-        <div class="k">Usuarios logados &middot; <span class="txt-accent">ver sessoes</span></div></a>
+        <div class="k">Usuários conectados &middot; <span class="txt-accent">ver sessões</span></div></a>
       {% if d.app_ok is not none %}
-      <div class="stat"><div class="v {{ 'txt-green' if d.app_ok else 'txt-red' }}">{{ 'OK' if d.app_ok else 'FALHA' }}</div><div class="k">App RM {% if d.app_ms is not none %}&middot; {{ d.app_ms }}ms{% endif %}</div></div>
+      <div class="stat" title="Teste HTTP no endereço da aplicação RM"><div class="v {{ 'txt-green' if d.app_ok else 'txt-red' }}" style="font-size:1.1rem">{{ 'Respondendo' if d.app_ok else 'Sem resposta' }}</div><div class="k">Aplicação RM {% if d.app_ms is not none %}&middot; {{ d.app_ms }} ms{% endif %}</div></div>
       {% endif %}
       {% if d.jobs and not d.jobs.error %}
-      <a class="stat" href="/jobs?min={{ d.jobs.window_min }}" title="Abrir o centro de jobs nesta janela">
-        <div class="v">{{ d.jobs.ok }} <span class="txt-amber" style="font-size:1.1rem">/ {{ d.jobs.failed }}&#10007;</span></div>
-        <div class="k">Jobs {{ d.jobs.window_min }}min (ok/erro) &middot; {{ d.jobs.total }} total</div></a>
+      <a class="stat" href="/jobs?min={{ d.jobs.window_min }}" title="Abrir a tela de jobs nesta janela">
+        <div class="v">{{ d.jobs.ok }} <span class="txt-amber" style="font-size:1.1rem">/ {{ d.jobs.failed }} com erro</span></div>
+        <div class="k">Jobs concluídos nos últimos {{ d.jobs.window_min }} min &middot; {{ d.jobs.total }} no total</div></a>
       {% set fila = d.jobs.queue or {} %}
       {% if fila and fila.get('pending') is not none %}
       {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
-      <a class="stat" href="/jobs" title="Fila viva: em andamento + presas + esperando pickup. Execucao orfa de host reiniciado ({{ fila.orphans or 0 }}) fica de fora.">
+      <a class="stat" href="/jobs" title="Fila viva: em andamento + presas + esperando para começar. Execução abandonada por servidor reiniciado ({{ fila.orphans or 0 }}) fica de fora.">
         <div class="v {{ 'txt-red' if presas else '' }}">{{ fila.pending }}</div>
-        <div class="k">Na fila{% if presas %} &middot; {{ presas }} parada(s){% if fila.oldest_min is not none %} ha {{ fila.oldest_min }}min{% endif %}{% endif %}</div></a>
+        <div class="k">Jobs na fila{% if presas %} &middot; {{ presas }} parado(s){% if fila.oldest_min is not none %} há {{ fila.oldest_min }} min{% endif %}{% endif %}</div></a>
       {% endif %}
       {% elif d.jobs and d.jobs.error %}
       <a class="stat" href="/jobs"><div class="v txt-amber" style="font-size:1rem">sem leitura</div><div class="k">Jobs &middot; {{ d.jobs.error }}</div></a>
@@ -161,29 +162,46 @@
   </div>
 
   <div class="panel">
+    <h2>Serviços monitorados</h2>
+    <div class="pills">
+      {% for s in d.services %}{% set running = s.status == 'Running' %}{% set down = svc_down(s) %}<span class="svc">
+        <span class="pill {{ 'green' if running else ('amber' if s.src == 'agente' or not down else 'red') }}" title="{{ s.name }}{% if s.src == 'agente' %} &middot; agente de coleta: o RMon sobe sozinho{% endif %}{% if s.start %} &middot; início {{ svc_inicio(s.start) }}{% endif %}{% if s.src == 'auto' %} &middot; encontrado pelo padrão {{ s.pattern }}{% endif %}"><span class="d"></span>{{ svc_nome(s.name) }}: {{ svc_status(s.status) }}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Início automático, mas parado desde o boot: o Windows não repete partida que estourou o tempo. Use o &#9654; para iniciar.">não subiu após o reboot de {{ hora(s.nao_subiu) }}</span>{% endif %}
+        {% if running %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-nome="{{ titulo }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button><button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-nome="{{ titulo }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>{% else %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-nome="{{ titulo }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>{% endif %}
+      </span>{% endfor %}
+      {% if not d.services %}<span class="muted small">Nenhum serviço configurado.</span>{% endif %}
+    </div>
+    {% set grupos = svc_groups(d.services) %}
+    {% if grupos %}
+    <div class="pills" style="margin-top:.6rem">
+      {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}" title="{{ g.names | join(', ') }} &middot; encontrados pelo padrão {{ g.pattern }}">{{ g.family }}: {{ g.installed }} {{ 'instância instalada' if g.installed == 1 else 'instâncias instaladas' }} &middot; {{ g.running }} em execução</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
     <h2>Discos</h2>
     <div class="pills">
-      {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} &middot; {{ dk.used_pct }}% usado &middot; {{ dk.free_gb }}/{{ dk.size_gb }}GB</span>{% endfor %}
+      {% for dk in d.disks %}<span class="pill {{ 'amber' if dk.used_pct >= 90 else '' }}">{{ dk.drive }} {{ dk.used_pct }}% ocupado &middot; {{ dk.free_gb }} GB livres de {{ dk.size_gb }} GB</span>{% endfor %}
     </div>
   </div>
 
   {% if d.broker %}
   {% set bp = broker_alerta %}
   <div class="panel">
-    <h2>Broker do RM <span class="muted small">(cache de customizacoes na pasta de instalacao)</span></h2>
+    <h2>Broker do RM <span class="muted small">arquivo de cache das customizações, na pasta de instalação</span></h2>
     <div class="pills">
       {% for b in d.broker %}
       {% set ruim = bp.get('broker:' ~ b.name) %}
-      <span class="pill {{ 'red' if ruim else 'green' }}" title="{{ b.path }}{% if b.services %} &middot; gerado por {{ (b.services if b.services is not string else [b.services]) | join(', ') }}{% endif %}{% if b.mtime %} &middot; gerado em {{ b.mtime }}{% endif %}{% if broker_ref.get(b.name) %} &middot; maior ja visto neste host: {{ (broker_ref.get(b.name) / 1024) | round | int }}KB{% endif %}">
-        <span class="d"></span>{{ b.name }} &middot; {% if b.size %}{{ (b.size / 1024) | round | int }}KB{% else %}ausente{% endif %}</span>
+      <span class="pill {{ 'red' if ruim else 'green' }}" title="{{ b.path }}{% if b.services %} &middot; gerado por {{ (b.services if b.services is not string else [b.services]) | join(', ') }}{% endif %}{% if b.mtime %} &middot; gerado em {{ b.mtime }}{% endif %}{% if broker_ref.get(b.name) %} &middot; maior já visto neste servidor: {{ (broker_ref.get(b.name) / 1024) | round | int }} KB{% endif %}">
+        <span class="d"></span>{{ b.name }} &middot; {% if b.size %}{{ (b.size / 1024) | round | int }} KB{% else %}ausente{% endif %}</span>
       {% endfor %}
-      {% if d.commit_pct is not none %}<span class="pill {{ 'red' if d.commit_pct >= 90 else ('amber' if d.commit_pct >= 80 else '') }}" title="RAM + arquivo de paginacao ja reservados. E esse limite, e nao a RAM livre, que estoura na geracao do broker.">Commit charge &middot; {{ d.commit_pct }}%</span>{% endif %}
+      {% if d.commit_pct is not none %}<span class="pill {{ 'red' if d.commit_pct >= 90 else ('amber' if d.commit_pct >= 80 else '') }}" title="Memória já reservada pelos programas (RAM + arquivo de paginação). É esse limite, e não a RAM livre, que estoura na geração do broker.">Memória reservada &middot; {{ d.commit_pct }}%</span>{% endif %}
     </div>
     {% if bp %}
     <div class="alert small" style="margin-top:.6rem">
       {% for msg in bp.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
-      <div class="muted">O RM so gera o broker quando o arquivo <b>nao existe</b>: truncado, ele continua truncado a cada start.
-        Pare os RM.Host do host, apague o arquivo e suba <b>um</b> servico por vez, com o parque descarregado.</div>
+      <div class="muted">O RM só gera o broker quando o arquivo <b>não existe</b>: se ficou incompleto, continua incompleto a cada início.
+        Pare os RM.Host deste servidor, apague o arquivo e suba <b>um</b> serviço por vez, com poucos usuários conectados.</div>
     </div>
     {% endif %}
   </div>
@@ -192,22 +210,22 @@
   {% if d.jobrunners and d.jobrunners.count %}
   {% set jr = d.jobrunners %}
   <div class="panel">
-    <h2>JobRunner do RM <span class="src-tag winrm">WinRM</span> <span class="muted small">({{ jr.count }} processo(s), {{ ((jr.total_mb or 0) / 1024) | round(1) }} GB de memoria privada no total)</span></h2>
+    <h2>Processos de job do RM (JobRunner) <span class="src-tag winrm">WinRM</span> <span class="muted small">{{ jr.count }} processo(s) &middot; {{ ((jr.total_mb or 0) / 1024) | round(1) }} GB de memória no total</span></h2>
     <div class="pills">
       {% for p in jr.top %}
       {% set gb = (p.private_mb or 0) / 1024 %}
       {% set ex = (jr.jobs or {}).get(p.pid | string) %}
       <span class="pill {{ 'red' if (jr_limite_gb and gb >= jr_limite_gb) else ('amber' if (jr_aviso_gb and gb >= jr_aviso_gb) else '') }}"
-            title="PID {{ p.pid }}{% if p.start %} &middot; iniciado {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB</span><button type="button" class="svc-btn jr-kill"
-            data-server="{{ name }}" data-pid="{{ p.pid }}" data-gb="{{ gb | round(1) }}"
-            data-job="{% if ex %}job {{ ex.idjob }} '{{ ex.nome or ex.classe or '?' }}' de {{ ex.usuario or '?' }}{% else %}job nao identificado{% endif %}"
-            title="Encerrar este JobRunner no host (o RM perde esta execucao)">&#10005;</button>
+            title="PID {{ p.pid }}{% if p.start %} &middot; iniciado em {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB{% if ex %} &middot; job {{ ex.idjob }}{% endif %}</span><button type="button" class="svc-btn jr-kill"
+            data-server="{{ name }}" data-nome="{{ titulo }}" data-pid="{{ p.pid }}" data-gb="{{ gb | round(1) }}"
+            data-job="{% if ex %}job {{ ex.idjob }} '{{ ex.nome or ex.classe or '?' }}' de {{ ex.usuario or '?' }}{% else %}job não identificado{% endif %}"
+            title="Encerrar este processo no servidor (o RM perde esta execução)">&#10005;</button>
       {% endfor %}
     </div>
     {% if jr_alerta %}
     <div class="alert small" style="margin-top:.6rem">
       {% for msg in jr_alerta.values() %}<div>&#9888; {{ msg }}</div>{% endfor %}
-      <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se nao der, encerre o PID pelo &#10005; ao lado dele: o RM perde a execucao e o host recupera a memoria.</div>
+      <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se não der, encerre o processo pelo &#10005; ao lado do PID: o RM perde a execução e o servidor recupera a memória.</div>
     </div>
     {% endif %}
   </div>
@@ -216,66 +234,48 @@
   {{ painel_elastic() }}
 
   <div class="panel">
-    <h2>Servicos monitorados</h2>
-    <div class="pills">
-      {% for s in d.services %}{% set running = s.status == 'Running' %}{% set down = svc_down(s) %}<span class="svc">
-        <span class="pill {{ 'green' if running else ('amber' if s.src == 'agente' or not down else 'red') }}" title="{% if s.src == 'agente' %}agente de coleta: o RMon sobe sozinho &middot; {% endif %}{% if s.start %}inicio {{ s.start }}{% endif %}{% if s.src == 'auto' %} &middot; descoberto por {{ s.pattern }}{% endif %}"><span class="d"></span>{{ s.name }}: {{ s.status }}</span>{% if s.nao_subiu %}<span class="pill red boot-tag" title="Inicio automatico, mas parado desde o boot: o Windows nao repete partida que estourou o tempo. Use o &#9654; para iniciar.">nao subiu apos o reboot de {{ hora(s.nao_subiu) }}</span>{% endif %}
-        {% if running %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="restart" title="Reiniciar">&#8635;</button><button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="stop" title="Parar">&#9632;</button>{% else %}<button type="button" class="svc-btn svc-action" data-server="{{ name }}" data-service="{{ s.name }}" data-action="start" title="Iniciar">&#9654;</button>{% endif %}
-      </span>{% endfor %}
-      {% if not d.services %}<span class="muted small">Nenhum servico configurado.</span>{% endif %}
-    </div>
-    {% set grupos = svc_groups(d.services) %}
-    {% if grupos %}
-    <div class="pills">
-      {% for g in grupos %}<span class="pill {{ 'green' if g.running == g.installed else 'red' }}" title="{{ g.names | join(', ') }} &middot; descobertos pelo padrao {{ g.pattern }}">{{ g.family }}: {{ g.installed }} instancias instaladas &middot; {{ g.running }} em execucao</span>{% endfor %}
-    </div>
-    {% endif %}
-  </div>
-
-  <div class="panel">
-    <h2>Ocorrencias recentes <span class="muted small">(erros/criticos, 24h, ruido filtrado)</span>
-      <a class="pill blue chip-link" href="/ocorrencias?server={{ name }}">historico deste host</a></h2>
+    <h2>Erros do Windows <span class="muted small">últimas 24 horas, sem os avisos que se repetem à toa</span>
+      <a class="pill blue chip-link" href="/ocorrencias?server={{ name }}">ocorrências deste servidor</a></h2>
     {% if d.events %}
     <div class="events">
       {% for e in d.events %}
       <div class="event">
-        <span class="pill red lvl"><span class="d"></span>{{ e.level or 'Erro' }}</span>
-        <div class="hd"><span class="prov">{{ e.provider }}</span><span class="badge-count">ID {{ e.id }}</span>{% if e.count and e.count > 1 %}<span class="badge-count">&times;{{ e.count }}</span>{% endif %}</div>
-        <span class="when">{{ e.last }}</span>
+        <span class="pill red lvl"><span class="d"></span>{{ nivel(e.level) }}</span>
+        <div class="hd"><span class="prov">{{ e.provider }}</span><span class="badge-count" title="Código do evento no Visualizador de Eventos">evento {{ e.id }}</span>{% if e.count and e.count > 1 %}<span class="badge-count" title="Vezes que se repetiu">&times;{{ e.count }}</span>{% endif %}</div>
+        <span class="when">{{ e.last | dt }}</span>
         <div class="msg">{{ e.message }}</div>
       </div>
       {% endfor %}
     </div>
     {% else %}
-      <div class="alert ok small">Sem ocorrencias relevantes nas ultimas 24h.</div>
+      <div class="alert ok small">Nenhum erro relevante nas últimas 24 horas.</div>
     {% endif %}
   </div>
 
   {% if d.jobs and not d.jobs.error and d.jobs.top_requesters %}
   <div class="panel">
-    <h2>Origem dos jobs <span class="muted small">(solicitantes, ult. {{ d.jobs.window_min }}min)</span></h2>
-    <p class="muted small">Jobs executados por esta maquina foram <b>requisitados por outros usuarios/maquinas</b>
-      (este servidor tem {{ d.users_count if d.users_count is not none else 0 }} sessao(oes) locais) &mdash;
-      prova de que ele recebe e processa pedidos remotos.</p>
+    <h2>Quem pediu os jobs executados aqui <span class="muted small">últimos {{ d.jobs.window_min }} min</span></h2>
+    <p class="muted small">Os jobs que este servidor executa são pedidos por usuários conectados em <b>outros</b> servidores
+      (aqui há {{ d.users_count if d.users_count is not none else 0 }} sessão(ões)).</p>
     <div class="pills">
-      {% for rq in d.jobs.top_requesters %}<a class="pill chip-link" href="/sessions?user={{ rq.user }}" title="Procurar a sessao RDP deste solicitante">{{ rq.user }} &middot; {{ rq.c }}</a>{% endfor %}
+      {% for rq in d.jobs.top_requesters %}<a class="pill chip-link" href="/sessions?user={{ rq.user }}" title="Procurar a sessão deste usuário">{{ rq.user }} &middot; {{ rq.c }} job(s)</a>{% endfor %}
     </div>
   </div>
   {% endif %}
 
   <div class="panel">
-    <h2>Historico <span class="muted small">({{ hist | length }} coletas)</span></h2>
+    <h2>Histórico <span class="muted small">{{ hist | length }} coletas</span></h2>
     <div class="table-wrap scroll-y">
       <table class="tbl">
-        <thead><tr><th>Hora</th><th>Estado</th><th>CPU</th><th>RAM</th><th>App</th><th>Ocorrencias</th></tr></thead>
+        <thead><tr><th>Hora</th><th>Situação</th><th>Processador</th><th>Memória</th><th>Aplicação RM</th><th>Erros do Windows</th></tr></thead>
         <tbody>
           {% for h in hist %}
           <tr>
             <td>{{ h.ts | dt }}</td>
-            <td>{{ 'ONLINE' if h.reachable else 'SEM CONTATO' }}</td>
-            <td>{{ h.cpu if h.cpu is not none else '-' }}</td>
-            <td>{{ h.mem_pct if h.mem_pct is not none else '-' }}</td>
-            <td>{% if h.app_ok is none %}-{% else %}{{ 'OK' if h.app_ok else 'FALHA' }}{% endif %}</td>
+            <td>{{ 'Online' if h.reachable else 'Sem contato' }}</td>
+            <td>{{ h.cpu ~ '%' if h.cpu is not none else '-' }}</td>
+            <td>{{ h.mem_pct ~ '%' if h.mem_pct is not none else '-' }}</td>
+            <td>{% if h.app_ok is none %}-{% else %}{{ 'respondendo' if h.app_ok else 'sem resposta' }}{% endif %}</td>
             <td>{{ h.events | length }}</td>
           </tr>
           {% endfor %}

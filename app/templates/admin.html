@@ -1,63 +1,84 @@
 {% extends "base.html" %}
-{% block title %}Admin - RMonitor{% endblock %}
+{% block title %}Configurações - RMonitor{% endblock %}
 {% block content %}
-<div class="page-head"><div><h1>Administracao</h1><div class="sub">configuracoes do site e usuarios</div></div></div>
-{% if ok %}<div class="alert ok">Configuracoes salvas.</div>{% endif %}
+<div class="page-head"><div><h1>Configurações</h1><div class="sub">Aparência do painel, limites dos alertas e usuários</div></div></div>
+{% if ok %}<div class="alert ok">Configurações salvas.</div>{% endif %}
+
+{% macro campo(nome, rotulo, ajuda, minimo, maximo) %}
+<div><label class="muted small" title="{{ ajuda }}">{{ rotulo }}</label><input class="input" type="number" name="{{ nome }}" min="{{ minimo }}" max="{{ maximo }}" value="{{ alerts[nome] }}" title="{{ ajuda }}" style="width:100%"></div>
+{% endmacro %}
 
 <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
   <div class="panel">
-    <h2>Interface</h2>
     <form method="post" action="/admin/config">
-      <label class="muted small">Atualizacao automatica (segundos)</label>
+      <h2>Aparência</h2>
+      <label class="muted small">Atualizar as telas a cada (segundos)</label>
       <input class="input" type="number" name="refresh" min="10" max="3600" value="{{ ui.refresh }}" style="width:100%;margin:.3rem 0 .8rem">
-      <label class="muted small">Mural de TV &mdash; atualizacao (segundos)</label>
+      <label class="muted small">Atualizar o mural da TV a cada (segundos)</label>
       <input class="input" type="number" name="tv_refresh" min="5" max="600" value="{{ ui.tv_refresh }}" style="width:100%;margin:.3rem 0 .2rem">
-      <div class="faint small" style="margin-bottom:.8rem">painel do perfil <b>viewer</b> e da rota /tv (atualiza sem recarregar a pagina)</div>
-      <label class="muted small">Tema padrao (novos visitantes)</label>
+      <div class="faint small" style="margin-bottom:.8rem">vale para a página /tv e para quem entra com o perfil somente leitura (o mural atualiza sem recarregar a página)</div>
+      <label class="muted small">Tema para quem entra pela primeira vez</label>
       <select class="input" name="theme" style="width:100%;margin:.3rem 0 1rem">
         <option value="dark" {{ 'selected' if ui.theme=='dark' else '' }}>Escuro</option>
         <option value="light" {{ 'selected' if ui.theme=='light' else '' }}>Claro</option>
       </select>
-      <h2 style="margin-top:.4rem">Limiares de alerta</h2>
+
+      <h2 style="margin-top:.4rem">Servidor</h2>
       <div class="metrics-2" style="margin:.6rem 0 1rem">
-        <div><label class="muted small">Disco C: %</label><input class="input" type="number" name="disk_pct" min="1" max="100" value="{{ alerts.disk_pct }}" style="width:100%"></div>
-        <div><label class="muted small">Memoria %</label><input class="input" type="number" name="mem_pct" min="1" max="100" value="{{ alerts.mem_pct }}" style="width:100%"></div>
-        <div><label class="muted small">App lento (ms)</label><input class="input" type="number" name="app_ms" min="100" max="60000" value="{{ alerts.app_ms }}" style="width:100%"></div>
-        <div><label class="muted small" title="Coletas seguidas sem resposta do WinRM antes de alertar DOWN">Falhas ate DOWN</label><input class="input" type="number" name="down_after" min="1" max="10" value="{{ alerts.down_after }}" style="width:100%"></div>
-        <div><label class="muted small" title="Execucoes de job com erro na janela: acende aviso na tela, sem notificar">Jobs com erro (aviso)</label><input class="input" type="number" name="jobs_failed" min="1" max="1000" value="{{ alerts.jobs_failed }}" style="width:100%"></div>
-        <div><label class="muted small" title="Janela da fila: minutos sem NENHUMA conclusao e idade a partir da qual a execucao em andamento conta como presa">Fila parada (min)</label><input class="input" type="number" name="jobs_stuck_min" min="5" max="1440" value="{{ alerts.jobs_stuck_min }}" style="width:100%"></div>
-        <div><label class="muted small" title="Quantas execucoes presas (ou com hora vencida sem ninguem iniciar) para notificar. Uma sozinha e ruido conhecido do RM">Execucoes presas</label><input class="input" type="number" name="jobs_stuck_jobs" min="1" max="1000" value="{{ alerts.jobs_stuck_jobs }}" style="width:100%"></div>
-        <div><label class="muted small" title="Coletas seguidas vendo a fila parada antes de notificar (antiflapping)">Coletas ate alertar fila</label><input class="input" type="number" name="jobs_stuck_checks" min="1" max="20" value="{{ alerts.jobs_stuck_checks }}" style="width:100%"></div>
-        <div><label class="muted small" title="Acima disso a execucao sem conclusao e residuo de host reiniciado, nao fila: sai da conta">Execucao orfa (min)</label><input class="input" type="number" name="jobs_orphan_min" min="30" max="10080" value="{{ alerts.jobs_orphan_min }}" style="width:100%"></div>
-        <div><label class="muted small" title="Execucoes na janela sem NENHUM sucesso: falha em bloco, notifica">Falha em bloco (jobs)</label><input class="input" type="number" name="jobs_all_failed" min="1" max="1000" value="{{ alerts.jobs_all_failed }}" style="width:100%"></div>
-        <div><label class="muted small" title="Memoria privada de UM RM.Host.JobRunner a partir da qual notifica em ambar. Nos estouros conhecidos foi cruzado 3,5 a 6h antes da queda do host. 0 desliga">JobRunner aviso (GB)</label><input class="input" type="number" name="jobrunner_warn_gb" min="0" max="512" value="{{ alerts.jobrunner_warn_gb }}" style="width:100%"></div>
-        <div><label class="muted small" title="Memoria privada de UM RM.Host.JobRunner a partir da qual notifica em vermelho: o commit do host esgota em minutos. 0 desliga">JobRunner critico (GB)</label><input class="input" type="number" name="jobrunner_gb" min="0" max="512" value="{{ alerts.jobrunner_gb }}" style="width:100%"></div>
-        <div><label class="muted small" title="Problema critico (vermelho) ainda aberto volta a ser notificado a cada tantas horas. 0 desliga">Lembrete de critico (h)</label><input class="input" type="number" name="lembrete_h" min="0" max="72" value="{{ alerts.lembrete_h }}" style="width:100%"></div>
-        <div><label class="muted small" title="Servico de inicio automatico parado cujo alerta abriu ate tantos minutos depois do boot ganha a etiqueta 'nao subiu apos o reboot'">Janela pos-boot (min)</label><input class="input" type="number" name="boot_janela_min" min="5" max="240" value="{{ alerts.boot_janela_min }}" style="width:100%"></div>
-        <div><label class="muted small" title="Guardiao: todo servico monitorado parado (RM.Host, Elastic Agent, fixos do inventario) e subido pelo RMon a qualquer hora, sem limite de tentativas (2, 5, 10, 15 min e dai a espera maxima). Nada antes de tantos minutos de uptime, para o boot assentar. Cada tentativa fica na linha do tempo. 0 desliga (so avisa)">Guardiao: uptime minimo (min)</label><input class="input" type="number" name="boot_iniciar_min" min="0" max="240" value="{{ alerts.boot_iniciar_min }}" style="width:100%"></div>
-        <div><label class="muted small" title="Maior espera entre duas tentativas do guardiao. Ele nunca desiste: com o servico parado, tenta de novo pelo menos a cada tantos minutos">Guardiao: espera maxima (min)</label><input class="input" type="number" name="autocorrecao_teto_min" min="5" max="240" value="{{ alerts.autocorrecao_teto_min }}" style="width:100%"></div>
-        <div><label class="muted small" title="Hora do resumo diario (criticos e avisos abertos, quem esta em manutencao, movimento de 24h). -1 desliga">Resumo diario (hora)</label><input class="input" type="number" name="resumo_hora" min="-1" max="23" value="{{ alerts.resumo_hora }}" style="width:100%"></div>
+        {{ campo('disk_pct', 'Disco cheio a partir de (%)', 'Alerta quando o disco C: passa deste percentual de ocupação', 1, 100) }}
+        {{ campo('mem_pct', 'Memória alta a partir de (%)', 'Alerta quando a memória em uso passa deste percentual', 1, 100) }}
+        {{ campo('app_ms', 'Aplicação RM lenta a partir de (ms)', 'Tempo de resposta do teste HTTP da aplicação RM acima do qual ela é considerada lenta', 100, 60000) }}
+        {{ campo('down_after', 'Coletas sem resposta até o alerta', 'Quantas coletas seguidas sem resposta do WinRM antes de dizer que o servidor está sem contato. Evita alarme por um engasgo isolado.', 1, 10) }}
+        {{ campo('lembrete_h', 'Repetir alerta crítico a cada (horas)', 'Problema crítico (vermelho) ainda aberto volta a ser enviado a cada tantas horas. 0 desliga.', 0, 72) }}
+        {{ campo('resumo_hora', 'Resumo diário às (hora)', 'Hora do resumo diário: críticos e avisos abertos, quem está em manutenção e o movimento de 24 horas. -1 desliga.', -1, 23) }}
       </div>
-      <div class="faint small" style="margin:-.4rem 0 1rem">Job que termina com erro e validacao/regra de negocio da aplicacao: fica em ambar na tela e no historico, <b>sem</b> Slack/Telegram. Notificam a <b>fila parada</b> e a <b>falha em bloco</b>. Fila parada exige as tres coisas juntas: nenhuma conclusao na janela, execucoes presas (ou esperando pickup) acima do minimo, e a mesma leitura repetida nas coletas seguintes.</div>
+
+      <h2>Serviços parados</h2>
+      <div class="metrics-2" style="margin:.6rem 0 1rem">
+        {{ campo('boot_janela_min', 'Marcar "não subiu após o reboot" até (min)', 'Serviço de início automático que aparece parado até tantos minutos depois do boot ganha a etiqueta "não subiu após o reboot"', 5, 240) }}
+        {{ campo('boot_iniciar_min', 'Religar serviços só após o boot + (min)', 'O RMon religa sozinho, a qualquer hora e sem limite de tentativas, todo serviço monitorado que parar (RM.Host, agente do Elastic, serviços fixos do inventário). Ele espera o servidor estar ligado há pelo menos tantos minutos, para o boot terminar. 0 desliga (só avisa).', 0, 240) }}
+        {{ campo('autocorrecao_teto_min', 'Intervalo máximo entre tentativas (min)', 'O RMon tenta de novo em 2, 5, 10 e 15 min e depois nunca espera mais do que isso entre uma tentativa e outra', 5, 240) }}
+      </div>
+
+      <h2>Jobs do RM</h2>
+      <div class="metrics-2" style="margin:.6rem 0 1rem">
+        {{ campo('jobs_failed', 'Aviso de jobs com erro a partir de', 'Execuções com erro na janela que acendem um aviso em âmbar na tela. Não é enviado ao Slack/Telegram.', 1, 1000) }}
+        {{ campo('jobs_all_failed', 'Falha em bloco: execuções sem sucesso', 'Tantas execuções na janela e NENHUMA com sucesso: falha em bloco, é enviado.', 1, 1000) }}
+        {{ campo('jobs_stuck_min', 'Fila parada depois de (min)', 'Minutos sem nenhuma conclusão; também a idade a partir da qual uma execução em andamento conta como presa', 5, 1440) }}
+        {{ campo('jobs_stuck_jobs', 'Execuções presas para alertar', 'Quantas execuções presas (ou com a hora vencida sem ninguém iniciar) para enviar o alerta. Uma sozinha é ruído conhecido do RM.', 1, 1000) }}
+        {{ campo('jobs_stuck_checks', 'Coletas seguidas com a fila parada', 'Quantas coletas seguidas vendo a fila parada antes de enviar o alerta', 1, 20) }}
+        {{ campo('jobs_orphan_min', 'Execução abandonada depois de (min)', 'Execução sem conclusão há mais que isso é resto de servidor reiniciado no meio, não fila: sai da conta', 30, 10080) }}
+        {{ campo('jobrunner_warn_gb', 'Processo de job: aviso a partir de (GB)', 'Memória de UM processo de job (RM.Host.JobRunner) para o aviso em âmbar. Nos estouros já vistos, esse ponto foi cruzado de 3,5 a 6 horas antes de o servidor cair. 0 desliga.', 0, 512) }}
+        {{ campo('jobrunner_gb', 'Processo de job: crítico a partir de (GB)', 'Memória de UM processo de job para o alerta vermelho: a memória do servidor esgota em minutos. 0 desliga.', 0, 512) }}
+      </div>
+      <details class="ajuda" style="margin:-.4rem 0 1rem">
+        <summary>Quando um problema de jobs vira alerta</summary>
+        <div>
+          <p>Job que termina com erro quase sempre é validação ou regra de negócio da aplicação: fica em âmbar na tela e no histórico,
+            <b>sem</b> Slack/Telegram.</p>
+          <p>São enviados a <b>fila parada</b> e a <b>falha em bloco</b>. Fila parada exige as três coisas juntas: nenhuma conclusão na
+            janela, execuções presas (ou esperando para começar) acima do mínimo, e a mesma leitura repetida nas coletas seguintes.</p>
+        </div>
+      </details>
       <button type="submit" class="btn primary">Salvar</button>
     </form>
   </div>
 
   <div class="panel">
-    <h2>Usuarios <span class="muted small">({{ users|length }})</span></h2>
+    <h2>Usuários <span class="muted small">({{ users|length }})</span></h2>
     <p class="muted small" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
-      <a class="btn primary small" href="/admin/usuarios">Gerenciar usuarios</a>
-      criar contas, editar dados, papel e senha
+      <a class="btn primary small" href="/admin/usuarios">Gerenciar usuários</a>
+      criar contas, editar dados, perfil e senha
     </p>
     <div class="table-wrap"><table class="tbl">
-      <thead><tr><th>Login</th><th>Nome</th><th>Papel</th><th>Ativo</th><th>Ult. login</th></tr></thead>
+      <thead><tr><th>Login</th><th>Nome</th><th>Perfil</th><th>Ativo</th><th>Último acesso</th></tr></thead>
       <tbody>
         {% for u in users %}
         <tr><td><b>{{ u.username }}</b><br><span class="faint small">{{ u.email or '' }}</span></td>
           <td class="muted small">{{ u.full_name or '-' }}</td>
-          <td><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ u.role }}</span></td>
-          <td>{{ 'sim' if u.active else 'nao' }}</td>
-          <td class="muted small">{{ u.last_login or '-' }}</td></tr>
+          <td><span class="pill {{ 'green' if u.role=='admin' else '' }}">{{ 'Administrador' if u.role == 'admin' else 'Somente leitura' }}</span></td>
+          <td>{{ 'sim' if u.active else 'não' }}</td>
+          <td class="muted small">{{ u.last_login | dt if u.last_login else '-' }}</td></tr>
         {% endfor %}
       </tbody>
     </table></div>

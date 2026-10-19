@@ -25,16 +25,16 @@
     <label for="navtoggle" class="nav-burger" aria-label="Menu">&#9776;</label>
     <nav class="nav">
       <a href="/" class="{{ 'active' if path == '/' else '' }}">Painel</a>
-      <a href="/jobs" class="{{ 'active' if path.startswith('/jobs') else '' }}">Jobs</a>
-      <a href="/ocorrencias" class="{{ 'active' if path.startswith('/ocorrencias') else '' }}">Ocorrencias</a>
-      <a href="/pacotes" class="{{ 'active' if path.startswith('/pacotes') else '' }}">Pacotes</a>
-      <a href="/sessions" class="{{ 'active' if path.startswith('/sessions') else '' }}">Sessoes</a>
+      <a href="/jobs" class="{{ 'active' if path.startswith('/jobs') else '' }}" title="Jobs do RM: execuções, erros e fila">Jobs</a>
+      <a href="/ocorrencias" class="{{ 'active' if path.startswith('/ocorrencias') else '' }}" title="Problemas abertos e histórico de alertas">Ocorrências</a>
+      <a href="/pacotes" class="{{ 'active' if path.startswith('/pacotes') else '' }}" title="Versões do RM e do software TOTVS em cada servidor">Software</a>
+      <a href="/sessions" class="{{ 'active' if path.startswith('/sessions') else '' }}" title="Usuários conectados por área de trabalho remota">Sessões</a>
       {% if request.session.get('role') == 'admin' %}
-      <a href="/nlb" class="{{ 'active' if path.startswith('/nlb') else '' }}">NLB</a>
-      <a href="/logs" class="{{ 'active' if path.startswith('/logs') else '' }}">Logs</a>
-      <a href="/admin/usuarios" class="{{ 'active' if path.startswith('/admin/usuarios') else '' }}">Usuarios</a>
-      <a href="/admin" class="{{ 'active' if path == '/admin' else '' }}">Admin</a>
-      <a href="/tv" class="{{ 'active' if path == '/tv' else '' }}" title="Mural para TV (o que o perfil viewer enxerga)">Mural TV</a>
+      <a href="/nlb" class="{{ 'active' if path.startswith('/nlb') else '' }}" title="Balanceamento de acesso (NLB) entre os servidores de aplicação">Balanceamento</a>
+      <a href="/logs" class="{{ 'active' if path.startswith('/logs') else '' }}" title="Quem entrou no painel e o que fez">Auditoria</a>
+      <a href="/admin/usuarios" class="{{ 'active' if path.startswith('/admin/usuarios') else '' }}">Usuários</a>
+      <a href="/admin" class="{{ 'active' if path == '/admin' else '' }}">Configurações</a>
+      <a href="/tv" class="{{ 'active' if path == '/tv' else '' }}" title="Painel para a TV (é o que o perfil somente leitura enxerga)">Mural da TV</a>
       {% endif %}
     </nav>
     {% endif %}
@@ -55,28 +55,28 @@
   </header>
   {% if authed and request.session.get('role') == 'admin' %}
   {% set ft = fontes_topo() %}
-  <a class="src-strip" href="/fontes" title="De onde vem cada dado do painel. Clique para ver por servidor.">
-    <span class="faint">Fontes de dados:</span>
-    {% if not ft.coletado %}<span class="src-part"><span class="src-dot espera"></span>aguardando a 1a coleta</span>
+  <a class="src-strip" href="/fontes" title="De onde vem cada dado do painel. Clique para ver servidor por servidor.">
+    <span class="faint">Origem dos dados:</span>
+    {% if not ft.coletado %}<span class="src-part"><span class="src-dot espera"></span>aguardando a primeira coleta</span>
     {% else %}
-    <span class="src-part"><span class="src-dot {{ ft.winrm_estado }}"></span><span class="src-tag winrm">WinRM</span> <b>{{ ft.winrm_ok }}/{{ ft.total }}</b> hosts responderam</span>
-    <span class="src-part"><span class="src-dot es-{{ ft.es_estado }}"></span><span class="src-tag elastic">Elastic</span>
-      <b>{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[ft.es_estado] }}</b>{% if ft.es_estado == 'ok' %} <span class="faint">(ultima consulta {{ ft.es_texto }})</span>{% endif %}</span>
+    <span class="src-part" title="Leitura direta de cada servidor Windows (WinRM)"><span class="src-dot {{ ft.winrm_estado }}"></span><span class="src-tag winrm">WinRM</span> <b>{{ ft.winrm_ok }} de {{ ft.total }}</b> servidores responderam</span>
+    <span class="src-part" title="Histórico guardado no Elasticsearch pelos agentes instalados nos servidores"><span class="src-dot es-{{ ft.es_estado }}"></span><span class="src-tag elastic">Elastic</span>
+      <b>{{ {'ok': 'ativo', 'erro': 'fora do ar', 'off': 'desligado', 'espera': 'aguardando'}[ft.es_estado] }}</b>{% if ft.es_estado == 'ok' %} <span class="faint">(última consulta {{ ft.es_texto }})</span>{% endif %}</span>
     {% endif %}
-    {% if ft.fora_padrao %}<span class="src-part src-fora" title="{{ ft.fora_padrao | join(', ') }}"><span class="src-dot erro"></span><b>{{ ft.fora_padrao | length }} servidor(es) fora do padrao de coleta</b> <span class="faint">({{ ft.fora_padrao | join(', ') }})</span></span>{% endif %}
-    <span class="src-ver">ver por servidor &rarr;</span>
+    {% if ft.fora_padrao %}{% set fp = ft.fora_padrao | map('nome') | list %}<span class="src-part src-fora" title="{{ fp | join(', ') }}"><span class="src-dot erro"></span><b>{{ fp | length }} servidor(es) com configuração diferente dos outros</b> <span class="faint">({{ fp | join(', ') }})</span></span>{% endif %}
+    <span class="src-ver">ver detalhes &rarr;</span>
   </a>
   {% endif %}
   <main class="container">
     {% block content %}{% endblock %}
   </main>
-  <footer class="foot">RMonitor v{{ version or '' }} &middot; monitoramento TOTVS RM</footer>
+  <footer class="foot">RMonitor {{ version or '' }} &middot; monitoramento do TOTVS RM</footer>
 
   <!-- Aviso de tarefa: toda acao que mexe no host (encerrar sessao, mexer em
        servico) mostra progresso aqui em vez de congelar a tela ate o fim. -->
   <div class="task-toast" id="task-toast" hidden>
     <div class="tt-top">
-      <span class="tt-title" id="tt-title">Executando...</span>
+      <span class="tt-title" id="tt-title">Executando…</span>
       <button type="button" class="tt-close" id="tt-close" aria-label="Fechar">&times;</button>
     </div>
     <div class="progress indet" id="tt-bar"><span></span></div>
@@ -118,8 +118,8 @@
               nEl.textContent = criticos || total;
               badge.hidden = false;
               badge.title = criticos
-                ? criticos + ' problema(s) critico(s) aberto(s) - clique para ver'
-                : total + ' aviso(s) aberto(s) - clique para ver';
+                ? criticos + ' problema(s) crítico(s) aberto(s) — clique para ver'
+                : total + ' aviso(s) aberto(s) — clique para ver';
             } else { badge.hidden = true; }
           }).catch(function () {});
       }
@@ -168,16 +168,17 @@
       if (!b) return;
       e.preventDefault(); e.stopPropagation();
       var srv = b.getAttribute('data-server'), svc = b.getAttribute('data-service'), act = b.getAttribute('data-action') || 'restart';
+      var nome = b.getAttribute('data-nome') || srv;
       var rotulo = ACT[act] || act;
-      if (!confirm(rotulo + ' o servico "' + svc + '" em ' + srv + '?')) return;
-      b.disabled = true; var old = b.innerHTML; b.innerHTML = '...';
-      rmonTask.start(rotulo + ' ' + svc, 'em ' + srv + ' - aguardando o WinRM responder...');
+      if (!confirm(rotulo + ' o serviço "' + svc + '" em ' + nome + '?')) return;
+      b.disabled = true; var old = b.innerHTML; b.innerHTML = '…';
+      rmonTask.start(rotulo + ' ' + svc, 'em ' + nome + ' — aguardando a resposta do servidor…');
       var fd = new FormData(); fd.append('server', srv); fd.append('service', svc); fd.append('action', act);
       fetch('/service/action', { method: 'POST', body: fd, credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          rmonTask.log(srv + '/' + svc + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
-          rmonTask.done(d.ok ? 'Concluido. Atualizando a tela...' : 'Falhou: ' + (d.msg || 'erro'), d.ok, true);
+          rmonTask.log(nome + ' / ' + svc + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
+          rmonTask.done(d.ok ? 'Concluído. Atualizando a tela…' : 'Falhou: ' + (d.msg || 'erro'), d.ok, true);
           if (!d.ok) { b.disabled = false; b.innerHTML = old; }
         }).catch(function () {
           rmonTask.log('erro de rede', false);
@@ -193,19 +194,20 @@
       if (!b) return;
       e.preventDefault(); e.stopPropagation();
       var srv = b.getAttribute('data-server'), pid = b.getAttribute('data-pid');
-      var resp = prompt('Encerrar o JobRunner PID ' + pid + ' (' + b.getAttribute('data-gb') + ' GB, ' +
-        b.getAttribute('data-job') + ') em ' + srv + '?\n\nO RM perde esta execucao do job. ' +
+      var nome = b.getAttribute('data-nome') || srv;
+      var resp = prompt('Encerrar o processo de job (JobRunner) PID ' + pid + ' (' + b.getAttribute('data-gb') + ' GB, ' +
+        b.getAttribute('data-job') + ') em ' + nome + '?\n\nO RM perde esta execução do job. ' +
         'Para confirmar, digite o PID:');
       if (resp === null) return;
       if (resp.trim() !== pid) { alert('PID diferente: nada foi feito.'); return; }
       b.disabled = true;
-      rmonTask.start('Encerrar JobRunner ' + pid, 'em ' + srv + ' - conferindo o processo no host...');
+      rmonTask.start('Encerrar o JobRunner ' + pid, 'em ' + nome + ' — conferindo o processo no servidor…');
       var fd = new FormData(); fd.append('server', srv); fd.append('pid', pid); fd.append('confirm', resp.trim());
       fetch('/jobrunner/encerrar', { method: 'POST', body: fd, credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          rmonTask.log(srv + ' PID ' + pid + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
-          rmonTask.done(d.ok ? 'Encerrado. Atualizando a tela...' : 'Nao encerrado: ' + (d.msg || 'erro'), d.ok, true);
+          rmonTask.log(nome + ' PID ' + pid + ': ' + (d.msg || (d.ok ? 'ok' : 'falhou')), d.ok);
+          rmonTask.done(d.ok ? 'Encerrado. Atualizando a tela…' : 'Não encerrado: ' + (d.msg || 'erro'), d.ok, true);
           if (!d.ok) { b.disabled = false; }
         }).catch(function () {
           rmonTask.log('erro de rede', false);

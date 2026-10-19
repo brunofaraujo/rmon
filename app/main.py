@@ -20,7 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import (__version__, db, elastic, execution, fontes, incus, inventory, jobstats, manutencao,
-               nlb, notify, packages, scheduler)
+               nlb, nomes, notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -42,6 +42,12 @@ def _fmt_dt(ts) -> str:
         return "-"
     if isinstance(ts, datetime.datetime):
         return ts.strftime("%d/%m %H:%M:%S")
+    if isinstance(ts, str):
+        # o Windows manda "2026-10-19 09:15:02": na tela, o mesmo formato do resto
+        try:
+            return datetime.datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S").strftime("%d/%m %H:%M:%S")
+        except ValueError:
+            return ts
     return datetime.datetime.fromtimestamp(ts).strftime("%d/%m %H:%M:%S")
 
 
@@ -86,11 +92,29 @@ templates.env.globals["tv_refresh"] = 15
 # pode pintar de vermelho um RM.Host que a coleta nem considera falha.
 templates.env.globals["svc_down"] = scheduler.service_down
 templates.env.globals["svc_groups"] = scheduler.service_groups
+templates.env.globals["svc_status"] = scheduler.status_servico
+# Nome legivel dos servicos de infraestrutura. RM.Host* fica como esta: e o
+# nome que a equipe do RM conhece e procura no services.msc.
+SERVICO_LABEL = {"W3SVC": "IIS", "MSSQLSERVER": "SQL Server", "SQLSERVERAGENT": "SQL Server Agent",
+                 "Elastic Agent": "Agente do Elastic"}
+templates.env.globals["svc_nome"] = lambda n: SERVICO_LABEL.get(n, n)
+# Tipo de inicializacao do servico (StartMode do Win32_Service)
+INICIO_LABEL = {"auto": "automático", "manual": "manual", "disabled": "desativado",
+                "boot": "no boot", "system": "pelo sistema"}
+# Gravidade do evento do Windows (LevelDisplayName vem no idioma do servidor)
+NIVEL_LABEL = {"error": "Erro", "critical": "Crítico", "warning": "Aviso", "information": "Informação"}
+templates.env.globals["nivel"] = lambda n: NIVEL_LABEL.get(str(n or "").lower(), n or "Erro")
+templates.env.globals["svc_inicio"] =lambda m: INICIO_LABEL.get(str(m or "").lower(), str(m or ""))
 templates.env.globals["hora"] = manutencao.hora
 # Rotulo curto de cada fonte do inventario (produto, customizacao, biblioteca...)
 templates.env.globals["fonte_label"] = inventory.FONTE_LABEL
 # Rotulo do papel de cada host (aplicacao, job server, camada web...)
 templates.env.globals["papel_label"] = PAPEIS
+# Nome do servidor na tela: {{ chave | nome }} = label do YAML ou COMPUTERNAME;
+# descricao(chave) = papel e ambiente por extenso. A chave segue nas URLs.
+templates.env.filters["nome"] = nomes.titulo
+templates.env.globals["descricao"] = nomes.descricao
+templates.env.globals["ip_de"] = nomes.ip
 
 
 def _thresholds() -> dict:
@@ -147,13 +171,14 @@ async def lifespan(app: FastAPI):
     # seed do admin inicial (a partir do .env) se ainda nao houver usuarios
     if db.count_users() == 0 and settings.admin_password_hash:
         db.create_user(settings.admin_user, settings.admin_password_hash, role="admin")
-        log.info("usuario admin inicial '%s' criado no banco", settings.admin_user)
+        log.info("usuário admin inicial '%s' criado no banco", settings.admin_user)
     STATE.update(settings=settings, inv=inv)
+    nomes.configurar(inv)
     _apply_ui_globals()
     presas = db.reset_running_tasks()
     if presas:
-        log.warning("%d tarefa(s) de instalacao ficaram presas no restart e foram "
-                    "marcadas como falha (nao serao repetidas)", presas)
+        log.warning("%d tarefa(s) de instalação ficaram presas no restart e foram "
+                    "marcadas como falha (não serão repetidas)", presas)
 
     threading.Thread(target=poll_all, args=(inv, settings), daemon=True).start()
 
@@ -260,7 +285,7 @@ def login_submit(request: Request, username: str = Form(...), password: str = Fo
         db.audit(username, "login_fail", "usuario/senha invalidos ou inativo", _ip(request))
         return templates.TemplateResponse(
             "login.html",
-            {"request": request, "erro": "Usuario ou senha invalidos."},
+            {"request": request, "erro": "Usuário ou senha inválidos."},
             status_code=401,
         )
     request.session["user"] = username
@@ -349,14 +374,15 @@ def _tv_payload() -> dict:
 
         if not manut:
             for key, text in probs.items():
-                issues.append({"server": cfg.name, "text": text,
+                issues.append({"server": nomes.titulo(cfg.name), "text": text,
                                "sev": 2 if scheduler.critico(key) else 1})
             if not up and "DOWN" not in probs:
-                issues.append({"server": cfg.name, "sev": 1,
-                               "text": f"coleta instavel ({streak}x sem resposta do WinRM)"})
+                issues.append({"server": nomes.titulo(cfg.name), "sev": 1,
+                               "text": f"coleta instável ({streak}x sem resposta do WinRM)"})
 
         servers.append({
             "name": cfg.name, "host": cfg.host, "up": up, "sev": sev,
+            "label": nomes.titulo(cfg.name), "desc": nomes.descricao(cfg.name, curta=True),
             "manut": manutencao.hora(manut["ate"])[-5:] if manut else None,
             # sem contato ainda nao confirmado: mural mostra ambar, nao vermelho
             "unstable": (not up and "DOWN" not in probs),
@@ -368,7 +394,7 @@ def _tv_payload() -> dict:
             "stale": bool(ts and (now - ts) > stale_after),
             "disks": [{"d": x.get("drive"), "p": _pct(x.get("used_pct")) or 0,
                        "free": x.get("free_gb")} for x in disks],
-            "svcs": [{"n": x.get("name"), "ok": x.get("status") == "Running",
+            "svcs": [{"n": SERVICO_LABEL.get(x.get("name"), x.get("name")), "ok": x.get("status") == "Running",
                       "bad": scheduler.service_down(x), "st": x.get("status")} for x in svcs],
             "users": (d.get("users_count") if d else None),
             "app": (d.get("app_ok") if d else None),
@@ -536,7 +562,7 @@ async def service_act(request: Request):
     if not _is_authed(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if _role(request) != "admin":
-        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+        return JSONResponse({"ok": False, "msg": "ação requer perfil admin"}, status_code=403)
     form = await request.form()
     server_name, svc, action = form.get("server"), form.get("service"), (form.get("action") or "restart")
     inv = STATE["inv"]
@@ -578,17 +604,18 @@ async def manutencao_iniciar(request: Request):
         minutos = 60
     user = request.session.get("user") or "?"
     j = manutencao.iniciar(srv.name, minutos, form.get("motivo") or "", user)
-    texto = (f"manutencao aberta por {user} ate {manutencao.hora(j['ate'])}"
+    texto = (f"manutenção aberta por {user} até {manutencao.hora(j['ate'])}"
              + (f": {j['motivo']}" if j["motivo"] else ""))
     db.record_alert(srv.name, "manutencao", "MANUT", texto)
     db.audit(user, "manutencao_iniciar", f"{srv.name}: {texto}", _ip(request))
     log.warning("%s: %s", srv.name, texto)
     if notify.enabled():
-        await run_in_threadpool(notify.send, f"\U0001F527 RMonitor \u2014 {srv.name} ({srv.host}): "
-                                              f"{texto}. Alertas deste host calados ate la; "
+        await run_in_threadpool(notify.send, f"\U0001F527 RMonitor \u2014 {nomes.com_ip(srv.name)}: "
+                                              f"{texto}. Alertas deste servidor silenciados até lá; "
                                               "no fim sai um resumo.")
-    return _server_redirect(request, srv.name, f"Manutencao ate {manutencao.hora(j['ate'])}: "
-                                                "alertas calados e NLB em hold.")
+    return _server_redirect(request, srv.name, f"Manutenção até {manutencao.hora(j['ate'])}: "
+                                                "alertas silenciados e o balanceamento não mexe "
+                                                "neste servidor.")
 
 
 @app.post("/manutencao/encerrar")
@@ -602,9 +629,9 @@ async def manutencao_encerrar(request: Request):
     user = request.session.get("user") or "?"
     if manutencao.encerrar(srv.name):
         db.audit(user, "manutencao_encerrar", srv.name, _ip(request))
-        msg = "Manutencao encerrada: o resumo do que ficou aberto sai na proxima coleta."
+        msg = "Manutenção encerrada: o resumo do que ficou aberto sai na próxima coleta."
     else:
-        msg = "Este host nao estava em manutencao."
+        msg = "Este host não estava em manutenção."
     return _server_redirect(request, srv.name, msg)
 
 
@@ -617,7 +644,7 @@ async def jobrunner_encerrar(request: Request):
     e so aceita um dos JobRunners que a coleta mostrou na tela.
     """
     if not _is_authed(request) or _role(request) != "admin":
-        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+        return JSONResponse({"ok": False, "msg": "ação requer perfil admin"}, status_code=403)
     form = await request.form()
     srv = _servidor(form.get("server"))
     if not srv:
@@ -629,17 +656,17 @@ async def jobrunner_encerrar(request: Request):
     ultimo = {r["server"]: r for r in db.latest_per_server()}.get(srv.name) or {}
     if ((ultimo.get("jobrunners") or {}).get("fonte")) == "elastic":
         return JSONResponse({"ok": False, "msg": "a leitura deste host veio do Elasticsearch porque o "
-                                                 "WinRM nao responde: sem WinRM nao ha como encerrar"},
+                                                 "WinRM não responde: sem WinRM não há como encerrar"},
                             status_code=409)
     proc = jobrunner_alvo(ultimo, pid)
     if not proc:
-        return JSONResponse({"ok": False, "msg": "esse PID nao esta entre os JobRunners da ultima "
+        return JSONResponse({"ok": False, "msg": "esse PID não está entre os JobRunners da última "
                                                  "coleta: recarregue a tela"}, status_code=409)
     pid_i = int(proc["pid"])
     ex = ((ultimo.get("jobrunners") or {}).get("jobs") or {}).get(str(pid_i)) or {}
     gb = float(proc.get("private_mb") or 0) / 1024
     quem = (f"job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}' de "
-            f"{ex.get('usuario') or '?'}" if ex else "job nao identificado")
+            f"{ex.get('usuario') or '?'}" if ex else "job não identificado")
     processo = jobrunner_settings(STATE["inv"].defaults).get("process") or "RM.Host.JobRunner"
     ok, msg = await run_in_threadpool(kill_jobrunner, srv, STATE["inv"].winrm, pid_i,
                                       proc.get("start"), processo)
@@ -651,7 +678,7 @@ async def jobrunner_encerrar(request: Request):
         db.record_alert(srv.name, "acao", f"jobrunner-kill:{pid_i}",
                         f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) encerrado por {user}")
         if notify.enabled():
-            await run_in_threadpool(notify.send, f"\U0001F6D1 RMonitor \u2014 {srv.name} ({srv.host}): "
+            await run_in_threadpool(notify.send, f"\U0001F6D1 RMonitor \u2014 {nomes.com_ip(srv.name)}: "
                                                   f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) "
                                                   f"encerrado por {user}")
     return JSONResponse({"ok": ok, "msg": msg})
@@ -667,7 +694,7 @@ def jobs_page(request: Request):
         window = 60
     pool = jobstats.pool_summary(window)
     inv = STATE["inv"]
-    hostmap = {s.jobs["servidor"].upper(): (s.name, f"{s.name} ({s.host})")
+    hostmap = {s.jobs["servidor"].upper(): (s.name, nomes.titulo(s.name))
                for s in inv.servers if s.jobs and s.jobs.get("servidor")}
     if pool and pool.get("by_server"):
         for r in pool["by_server"]:
@@ -685,47 +712,82 @@ def jobs_page(request: Request):
 # Rotulo humano de cada chave de problema, para a tela nao mostrar "svc:RM.Host"
 # nem "JOBQUEUE" cru.
 PROBLEMA_LABEL = {
-    "DOWN": "Sem contato", "APP": "App fora do ar", "APPSLOW": "App lento",
-    "MEM": "Memoria", "DISK": "Disco", "COMMIT": "Commit charge",
+    "DOWN": "Sem contato", "APP": "Aplicação RM sem resposta", "APPSLOW": "Aplicação RM lenta",
+    "MEM": "Memória", "DISK": "Disco", "COMMIT": "Memória reservada",
     "JOBS": "Jobs com erro", "JOBSQL": "Leitura dos jobs",
-    "JOBQUEUE": "Fila de jobs", "JOBFAIL": "Jobs falhando em bloco",
+    "JOBQUEUE": "Fila de jobs parada", "JOBFAIL": "Jobs falhando em bloco",
     # decisoes do NLB (alerts_log.kind = "nlb")
-    "drain": "NLB: drenado", "rejoin": "NLB: reingressado",
-    "drain_unreachable": "NLB: sem contato, drenado",
-    "reset_unreachable": "NLB: sem contato, VM reiniciada",
-    "would_reset": "NLB: reiniciaria a VM", "unreachable_crit": "NLB: sem contato, sem saida",
-    "unreachable_alive": "NLB: so o WinRM travou",
-    "would_drain": "NLB: drenaria", "would_rejoin": "NLB: reingressaria",
-    "blocked": "NLB: drenagem bloqueada", "unreachable_sick": "NLB: doente sem WinRM",
-    "out_unowned": "NLB: fora do cluster", "recovered": "NLB: recuperado",
-    "nlb_error": "NLB: leitura", "failed": "NLB: acao falhou",
-    "MANUT": "Manutencao",
+    "drain": "Saiu do balanceamento", "rejoin": "Voltou ao balanceamento",
+    "drain_unreachable": "Sem contato: saiu do balanceamento",
+    "reset_unreachable": "Sem contato: VM reiniciada",
+    "would_reset": "Reiniciaria a VM (modo alerta)",
+    "unreachable_crit": "Sem contato e sem como reiniciar",
+    "unreachable_alive": "Só o WinRM travou",
+    "would_drain": "Sairia do balanceamento (modo alerta)",
+    "would_rejoin": "Voltaria ao balanceamento (modo alerta)",
+    "blocked": "Saída do balanceamento bloqueada", "unreachable_sick": "Com problema e sem WinRM",
+    "out_unowned": "Fora do balanceamento", "recovered": "Recuperado no balanceamento",
+    "nlb_error": "Leitura do balanceamento", "failed": "Ação no balanceamento falhou",
+    "MANUT": "Manutenção",
 }
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
-KIND_LABEL = {"raised": "abriu", "resolved": "resolveu", "reminder": "lembrete",
-              "manutencao": "manutencao", "acao": "acao", "package": "pacote",
-              "nlb": "nlb"}
+KIND_LABEL = {"raised": "abriu", "resolved": "resolvido", "reminder": "lembrete",
+              "manutencao": "manutenção", "acao": "ação automática", "package": "software",
+              "nlb": "balanceamento"}
 templates.env.globals["kind_label"] = KIND_LABEL
+templates.env.globals["acao_nlb"] = nlb.ACAO_LABEL
+
+# Acao gravada no audit_log -> texto da tela de auditoria (a chave segue no title)
+AUDIT_LABEL = {
+    "login": "entrou", "login_fail": "senha errada", "logout": "saiu",
+    "password_change": "trocou a senha", "password_change_fail": "troca de senha recusada",
+    "profile_update": "editou o perfil", "config_update": "mudou as configurações",
+    "user_create": "criou usuário", "user_update": "editou usuário", "user_delete": "excluiu usuário",
+    "user_password_reset": "redefiniu senha de usuário",
+    "service_start": "iniciou serviço", "service_stop": "parou serviço", "service_restart": "reiniciou serviço",
+    "logoff": "encerrou sessão", "jobrunner_kill": "encerrou processo de job",
+    "manutencao_iniciar": "abriu manutenção", "manutencao_encerrar": "encerrou manutenção",
+    "inventory_collect": "pediu leitura do inventário", "catalog_add": "registrou versão",
+    "catalog_bind": "vinculou pacote", "catalog_delete": "excluiu versão", "catalog_scan": "leu o repositório",
+    "install_task": "instalação concluída", "install_task_create": "pediu instalação",
+    "install_task_cancel": "cancelou instalação",
+    "nlb_drain": "tirou do balanceamento", "nlb_rejoin": "devolveu ao balanceamento",
+    "nlb_hold": "balanceamento: manutenção", "nlb_release": "balanceamento: liberou",
+    "nlb_drain_recusado": "saída do balanceamento recusada",
+    "nlb_incus_ok": "hypervisor respondendo", "nlb_incus_falhou": "hypervisor com falha",
+}
+
+
+def _acao_audit(acao: str) -> str:
+    if acao in AUDIT_LABEL:
+        return AUDIT_LABEL[acao]
+    if acao.startswith("nlb_"):
+        return "balanceamento: " + _problema_label(acao[4:]).lower()
+    return acao
+
+
+templates.env.globals["acao_audit"] = _acao_audit
 
 
 def _problema_label(chave: str) -> str:
     if chave.startswith("svc:"):
-        return "Servico " + chave[4:]
+        return "Serviço " + chave[4:]
     if chave.startswith("agente:"):
         return "Agente " + chave[7:]
     if chave.startswith("broker:"):
-        return "Broker " + chave[7:]
+        return "Broker do RM (" + chave[7:] + ")"
     if chave.startswith("PADRAO:"):
-        return "Fora do padrao: " + {"security_layer": "SecurityLayer do RDP", "nla": "NLA do RDP",
-                                     "1149": "evento 1149", "elastic": "agente do Elastic",
-                                     "rdp_tls": "TLS do RDP", "min_encryption": "criptografia do RDP"}.get(chave[7:], chave[7:])
+        return "Configuração diferente: " + {
+            "security_layer": "segurança do RDP", "nla": "NLA do RDP",
+            "1149": "registro de login do RDP", "elastic": "agente do Elastic",
+            "rdp_tls": "TLS do RDP", "min_encryption": "criptografia do RDP"}.get(chave[7:], chave[7:])
     if chave.startswith("jobrunner-kill:"):
-        return "JobRunner encerrado (PID " + chave[15:] + ")"
+        return "Processo de job encerrado (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner-crit:"):
-        return "JobRunner estourando (PID " + chave[15:] + ")"
+        return "Processo de job estourando a memória (PID " + chave[15:] + ")"
     if chave.startswith("jobrunner:"):
-        return "JobRunner crescendo (PID " + chave[10:] + ")"
+        return "Processo de job crescendo (PID " + chave[10:] + ")"
     return PROBLEMA_LABEL.get(chave, chave)
 
 
@@ -871,15 +933,18 @@ async def nlb_acao(request: Request):
     form = await request.form()
     nome = form.get("server") or ""
     acao = form.get("action") or ""
-    if acao in ("drain", "rejoin") and (form.get("confirm") or "").strip() != nome:
-        return _nlb_redirect(request, "Para drenar ou reingressar, digite o nome do servidor "
-                                      "exatamente como aparece na tela. Nada foi feito.")
+    if acao in ("drain", "rejoin") and not nomes.confere(form.get("confirm") or "", nome):
+        return _nlb_redirect(request, "Para tirar ou devolver ao balanceamento, digite o nome do "
+                                      "servidor como aparece na tela. Nada foi feito.")
     coletas = {r["server"]: r for r in db.latest_per_server()}
     ok, msg = await run_in_threadpool(nlb.manual, STATE["inv"], coletas, nome, acao,
                                       request.session.get("user") or "?")
     log.warning("NLB manual %s %s por %s -> %s (%s)", acao, nome,
                 request.session.get("user"), ok, msg)
-    return _nlb_redirect(request, f"{nome}: {acao} -> {'ok' if ok else 'NAO FEITO'}: {msg}")
+    rotulo = {"drain": "tirar do balanceamento", "rejoin": "devolver ao balanceamento",
+              "hold": "manutenção", "release": "liberar para a automação"}.get(acao, acao)
+    return _nlb_redirect(request, f"{nomes.titulo(nome)} — {rotulo}: "
+                                  f"{'feito' if ok else 'NÃO FEITO'}. {msg}")
 
 
 @app.get("/profile", response_class=HTMLResponse)
@@ -986,7 +1051,7 @@ def _check_password(pw: str, pw2: str) -> str | None:
     if len(pw) < MIN_SENHA:
         return f"A senha deve ter ao menos {MIN_SENHA} caracteres."
     if pw != pw2:
-        return "As senhas nao conferem."
+        return "As senhas não conferem."
     return None
 
 
@@ -1014,16 +1079,16 @@ async def users_create(request: Request):
     pw, pw2 = form.get("password") or "", form.get("password2") or ""
 
     if not USERNAME_RE.match(username):
-        return _users_redirect(request, "Login invalido: use 3 a 32 caracteres (letras, numeros, . _ -).", "err")
+        return _users_redirect(request, "Login inválido: use 3 a 32 caracteres (letras, números, . _ -).", "err")
     erro = _check_password(pw, pw2)
     if erro:
         return _users_redirect(request, erro, "err")
     criado = db.insert_user(username, hash_password(pw), role,
                             (form.get("full_name") or "").strip(), (form.get("email") or "").strip())
     if not criado:
-        return _users_redirect(request, f"Ja existe um usuario com o login '{username}'.", "err")
+        return _users_redirect(request, f"Já existe um usuário com o login '{username}'.", "err")
     db.audit(request.session["user"], "user_create", f"{username} ({role})", _ip(request))
-    return _users_redirect(request, f"Usuario '{username}' criado.")
+    return _users_redirect(request, f"Usuário '{username}' criado.")
 
 
 @app.post("/admin/usuarios/{username}/editar")
@@ -1032,7 +1097,7 @@ async def users_update(request: Request, username: str):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     alvo = db.get_user(username)
     if not alvo:
-        return _users_redirect(request, "Usuario nao encontrado.", "err")
+        return _users_redirect(request, "Usuário não encontrado.", "err")
     form = await request.form()
     role = form.get("role") if form.get("role") in ("admin", "viewer") else alvo["role"]
     active = form.get("active") == "on"
@@ -1040,7 +1105,7 @@ async def users_update(request: Request, username: str):
     # nunca deixar o painel sem nenhum admin ativo
     if (alvo["role"] == "admin" and alvo["active"]) and (role != "admin" or not active) \
             and db.count_active_admins(exclude=username) == 0:
-        return _users_redirect(request, "Este e o unico administrador ativo: mantenha o papel admin e a conta ativa.", "err")
+        return _users_redirect(request, "Este é o único administrador ativo: mantenha o papel admin e a conta ativa.", "err")
 
     db.update_user(username, (form.get("full_name") or "").strip(),
                    (form.get("email") or "").strip(), role, active)
@@ -1048,7 +1113,7 @@ async def users_update(request: Request, username: str):
              f"{username} -> {role}, {'ativo' if active else 'inativo'}", _ip(request))
     if username == request.session["user"]:
         request.session["role"] = role
-    return _users_redirect(request, f"Usuario '{username}' atualizado.")
+    return _users_redirect(request, f"Usuário '{username}' atualizado.")
 
 
 @app.post("/admin/usuarios/{username}/senha")
@@ -1056,7 +1121,7 @@ async def users_password(request: Request, username: str):
     if not _is_authed(request) or _role(request) != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
     if not db.get_user(username):
-        return _users_redirect(request, "Usuario nao encontrado.", "err")
+        return _users_redirect(request, "Usuário não encontrado.", "err")
     form = await request.form()
     erro = _check_password(form.get("password") or "", form.get("password2") or "")
     if erro:
@@ -1071,14 +1136,14 @@ async def users_delete(request: Request, username: str):
     if not _is_authed(request) or _role(request) != "admin":
         return JSONResponse({"error": "forbidden"}, status_code=403)
     if not db.get_user(username):
-        return _users_redirect(request, "Usuario nao encontrado.", "err")
+        return _users_redirect(request, "Usuário não encontrado.", "err")
     if username == request.session["user"]:
-        return _users_redirect(request, "Voce nao pode excluir a propria conta.", "err")
+        return _users_redirect(request, "Você não pode excluir a própria conta.", "err")
     if db.count_active_admins(exclude=username) == 0:
-        return _users_redirect(request, "Nao e possivel excluir o unico administrador ativo.", "err")
+        return _users_redirect(request, "Não é possível excluir o único administrador ativo.", "err")
     db.delete_user(username)
     db.audit(request.session["user"], "user_delete", username, _ip(request))
-    return _users_redirect(request, f"Usuario '{username}' excluido.")
+    return _users_redirect(request, f"Usuário '{username}' excluído.")
 
 
 @app.post("/profile/senha")
@@ -1137,9 +1202,9 @@ async def api_sessions_logoff(request: Request):
     fim de tudo.
     """
     if not _is_authed(request):
-        return JSONResponse({"ok": False, "msg": "sessao expirada"}, status_code=401)
+        return JSONResponse({"ok": False, "msg": "sessão expirada"}, status_code=401)
     if _role(request) != "admin":
-        return JSONResponse({"ok": False, "msg": "acao requer perfil admin"}, status_code=403)
+        return JSONResponse({"ok": False, "msg": "ação requer perfil admin"}, status_code=403)
     form = await request.form()
     server_name, _, sid = str(form.get("target") or "").partition("|")
     srv = {s.name: s for s in STATE["inv"].servers}.get(server_name)
@@ -1148,7 +1213,7 @@ async def api_sessions_logoff(request: Request):
     ok, msg = logoff_session(srv, STATE["inv"].winrm, sid)
     db.audit(request.session.get("user"), "logoff",
              f"{server_name}#{sid} -> {'ok' if ok else 'falhou'}: {msg}", _ip(request))
-    log.info("logoff %s sessao %s por %s -> %s (%s)", server_name, sid,
+    log.info("logoff %s sessão %s por %s -> %s (%s)", server_name, sid,
              request.session.get("user"), ok, msg)
     return JSONResponse({"ok": ok, "msg": msg, "server": server_name, "id": sid})
 
@@ -1158,7 +1223,7 @@ async def sessions_logoff(request: Request):
     if not _is_authed(request):
         return RedirectResponse("/login", status_code=302)
     if _role(request) != "admin":
-        request.session["flash"] = "Acao requer perfil admin."
+        request.session["flash"] = "Ação requer perfil admin."
         return RedirectResponse("/sessions", status_code=303)
     form = await request.form()
     targets = form.getlist("target")  # cada item: "server|id"
@@ -1174,17 +1239,17 @@ async def sessions_logoff(request: Request):
         success, msg = logoff_session(srv, inv.winrm, sid)
         if success:
             ok_count += 1
-            log.info("logoff %s sessao %s por %s", server_name, sid, request.session.get("user"))
+            log.info("logoff %s sessão %s por %s", server_name, sid, request.session.get("user"))
         else:
             fails.append(f"{server_name}#{sid}: {msg}")
-            log.warning("logoff FALHOU %s sessao %s: %s", server_name, sid, msg)
+            log.warning("logoff FALHOU %s sessão %s: %s", server_name, sid, msg)
     parts = []
     if ok_count:
-        parts.append(f"{ok_count} sessao(oes) encerrada(s).")
+        parts.append(f"{ok_count} sessão(ões) encerrada(s).")
     if fails:
         parts.append("Falhas: " + "; ".join(fails))
     if not targets:
-        parts.append("Nenhuma sessao selecionada.")
+        parts.append("Nenhuma sessão selecionada.")
     db.audit(request.session.get("user"), "logoff", " ".join(parts), _ip(request))
     request.session["flash"] = " ".join(parts)
     return RedirectResponse("/sessions", status_code=303)
@@ -1351,8 +1416,8 @@ def pacotes_coletar(request: Request):
     inv, settings = STATE["inv"], _settings()
     threading.Thread(target=poll_inventory, args=(inv, settings), daemon=True).start()
     db.audit(request.session.get("user"), "inventory_collect", None, _ip(request))
-    request.session["pflash"] = ("Coleta de inventario disparada. "
-                                "Atualize a pagina em alguns instantes.")
+    request.session["pflash"] = ("Coleta de inventário disparada. "
+                                "Atualize a página em alguns instantes.")
     return RedirectResponse("/pacotes", status_code=303)
 
 
@@ -1398,16 +1463,17 @@ async def catalogo_manual(request: Request):
     produto = (form.get("produto") or "").strip()[:200]
     versao = (form.get("version") or "").strip()[:80]
     if not produto or not versao:
-        return _catalogo_redirect(request, "Informe produto e versao.")
+        return _catalogo_redirect(request, "Informe produto e versão.")
     if not re.fullmatch(r"[0-9][0-9.]{0,78}[0-9]", versao):
-        return _catalogo_redirect(request, "Versao invalida: use apenas numeros e pontos.")
+        return _catalogo_redirect(request, "Versão inválida: use apenas números e pontos.")
+
     url = (form.get("url") or "").strip()[:400]
     if url and not url.startswith(("http://", "https://")):
         return _catalogo_redirect(request, "O link deve comecar com http:// ou https://.")
     db.insert_manual_catalog(produto, versao, (form.get("pkg_key") or "").strip() or None,
                              url or None, (form.get("nota") or "").strip()[:300] or None)
     db.audit(request.session["user"], "catalog_add", f"{produto} {versao}", _ip(request))
-    return _catalogo_redirect(request, f"Versao {versao} de '{produto}' registrada.")
+    return _catalogo_redirect(request, f"Versão {versao} de '{produto}' registrada.")
 
 
 @app.post("/pacotes/catalogo/{entry_id}/excluir")
@@ -1434,7 +1500,7 @@ async def catalogo_vincular(request: Request):
     pkg_key = (form.get("pkg_key") or "").strip()
     chave = packages.match_key(produto)
     if not chave:
-        return _catalogo_redirect(request, "Produto invalido.")
+        return _catalogo_redirect(request, "Produto inválido.")
     vinculos = dict(db.get_config("catalog_bind", {}) or {})
     if pkg_key:
         vinculos[chave] = pkg_key
@@ -1453,11 +1519,11 @@ def catalogo_varrer(request: Request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     n = scan_packages(_settings())
     db.audit(request.session["user"], "catalog_scan", f"{n} arquivo(s)", _ip(request))
-    return _catalogo_redirect(request, f"Repositorio lido: {n} arquivo(s).")
+    return _catalogo_redirect(request, f"Repositório lido: {n} arquivo(s).")
 
 
 # ---------- fila de instalacao (F4) ----------
-TASK_LABEL = {"pending": "na fila", "running": "executando", "ok": "concluida",
+TASK_LABEL = {"pending": "na fila", "running": "executando", "ok": "concluída",
               "failed": "falhou", "blocked": "bloqueada", "canceled": "cancelada"}
 templates.env.globals["task_label"] = TASK_LABEL
 
@@ -1508,26 +1574,26 @@ async def tarefas_criar(request: Request):
         return _tarefas_redirect(request, "Servidor desconhecido.")
     acao = form.get("action") or ""
     if acao not in execution.actions_for(inv.defaults):
-        return _tarefas_redirect(request, "Acao fora do catalogo permitido.")
+        return _tarefas_redirect(request, "Ação fora do catálogo permitido.")
     try:
         entrada_id = int(form.get("catalog_id") or 0)
     except ValueError:
         entrada_id = 0
     entrada = next((e for e in db.list_catalog() if e["id"] == entrada_id and e["arquivo"]), None)
     if not entrada:
-        return _tarefas_redirect(request, "Pacote nao encontrado no repositorio.")
+        return _tarefas_redirect(request, "Pacote não encontrado no repositório.")
 
     modo = "dry_run"
     if form.get("mode") == "real":
         cfg = _exec_cfg()
         if not cfg.get("enabled"):
             return _tarefas_redirect(
-                request, "Execucao real esta desligada (execution.enabled). "
+                request, "Execução real está desligada (execution.enabled). "
                          "Nada foi enfileirado.")
         if servidor not in (cfg.get("hosts") or []):
             return _tarefas_redirect(
-                request, f"{servidor} nao esta em execution.hosts. Nada foi enfileirado.")
-        if (form.get("confirm") or "").strip() != servidor:
+                request, f"{nomes.titulo(servidor)} não está em execution.hosts. Nada foi enfileirado.")
+        if not nomes.confere(form.get("confirm") or "", servidor):
             return _tarefas_redirect(
                 request, "Para executar de verdade, digite o nome do host exatamente "
                          "como aparece no painel. Nada foi enfileirado.")
@@ -1541,7 +1607,7 @@ async def tarefas_criar(request: Request):
              f"({acao}, {modo})", _ip(request))
     return _tarefas_redirect(
         request, f"Tarefa #{task_id} na fila "
-                 f"({'EXECUCAO REAL' if modo == 'real' else 'pre-voo, sem executar'}).")
+                 f"({'EXECUÇÃO REAL' if modo == 'real' else 'pré-voo, sem executar'}).")
 
 
 @app.post("/pacotes/tarefas/{task_id}/cancelar")
@@ -1551,7 +1617,7 @@ def tarefas_cancelar(request: Request, task_id: int):
     if db.cancel_task(task_id):
         db.audit(request.session["user"], "install_task_cancel", str(task_id), _ip(request))
         return _tarefas_redirect(request, f"Tarefa #{task_id} cancelada.")
-    return _tarefas_redirect(request, f"Tarefa #{task_id} ja saiu da fila.")
+    return _tarefas_redirect(request, f"Tarefa #{task_id} já saiu da fila.")
 
 
 @app.get("/pacotes/stage/{task_id}")

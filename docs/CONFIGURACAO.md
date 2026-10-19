@@ -70,7 +70,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 
 | Campo | Obrigatório | Descrição |
 |---|---|---|
-| `name` | ✅ | Identificador único exibido no painel |
+| `name` | ✅ | Chave interna do servidor (URLs, banco, histórico). Não aparece como título na tela |
+| `label` | — | Nome mostrado no painel, no mural e nas mensagens. Se omitido, vale o nome do computador (COMPUTERNAME) que o inventário coletou, ex.: `SRV06N` |
 | `host` | ✅ | IP ou hostname do alvo (destino do WinRM) |
 | `cred` | — | Perfil de credencial (mapeia para `RMON_CRED_<PERFIL>_*` no `.env`). Padrão `default` |
 | `services` | — | Serviços Windows fixos a checar. Se omitido, usa `defaults.services` |

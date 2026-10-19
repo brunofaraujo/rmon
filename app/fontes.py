@@ -78,7 +78,7 @@ def resumo(es: dict[str, Any], agora: float | None = None) -> dict[str, Any]:
         es_estado, es_texto = "erro", "fora do ar"
     elif es.get("ok_ts"):
         es_estado = "ok"
-        es_texto = f"ha {max(0, int(agora - es['ok_ts']))}s"
+        es_texto = f"há {max(0, int(agora - es['ok_ts']))}s"
     else:
         es_estado, es_texto = "espera", "aguardando"
     return {

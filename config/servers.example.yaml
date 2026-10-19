@@ -159,8 +159,9 @@ defaults:
     #     extensions: [".msi"]
 
 servers:
-  - name: rm-app-01
+  - name: rm-app-01          # chave interna (URL, banco); nao aparece como titulo
     host: 10.10.10.50
+    # label: "RM Aplicacao 1"  # nome na tela; omitido = o COMPUTERNAME coletado
     env: fin                 # ambiente (ver 'environments' no topo)
     role: app                # app | jobs | web | db | homolog
     nlb: true                # no de cluster NLB (drenagem/reingresso, ver docs/NLB.md)
