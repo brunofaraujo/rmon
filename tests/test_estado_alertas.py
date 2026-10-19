@@ -642,3 +642,13 @@ def test_host_em_manutencao_nao_tem_job_encerrado(ambiente, encerrar, monkeypatc
     monkeypatch.setattr(manutencao, "todas", lambda: {"app-34": {"ate": 9e12}})
     ambiente.ciclo(**ok(jobrunners=jr_de(4280)))
     assert encerrar == []
+
+
+def test_falha_ao_encerrar_vai_ao_canal_uma_vez(ambiente, encerrar, monkeypatch):
+    monkeypatch.setattr(scheduler, "_jr_falhou", set())
+    monkeypatch.setattr(scheduler, "kill_jobrunner", lambda *a: (False, "Acesso negado"))
+    primeira = "\n".join(ambiente.ciclo(**ok(jobrunners=jr_de(4280))))
+    ambiente.relogio[0] += 60
+    segunda = "\n".join(ambiente.ciclo(**ok(jobrunners=jr_de(4400))))
+    assert "NÃO conseguiu encerrar" in primeira and "Acesso negado" in primeira
+    assert "NÃO conseguiu encerrar" not in segunda

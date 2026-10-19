@@ -732,6 +732,7 @@ PROBLEMA_LABEL = {
     "out_unowned": "Fora do balanceamento", "recovered": "Recuperado no balanceamento",
     "nlb_error": "Leitura do balanceamento", "failed": "Ação no balanceamento falhou",
     "MANUT": "Manutenção",
+    "reset_failed": "Reinício fora do Windows falhou",
 }
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)

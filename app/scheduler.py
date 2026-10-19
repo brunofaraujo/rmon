@@ -37,6 +37,9 @@ _boot: dict[str, float] = {}
 # Ultima leitura de cada JobRunner por servidor ("pid|inicio" -> (epoch, MB)),
 # para medir quanto ele cresceu desde a coleta anterior (jobrunners_a_encerrar)
 _jr_amostra: dict[str, dict[str, tuple[float, float]]] = {}
+# Processos que o RMon tentou e NAO conseguiu encerrar ("servidor|pid|inicio"):
+# a falha vai ao canal uma vez; as repeticoes ficam so no log e na auditoria
+_jr_falhou: set[str] = set()
 
 
 def _agora() -> float:
@@ -508,16 +511,23 @@ def iniciar_automatico(server, inv: Inventory, r: dict, apos_s: float, agora: fl
     return msgs
 
 
-def _gb_limiar(th: dict, chave: str) -> float:
+def _limiar(th: dict, chave: str) -> float:
+    """Limiar numerico de `th` (GB, MB...), nunca negativo; invalido = o padrao."""
     try:
         return max(0.0, float(th.get(chave) or 0))
     except (TypeError, ValueError):
         return float(DEFAULT_ALERTS[chave])
 
 
+def _procs(jr) -> list:
+    """Os processos de `jobrunners.top`: lista, ou um so (o PowerShell achata)."""
+    top = jr.get("top") if isinstance(jr, dict) else None
+    return top if isinstance(top, list) else [top] if isinstance(top, dict) else []
+
+
 def jobrunner_limiar_minimo(th: dict) -> float:
     """Menor limiar ligado: a partir dele vale perguntar ao SQL qual e o job."""
-    ligados = [g for g in (_gb_limiar(th, "jobrunner_warn_gb"), _gb_limiar(th, "jobrunner_gb")) if g > 0]
+    ligados = [g for g in (_limiar(th, "jobrunner_warn_gb"), _limiar(th, "jobrunner_gb")) if g > 0]
     return min(ligados) if ligados else 0.0
 
 
@@ -545,11 +555,10 @@ def jobrunner_problems(jr: dict | None, th: dict) -> dict[str, str]:
     p: dict[str, str] = {}
     if not isinstance(jr, dict):
         return p
-    aviso = _gb_limiar(th, "jobrunner_warn_gb")
-    limite = _gb_limiar(th, "jobrunner_gb")
+    aviso = _limiar(th, "jobrunner_warn_gb")
+    limite = _limiar(th, "jobrunner_gb")
     jobs = jr.get("jobs") if isinstance(jr.get("jobs"), dict) else {}
-    top = jr.get("top")
-    for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
+    for proc in _procs(jr):
         if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
             continue
         if proc.get("encerrado"):
@@ -680,8 +689,10 @@ def _identificar_jobrunners(jr: dict | None, th: dict) -> None:
     minimo = jobrunner_limiar_minimo(th)
     if not minimo:
         return
-    grandes = [p.get("pid") for p in (jr.get("top") or [])
+    ja = jr.get("jobs") or {}
+    grandes = [p.get("pid") for p in _procs(jr)
                if isinstance(p, dict) and p.get("pid") is not None
+               and str(p.get("pid")) not in ja
                and (p.get("private_mb") or 0) / 1024 >= minimo]
     if grandes:
         # merge: o job de quem o RMon acabou de encerrar ja veio identificado
@@ -717,13 +728,12 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, floa
     """
     if not isinstance(jr, dict) or jr.get("fonte") == "elastic":
         return []
-    limite_gb = _gb_limiar(th, "jobrunner_kill_gb")
-    ritmo = _gb_limiar(th, "jobrunner_kill_mb_min")
-    piso_mb = _gb_limiar(th, "jobrunner_kill_min_mb")
+    limite_gb = _limiar(th, "jobrunner_kill_gb")
+    ritmo = _limiar(th, "jobrunner_kill_mb_min")
+    piso_mb = _limiar(th, "jobrunner_kill_min_mb")
     anterior = anterior or {}
-    top = jr.get("top")
     alvos = []
-    for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
+    for proc in _procs(jr):
         if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
             continue
         try:
@@ -761,9 +771,7 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
     if not r.get("reachable") or not jr:
         return []
     anterior = _jr_amostra.get(server.name) or {}
-    top = jr.get("top")
-    procs = [p for p in (top if isinstance(top, list) else [top] if isinstance(top, dict) else [])
-             if isinstance(p, dict) and p.get("pid") is not None and p.get("private_mb") is not None]
+    procs = [p for p in _procs(jr) if isinstance(p, dict) and p.get("pid") is not None and p.get("private_mb") is not None]
     _jr_amostra[server.name] = {_jr_chave(p): (agora, float(p["private_mb"])) for p in procs}
     alvos = jobrunners_a_encerrar(jr, anterior, th, agora)
     if not alvos:
@@ -792,8 +800,9 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
                      f"{retorno[:1].upper() + retorno[1:]}. O RM perde esta execução: avise quem pediu")
             db.record_alert(server.name, "acao", f"jobrunner-kill:{pid}", texto)
             msgs.append("\U0001F6D1 " + texto)
-        elif not retorno.startswith("o PID"):
+        elif not retorno.startswith("o PID") and f"{server.name}|{_jr_chave(proc)}" not in _jr_falhou:
             # "o PID ... ja tinha terminado / e outro processo" nao e falha
+            _jr_falhou.add(f"{server.name}|{_jr_chave(proc)}")
             msgs.append(f"\u26A0\uFE0F RMon NÃO conseguiu encerrar o processo de job PID {pid} "
                         f"({quem}; {motivo}): {retorno}")
     return msgs

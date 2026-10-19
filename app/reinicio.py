@@ -51,7 +51,7 @@ _LOCK = threading.Lock()
 
 ICON = {"reset_unreachable": "\U0001F504", "would_reset": "\U0001F7E0",
         "unreachable_crit": "\U0001F534", "unreachable_alive": "⚠️",
-        "failed": "❌"}
+        "reset_failed": "❌"}
 
 
 def settings_for(defaults: dict | None) -> dict[str, Any]:
@@ -197,7 +197,7 @@ def run_cycle(inv, coletas: dict[str, dict], es: dict[str, dict] | None,
                 else:
                     nova = "falhou" not in st
                     st["falhou"] = now
-                    d = {**d, "kind": "failed",
+                    d = {**d, "kind": "reset_failed",
                          "msg": f"reinício fora do Windows FALHOU ({via[1]}): {detalhe[:200]}"}
                     if not nova:
                         _registrar(s, d["kind"], d["msg"], avisar=False)
