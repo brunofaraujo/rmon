@@ -215,11 +215,16 @@
       {% for p in jr.top %}
       {% set gb = (p.private_mb or 0) / 1024 %}
       {% set ex = (jr.jobs or {}).get(p.pid | string) %}
+      {% if p.encerrado %}
+      <span class="pill"
+            title="Encerrado automaticamente pelo RMon em {{ p.encerrado | dt }}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">&#128721; PID {{ p.pid }} &middot; {{ gb | round(1) }} GB{% if ex %} &middot; job {{ ex.idjob }}{% endif %} &middot; encerrado pelo RMon</span>
+      {% else %}
       <span class="pill {{ 'red' if (jr_limite_gb and gb >= jr_limite_gb) else ('amber' if (jr_aviso_gb and gb >= jr_aviso_gb) else '') }}"
             title="PID {{ p.pid }}{% if p.start %} &middot; iniciado em {{ p.start }}{% endif %}{% if ex %} &middot; job {{ ex.idjob }} de {{ ex.usuario }}{% endif %}">PID {{ p.pid }} &middot; {{ gb | round(1) }} GB{% if ex %} &middot; job {{ ex.idjob }}{% endif %}</span><button type="button" class="svc-btn jr-kill"
             data-server="{{ name }}" data-nome="{{ titulo }}" data-pid="{{ p.pid }}" data-gb="{{ gb | round(1) }}"
             data-job="{% if ex %}job {{ ex.idjob }} '{{ ex.nome or ex.classe or '?' }}' de {{ ex.usuario or '?' }}{% else %}job não identificado{% endif %}"
             title="Encerrar este processo no servidor (o RM perde esta execução)">&#10005;</button>
+      {% endif %}
       {% endfor %}
     </div>
     {% if jr_alerta %}
@@ -228,6 +233,11 @@
       <div class="muted">Cancele o job no RM (Gerenciamento de Jobs). Se não der, encerre o processo pelo &#10005; ao lado do PID: o RM perde a execução e o servidor recupera a memória.</div>
     </div>
     {% endif %}
+    <div class="muted small" style="margin-top:.4rem">&#128721; Encerramento automático:
+      {% if jr_kill.gb or (jr_kill.mb_min and jr_kill.min_mb is not none) %}<b>ligado</b>. O RMon encerra sozinho o processo de job
+      {% if jr_kill.gb %}a partir de {{ jr_kill.gb }} GB{% endif %}{% if jr_kill.gb and jr_kill.mb_min %} ou {% endif %}{% if jr_kill.mb_min %}que cresce {{ jr_kill.mb_min }} MB por minuto acima de {{ jr_kill.min_mb }} MB{% endif %},
+      logo depois da coleta, antes de o servidor travar. O aviso vai para o canal com o job e quem o pediu.
+      {% else %}<b>desligado</b> (Admin &rarr; Limiares de alerta).{% endif %}</div>
   </div>
   {% endif %}
 

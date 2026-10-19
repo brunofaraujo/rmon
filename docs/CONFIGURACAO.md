@@ -37,6 +37,9 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     down_after: 3                  # coletas seguidas sem contato antes de alertar DOWN
     jobrunner_warn_gb: 4           # ALERTA (âmbar): um RM.Host.JobRunner com 4+ GB de memória privada
     jobrunner_gb: 8                # ALERTA (vermelho): 8+ GB — o commit do host esgota em minutos
+    jobrunner_kill_gb: 4           # o RMon ENCERRA sozinho o JobRunner com 4+ GB (0 desliga)
+    jobrunner_kill_mb_min: 400     # ... ou que cresce 400+ MB/min entre duas coletas (0 desliga)
+    jobrunner_kill_min_mb: 768     # ... já acima de 768 MB (abaixo disso é carga inicial)
     lembrete_h: 4                  # crítico (vermelho) ainda aberto é notificado de novo a cada 4h (0 desliga)
     resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
     boot_janela_min: 30            # serviço automático parado cujo alerta abriu até 30 min após o boot = "não subiu após o reboot"
@@ -81,6 +84,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
 | `jobs` | — | `window_min`, `servidor`, `success_status`, `failed_status` — requer login SQL configurado |
 | `nlb` | — | `true` = nó de cluster NLB de terminal server: coleta o estado do NLB e os logons RDP e entra na drenagem/reingresso automático (ver [NLB.md](NLB.md)) |
 | `elastic_host` | — | `host.name` do servidor no Elasticsearch, quando não for o COMPUTERNAME (ver [Elasticsearch](#elasticsearch-opcional-só-leitura)) |
+| `incus_vm` | — | Instância desta VM no Incus. Servidor travado sem contato é reiniciado por ela (nó do NLB: [NLB.md](NLB.md); fora do NLB: [Servidor travado](#servidor-travado-sem-contato-defaultsreinicio)) |
 
 ### Serviços fixos x descobertos (`service_patterns`)
 
@@ -596,12 +600,37 @@ crítico acende:
 `GJOBXEXECUCAO` pelo `PROCESSID` + `SERVIDOR` do host e o alerta já sai com **job,
 usuário, início, progresso e o filtro** usado (recortado do `VALORPARAMETROS`).
 
-Por que dois níveis: nos quatro estouros conhecidos (06/10 no srv11 e no .188, 13/10 no
+Por que dois níveis: nos quatro estouros de 06 e 13/10 (06/10 no srv11 e no .188, 13/10 no
 .34 e no .190 — todos o mesmo relatório gerado só com `STURMADISC.CODCOLIGADA = '3'`, sem
 turma), o processo cresceu devagar por horas até ~7 GB e explodiu para 25–80 GB em
 minutos. O cruzamento de **8 GB** aconteceu a 1 minuto da explosão (o host caiu 10–30 min
 depois); o de **4 GB**, de 3,5 a 6 h antes — tempo de cancelar o job. Nenhum JobRunner
 passou de 1 GB fora desses incidentes nos 14 dias medidos.
+
+#### Encerramento automático
+
+Em 19/10 o mesmo relatório derrubou o .222 e o .188 **sem** as horas de crescimento lento:
+o PID 7760 foi de 373 MB a 4,2 GB entre duas coletas e o .188 parou de responder na
+seguinte; o 2172 passou de 340 a 854 MB em um minuto e o .222 travou logo depois. O aviso
+de 4 GB chegou, mas ninguém teria tempo de agir, e sem WinRM o botão ✕ some.
+
+Por isso o RMon **encerra sozinho** o JobRunner, na mesma hora da coleta do servidor
+(antes de esperar os outros), quando:
+
+| Chave | Padrão | Regra |
+|---|---|---|
+| `alerts.jobrunner_kill_gb` | `4` | memória privada a partir disso |
+| `alerts.jobrunner_kill_mb_min` | `400` | cresceu isso por minuto desde a coleta anterior (mesmo PID e hora de início)... |
+| `alerts.jobrunner_kill_min_mb` | `768` | ...e já passa disso |
+
+`0` desliga cada regra; as três também ficam em *Admin* → *Limiares de alerta*. Nos 5 dias
+anteriores, o maior salto normal foi de 441 MB/min, sempre parando abaixo de 500 MB
+(carga inicial do job): só os dois casos de 19/10 cresceram assim acima de 800 MB.
+
+O encerramento usa o mesmo caminho do ✕ (confere PID, nome e hora de início no host),
+vai para a linha do tempo, a auditoria (`rmon`) e o canal com o job e quem o pediu. O
+processo aparece na tela do servidor como **encerrado pelo RMon** e não abre o alerta de
+4/8 GB. Host em janela de manutenção fica de fora. O RM perde aquela execução.
 
 ### Antiflapping do alerta DOWN
 
@@ -684,6 +713,36 @@ Se o nome no Elastic for outro, use `elastic_host` no servidor.
 Drenagem e reingresso automáticos dos nós do cluster NLB pela saúde de aplicação.
 **Modo `alert` por padrão** (avisa e audita o que faria, sem tocar no NLB). Desenho,
 sinais, travas de segurança e como ativar o modo `auto`: [NLB.md](NLB.md).
+
+## Servidor travado sem contato (`defaults.reinicio`)
+
+Servidor **fora do NLB** que trava (o .222 em 19/10: WinRM, RPC e agente do Elastic parados
+juntos) entra na mesma regra que reinicia os nós do NLB:
+
+- sem contato (WinRM) há `ciclos` coletas seguidas (padrão 3);
+- o Elastic confirma que o Windows parou: a consulta respondeu, o host mandava dados quando
+  o contato caiu e nada chega há `elastic_mudo_sec` (padrão 180). Elastic ainda recebendo
+  dados = só o WinRM travou: aviso âmbar, sem reinício;
+- fora de janela de manutenção, no máximo `max_dia` reinícios em 24h (padrão 2) e um a
+  cada `intervalo_min` (padrão 30).
+
+Se for VM (`incus_vm`), é reiniciado pelo Incus, com o mesmo comando forçado do NLB (ver
+[NLB.md](NLB.md)). Servidor físico, como o .222, não tem canal fora do Windows: o RMon não
+consegue reiniciá-lo, e a proteção dele é não deixar travar (o
+[encerramento automático](#encerramento-automático) do JobRunner). Travado mesmo assim,
+ou passado o limite de reinícios, sai um alerta **crítico** uma vez por episódio dizendo
+que o Windows parou (não só o WinRM) e que o reset é no console. Sem Elastic não há
+confirmação e nada acontece além do alerta de sem contato.
+
+```yaml
+defaults:
+  reinicio:
+    mode: auto          # auto | alert (só diz o que faria) | off
+    ciclos: 3
+    elastic_mudo_sec: 180
+    max_dia: 2
+    intervalo_min: 30
+```
 
 ## Embutir o mural (`/tv`) em outro painel via iframe
 

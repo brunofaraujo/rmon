@@ -516,6 +516,8 @@ def server_detail(request: Request, name: str):
          "broker_alerta": scheduler.broker_problems(hist[0], th, ref, estavel),
          "jr_alerta": scheduler.jobrunner_problems(hist[0].get("jobrunners"), th),
          "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb"),
+         "jr_kill": {"gb": th.get("jobrunner_kill_gb"), "mb_min": th.get("jobrunner_kill_mb_min"),
+                     "min_mb": th.get("jobrunner_kill_min_mb")},
          "es": _elastic_do_servidor(name, hist[0], th, horas if horas in (24, 168, 720) else 24),
          "manut": manut, "flash": flash},
     )
@@ -720,7 +722,7 @@ PROBLEMA_LABEL = {
     # decisoes do NLB (alerts_log.kind = "nlb")
     "drain": "Saiu do balanceamento", "rejoin": "Voltou ao balanceamento",
     "drain_unreachable": "Sem contato: saiu do balanceamento",
-    "reset_unreachable": "Sem contato: VM reiniciada",
+    "reset_unreachable": "Sem contato: reiniciado fora do Windows",
     "would_reset": "Reiniciaria a VM (modo alerta)",
     "unreachable_crit": "Sem contato e sem como reiniciar",
     "unreachable_alive": "Só o WinRM travou",
@@ -730,12 +732,13 @@ PROBLEMA_LABEL = {
     "out_unowned": "Fora do balanceamento", "recovered": "Recuperado no balanceamento",
     "nlb_error": "Leitura do balanceamento", "failed": "Ação no balanceamento falhou",
     "MANUT": "Manutenção",
+    "reset_failed": "Reinício fora do Windows falhou",
 }
 
 # Rotulo de cada tipo de registro na linha do tempo (alerts_log.kind)
 KIND_LABEL = {"raised": "abriu", "resolved": "resolvido", "reminder": "lembrete",
               "manutencao": "manutenção", "acao": "ação", "package": "software",
-              "nlb": "balanceamento"}
+              "nlb": "balanceamento", "reinicio": "reinício"}
 templates.env.globals["kind_label"] = KIND_LABEL
 templates.env.globals["acao_nlb"] = nlb.ACAO_LABEL
 
@@ -748,6 +751,7 @@ AUDIT_LABEL = {
     "user_password_reset": "redefiniu senha de usuário",
     "service_start": "iniciou serviço", "service_stop": "parou serviço", "service_restart": "reiniciou serviço",
     "logoff": "encerrou sessão", "jobrunner_kill": "encerrou processo de job",
+    "jobrunner_kill_auto": "encerrou processo de job (automático)",
     "manutencao_iniciar": "abriu manutenção", "manutencao_encerrar": "encerrou manutenção",
     "inventory_collect": "pediu leitura do inventário", "catalog_add": "registrou versão",
     "catalog_bind": "vinculou pacote", "catalog_delete": "excluiu versão", "catalog_scan": "leu o repositório",
@@ -765,6 +769,8 @@ def _acao_audit(acao: str) -> str:
         return AUDIT_LABEL[acao]
     if acao.startswith("nlb_"):
         return "balanceamento: " + _problema_label(acao[4:]).lower()
+    if acao.startswith("reinicio_"):
+        return "reinício: " + _problema_label(acao[9:]).lower()
     return acao
 
 
@@ -1023,6 +1029,9 @@ async def admin_config(request: Request):
                              "jobs_all_failed": _int("jobs_all_failed", 10, 1, 1000),
                              "jobrunner_warn_gb": _int("jobrunner_warn_gb", 4, 0, 512),
                              "jobrunner_gb": _int("jobrunner_gb", 8, 0, 512),
+                             "jobrunner_kill_gb": _int("jobrunner_kill_gb", 4, 0, 512),
+                             "jobrunner_kill_mb_min": _int("jobrunner_kill_mb_min", 400, 0, 100000),
+                             "jobrunner_kill_min_mb": _int("jobrunner_kill_min_mb", 768, 0, 524288),
                              "lembrete_h": _int("lembrete_h", 4, 0, 72),
                              "resumo_hora": _int("resumo_hora", 8, -1, 23),
                              "boot_janela_min": _int("boot_janela_min", 30, 5, 240),

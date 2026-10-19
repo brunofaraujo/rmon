@@ -595,3 +595,60 @@ def test_subir_servicos_winrm_fora_vira_falha_de_todos(monkeypatch):
                                  allowed=["A", "B"])
     assert r == {"A": (False, "sem resposta do host: WinRMOperationTimeoutError: "),
                  "B": (False, "sem resposta do host: WinRMOperationTimeoutError: ")}
+
+
+# ------------------------------------------------------------ encerramento automatico do JobRunner (19/10)
+
+@pytest.fixture
+def encerrar(ambiente, monkeypatch):
+    from app import jobstats
+    feitos = []
+    monkeypatch.setattr(scheduler, "_jr_amostra", {})
+    monkeypatch.setattr(scheduler, "kill_jobrunner",
+                        lambda srv, wc, pid, inicio, processo: feitos.append((pid, inicio)) or
+                        (True, f"PID {pid} encerrado (4280 MB de memória privada liberados)"))
+    monkeypatch.setattr(jobstats, "executions_by_pid", lambda comp, pids: {
+        str(p): {"idjob": 2447428, "nome": "Gerar Relatório", "usuario": "DJACY.MARIANO"} for p in pids})
+    return feitos
+
+
+def jr_de(mb, pid=7760):
+    return {"top": [{"pid": pid, "private_mb": mb, "start": "2026-10-19 09:24:38"}],
+            "computer": "WIN2016", "count": 30}
+
+
+def test_jobrunner_estourando_e_encerrado_na_coleta(ambiente, encerrar):
+    msgs = ambiente.ciclo(**ok(jobrunners=jr_de(4280)))
+    assert encerrar == [(7760, "2026-10-19 09:24:38")]
+    texto = "\n".join(msgs)
+    assert "encerrou o processo de job PID 7760" in texto and "DJACY.MARIANO" in texto
+    acoes = [(p, m) for (_, k, p, m) in ambiente.banco.alertas if k == "acao"]
+    assert acoes and acoes[0][0] == "jobrunner-kill:7760"
+    # o encerrado nao abre o alerta de 4 GB no mesmo ciclo
+    assert not [p for (_, k, p, _) in ambiente.banco.alertas if k == "raised" and p.startswith("jobrunner")]
+
+
+def test_crescimento_rapido_e_encerrado_na_segunda_coleta(ambiente, encerrar):
+    ambiente.ciclo(**ok(jobrunners=jr_de(340, pid=2172)))
+    assert encerrar == []
+    ambiente.relogio[0] += 60
+    ambiente.ciclo(**ok(jobrunners=jr_de(854, pid=2172)))
+    assert [pid for pid, _ in encerrar] == [2172]
+
+
+def test_host_em_manutencao_nao_tem_job_encerrado(ambiente, encerrar, monkeypatch):
+    from app import manutencao
+    monkeypatch.setattr(manutencao, "ativas", lambda agora=None, janelas=None: {"app-34": {"ate": 9e12}})
+    monkeypatch.setattr(manutencao, "todas", lambda: {"app-34": {"ate": 9e12}})
+    ambiente.ciclo(**ok(jobrunners=jr_de(4280)))
+    assert encerrar == []
+
+
+def test_falha_ao_encerrar_vai_ao_canal_uma_vez(ambiente, encerrar, monkeypatch):
+    monkeypatch.setattr(scheduler, "_jr_falhou", set())
+    monkeypatch.setattr(scheduler, "kill_jobrunner", lambda *a: (False, "Acesso negado"))
+    primeira = "\n".join(ambiente.ciclo(**ok(jobrunners=jr_de(4280))))
+    ambiente.relogio[0] += 60
+    segunda = "\n".join(ambiente.ciclo(**ok(jobrunners=jr_de(4400))))
+    assert "NÃO conseguiu encerrar" in primeira and "Acesso negado" in primeira
+    assert "NÃO conseguiu encerrar" not in segunda

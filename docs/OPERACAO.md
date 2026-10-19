@@ -263,12 +263,28 @@ ficam em *Admin* → *Limiares de alerta* e mudam sem restart.
 
 ### Encerrar um JobRunner que está estourando
 
-Na tela do servidor, cada um dos maiores `RM.Host.JobRunner` (os que a coleta lista) tem um **✕** ao lado. A confirmação
+**O RMon encerra sozinho** o JobRunner que passa de 4 GB ou que cresce 400 MB/min acima de
+768 MB, logo depois da coleta do servidor. Isso vale desde 19/10, quando o .188 e o .222
+travaram minutos depois do aviso. A mensagem no canal diz o job e quem o pediu: avise o
+usuário, porque o RM perde aquela execução. Na tela do servidor o processo aparece como
+**encerrado pelo RMon**. Limiares e como desligar:
+[CONFIGURACAO.md](CONFIGURACAO.md#encerramento-automático).
+
+Para encerrar manualmente: na tela do servidor, cada um dos maiores `RM.Host.JobRunner` (os que a coleta lista) tem um **✕** ao lado. A confirmação
 mostra o job e quem o pediu, e exige o PID digitado. Antes de matar, o host confere três
 coisas: o processo ainda existe, ainda é um JobRunner e tem a mesma hora de início que a
 coleta viu (PID reaproveitado não morre por engano). O RM perde aquela execução. A ação vai
 para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job no RM: o ✕
 é para quando não dá tempo.
+
+### Servidor travado sem contato
+
+Sem WinRM e com o Elastic também mudo, o Windows travou, e não só o WinRM. VM é reiniciada
+pelo Incus: os nós do NLB pela regra do [NLB.md](NLB.md), os demais pela de
+[CONFIGURACAO.md](CONFIGURACAO.md#servidor-travado-sem-contato-defaultsreinicio).
+Servidor físico, como o .222, não tem como ser reiniciado pelo RMon: sai o alerta crítico
+**"Sem contato e sem como reiniciar"** e o reset é no console. A proteção dele é o
+encerramento automático do JobRunner, que não deixa o job esgotar a memória.
 
 ---
 
