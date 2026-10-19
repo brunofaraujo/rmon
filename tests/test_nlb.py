@@ -594,7 +594,7 @@ def test_reset_so_aceita_nome_de_instancia(monkeypatch):
     monkeypatch.setattr(incus, "_ssh", lambda cfg, args, timeout: chamadas.append(args) or (True, "ok"))
     for ruim in ("", "a b", "x;reboot", "-rf", "$(id)", "a" * 70):
         ok, msg = incus.reset({"incus_ssh": "u@h"}, ruim)
-        assert not ok and "invalida" in msg, ruim
+        assert not ok and "inválida" in msg, ruim
     assert chamadas == []
     assert incus.reset({"incus_ssh": "u@h"}, "WIN2016-2") == (True, "ok")
     assert chamadas == [["reset", "WIN2016-2"]]
