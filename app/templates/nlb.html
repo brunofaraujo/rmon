@@ -120,6 +120,7 @@
           <form method="post" action="/nlb/acao" class="toolbar nlb-act">
             <input type="hidden" name="server" value="{{ n.name }}">
             <input type="hidden" name="nome" value="{{ titulo }}">
+            <input type="hidden" name="digitar" value="{{ computador(n.name) or titulo }}">
             <input type="hidden" name="confirm" value="">
             {% if n.ativo %}
             <button class="btn small" name="action" value="drain" title="Tirar do balanceamento: para de receber novos acessos; quem já está conectado continua">Retirar</button>
@@ -213,7 +214,7 @@ document.querySelectorAll('form.nlb-act').forEach(function (f) {
     var txt = acao === 'drain'
       ? 'TIRAR ' + nome + ' do balanceamento?\nQuem já está conectado continua; os novos acessos vão para os outros servidores.'
       : 'DEVOLVER ' + nome + ' ao balanceamento?\nEle volta a receber novos acessos.';
-    var r = window.prompt(txt + '\n\nDigite ' + nome + ' para confirmar:');
+    var r = window.prompt(txt + '\n\nDigite ' + f.querySelector('[name=digitar]').value + ' para confirmar:');
     if (r === null) { ev.preventDefault(); return; }
     f.querySelector('[name=confirm]').value = r.trim();
   });

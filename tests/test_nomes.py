@@ -64,3 +64,17 @@ def test_sem_inventario_devolve_a_chave():
     nomes.configurar(None)
     assert nomes.titulo("qualquer") == "qualquer"
     assert nomes.descricao("qualquer") == ""
+
+
+def test_com_label_o_hostname_vai_na_descricao(inv):
+    assert nomes.descricao("fin-sge-jobs-222") == "SRV11 · Servidor de jobs · SGE/Financeiro"
+    # no mural (versao curta) o titulo ja diz sistema e papel: so o hostname
+    assert nomes.descricao("fin-sge-jobs-222", curta=True) == "SRV11"
+
+
+def test_confirmacao_aceita_hostname_e_travessao_digitado_como_hifen(inv, monkeypatch):
+    monkeypatch.setattr(inv.servers[1], "label", "SGE – Jobs 1")
+    assert nomes.confere("SRV11", "fin-sge-jobs-222")
+    assert nomes.confere("sge - jobs 1", "fin-sge-jobs-222")
+    assert nomes.confere("SGE – Jobs 1", "fin-sge-jobs-222")
+    assert not nomes.confere("SGE - Jobs 2", "fin-sge-jobs-222")
