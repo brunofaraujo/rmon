@@ -243,6 +243,35 @@
   </div>
   {% endif %}
 
+  {% set lj = limite_jr %}
+  {% if lj and (lj.estado != 'ausente' or (d.jobrunners and d.jobrunners.count)) %}
+  <div class="panel">
+    <h2>Teto de memória dos processos de job no Windows <span class="src-tag winrm">WinRM</span>
+      <span class="muted small">serviço RMonLimiteJobRunner, no próprio servidor</span></h2>
+    <div class="pills">
+      <span class="pill {{ lj.cor }}"><span class="d"></span>{{ lj.texto }}</span>
+      {% for t in lj.detalhes %}<span class="pill">{{ t }}</span>{% endfor %}
+    </div>
+    {% if lj.estouros %}
+    <div class="small" style="margin-top:.6rem">Últimos que passaram do teto:
+      {% for e in lj.estouros %}<div class="{{ 'txt-amber' if e.modo == 'aplicar' else 'muted' }}">{{ e.texto }}</div>{% endfor %}
+    </div>
+    {% endif %}
+    <details class="ajuda" style="margin-top:.6rem">
+      <summary>Como funciona</summary>
+      <div>
+        <p>Um serviço do RMon instalado neste servidor põe cada processo de job do RM num <b>Job Object</b> do Windows com um teto de memória.
+          No modo <b>ligado</b>, o Windows nega a memória acima do teto: o job daquele processo falha por falta de memória
+          (no RM aparece como &ldquo;Ocorreu uma falha crítica no processo&rdquo;), o RM.Host põe outro processo no lugar e o servidor segue de pé.
+          Isso não depende da coleta, da rede nem do WinRM.</p>
+        <p>No modo <b>só registra</b> nada é bloqueado: o serviço só anota no log Application do servidor quando um processo passaria do teto.
+          É o modo para calibrar o teto antes de ligar.</p>
+        <p>Instalar, trocar o modo e desinstalar: <code>docs/OPERACAO.md</code>, seção &ldquo;Teto de memória do JobRunner&rdquo;.</p>
+      </div>
+    </details>
+  </div>
+  {% endif %}
+
   {{ painel_elastic() }}
 
   <div class="panel">
