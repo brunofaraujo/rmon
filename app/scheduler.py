@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
 from . import nomes as exibicao
-from .collector import SEM_RESPOSTA, collect_server, subir_servicos
+from .collector import SEM_RESPOSTA, collect_server, kill_jobrunner, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
@@ -33,6 +33,9 @@ _avisado: dict[str, dict[str, float]] = {}
 _tentado: dict[tuple[str, str], list[float]] = {}
 # Boot de cada servidor visto no ciclo anterior (epoch), para a hora nao oscilar
 _boot: dict[str, float] = {}
+# Ultima leitura de cada JobRunner por servidor ("pid|inicio" -> (epoch, MB)),
+# para medir quanto ele cresceu desde a coleta anterior (jobrunners_a_encerrar)
+_jr_amostra: dict[str, dict[str, tuple[float, float]]] = {}
 
 
 def _agora() -> float:
@@ -59,6 +62,11 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # memoria privada de UM RM.Host.JobRunner, em GB: aviso
                   # precoce e critico (ver jobrunner_problems)
                   "jobrunner_warn_gb": 4, "jobrunner_gb": 8,
+                  # encerramento automatico do JobRunner (jobrunners_a_encerrar):
+                  # a partir de tantos GB, ou crescendo tantos MB/min ja acima de
+                  # tantos MB. 0 desliga cada regra.
+                  "jobrunner_kill_gb": 4, "jobrunner_kill_mb_min": 400,
+                  "jobrunner_kill_min_mb": 768,
                   # critico ainda aberto e lembrado a cada tantas horas (0 desliga)
                   "lembrete_h": 4,
                   # hora do resumo diario dos alertas (-1 desliga)
@@ -543,6 +551,8 @@ def jobrunner_problems(jr: dict | None, th: dict) -> dict[str, str]:
     for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
         if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
             continue
+        if proc.get("encerrado"):
+            continue         # o RMon ja o encerrou neste ciclo (encerrar_jobrunners)
         try:
             gb = float(proc["private_mb"]) / 1024
         except (TypeError, ValueError):
@@ -673,7 +683,134 @@ def _identificar_jobrunners(jr: dict | None, th: dict) -> None:
                if isinstance(p, dict) and p.get("pid") is not None
                and (p.get("private_mb") or 0) / 1024 >= minimo]
     if grandes:
-        jr["jobs"] = jobstats.executions_by_pid(jr.get("computer"), grandes) or {}
+        # merge: o job de quem o RMon acabou de encerrar ja veio identificado
+        jr["jobs"] = {**(jobstats.executions_by_pid(jr.get("computer"), grandes) or {}),
+                      **(jr.get("jobs") or {})}
+
+
+def _jr_chave(proc: dict) -> str:
+    return f"{proc.get('pid')}|{proc.get('start') or ''}"
+
+
+def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, float]] | None,
+                          th: dict, agora: float) -> list[tuple[dict, str]]:
+    """JobRunners que o RMon encerra sozinho: [(processo, motivo)]. Funcao pura.
+
+    Em 19/10 o mesmo relatorio derrubou o .222 e o .188 em minutos, sem as
+    horas de crescimento lento dos casos de 06 e 13/10: o PID 7760 foi de 373 MB
+    a 4,2 GB entre duas coletas e o host parou de responder na seguinte; o 2172
+    passou de 340 a 854 MB em um minuto e o .222 travou logo depois. O aviso
+    chegou, mas nao deu tempo de ninguem agir - e sem WinRM o botao some.
+
+    Duas regras, cada uma desligada com 0:
+
+    * `jobrunner_kill_gb` (4): memoria privada a partir disso;
+    * `jobrunner_kill_mb_min` (400) com `jobrunner_kill_min_mb` (768): cresceu
+      pelo menos tanto por minuto desde a coleta anterior (o mesmo processo:
+      PID e hora de inicio) e ja passa do minimo. Em 5 dias de historico do
+      parque, os saltos rapidos normais (ate 441 MB/min) sao carga inicial e
+      param abaixo de 500 MB; so os dois de 19/10 cresceram assim acima de
+      800 MB.
+
+    Leitura do Elastic (host sem WinRM) nao entra: sem WinRM nao ha como encerrar.
+    """
+    if not isinstance(jr, dict) or jr.get("fonte") == "elastic":
+        return []
+    limite_gb = _gb_limiar(th, "jobrunner_kill_gb")
+    ritmo = _gb_limiar(th, "jobrunner_kill_mb_min")
+    piso_mb = _gb_limiar(th, "jobrunner_kill_min_mb")
+    anterior = anterior or {}
+    top = jr.get("top")
+    alvos = []
+    for proc in (top if isinstance(top, list) else [top] if isinstance(top, dict) else []):
+        if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
+            continue
+        try:
+            mb = float(proc["private_mb"])
+        except (TypeError, ValueError):
+            continue
+        if limite_gb and mb / 1024 >= limite_gb:
+            alvos.append((proc, f"{mb / 1024:.1f} GB de memória privada (limite: {limite_gb:g} GB)"))
+            continue
+        antes = anterior.get(_jr_chave(proc))
+        if not (ritmo and antes and mb >= piso_mb):
+            continue
+        minutos = (agora - antes[0]) / 60
+        if not 0 < minutos <= 5:
+            continue
+        por_min = (mb - antes[1]) / max(minutos, 0.5)
+        if por_min >= ritmo:
+            alvos.append((proc, f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
+                                f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
+                                f"{ritmo:g} MB/min acima de {piso_mb:g} MB)"))
+    return alvos
+
+
+def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float) -> list[str]:
+    """Encerra no host, logo depois da coleta, o JobRunner que esta estourando.
+
+    Roda no mesmo worker da coleta do servidor, antes de esperar os outros: no
+    .222 o WinRM durou um minuto depois da ultima leitura boa. Usa o mesmo
+    caminho do botao da tela (collector.kill_jobrunner: confere PID, nome e hora
+    de inicio antes de matar). O processo encerrado fica marcado na coleta
+    (`encerrado`), sai dos alertas de 4/8 GB e vai para a linha do tempo, a
+    auditoria e o canal com o job e quem o pediu. O RM perde aquela execucao.
+    """
+    jr = r.get("jobrunners") if isinstance(r.get("jobrunners"), dict) else None
+    if not r.get("reachable") or not jr:
+        return []
+    anterior = _jr_amostra.get(server.name) or {}
+    top = jr.get("top")
+    procs = [p for p in (top if isinstance(top, list) else [top] if isinstance(top, dict) else [])
+             if isinstance(p, dict) and p.get("pid") is not None and p.get("private_mb") is not None]
+    _jr_amostra[server.name] = {_jr_chave(p): (agora, float(p["private_mb"])) for p in procs}
+    alvos = jobrunners_a_encerrar(jr, anterior, th, agora)
+    if not alvos:
+        return []
+    try:
+        jobs = jobstats.executions_by_pid(jr.get("computer"), [p["pid"] for p, _ in alvos]) or {}
+    except Exception:  # noqa: BLE001 - sem o nome do job, encerra do mesmo jeito
+        jobs = {}
+    if jobs:
+        jr["jobs"] = {**(jr.get("jobs") or {}), **jobs}
+    processo = collector_jobrunner_settings(inv.defaults).get("process") or "RM.Host.JobRunner"
+    msgs = []
+    for proc, motivo in alvos:
+        pid = int(proc["pid"])
+        ex = jobs.get(str(pid)) or {}
+        quem = (f"job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}' de "
+                f"{ex.get('usuario') or '?'}" if ex else "job não identificado")
+        ok, retorno = kill_jobrunner(server, inv.winrm, pid, proc.get("start"), processo)
+        log.warning("JobRunner %s PID %s encerrado automaticamente (%s) -> %s (%s)",
+                    server.name, pid, motivo, ok, retorno)
+        db.audit("rmon", "jobrunner_kill_auto",
+                 f"{server.name} PID {pid} ({quem}; {motivo}) -> {ok}: {retorno}"[:900])
+        if ok:
+            proc["encerrado"] = agora
+            texto = (f"RMon encerrou o processo de job PID {pid} ({quem}): {motivo}. "
+                     f"{retorno[:1].upper() + retorno[1:]}. O RM perde esta execução: avise quem pediu")
+            db.record_alert(server.name, "acao", f"jobrunner-kill:{pid}", texto)
+            msgs.append("\U0001F6D1 " + texto)
+        elif not retorno.startswith("o PID"):
+            # "o PID ... ja tinha terminado / e outro processo" nao e falha
+            msgs.append(f"\u26A0\uFE0F RMon NÃO conseguiu encerrar o processo de job PID {pid} "
+                        f"({quem}; {motivo}): {retorno}")
+    return msgs
+
+
+def _coletar(server, inv: Inventory, th: dict, manut: set[str]) -> dict:
+    """Coleta um servidor e, na mesma hora, encerra o JobRunner que estourou."""
+    r = collect_server(server, inv.winrm, inv.defaults)
+    if server.name in manut:
+        return r
+    try:
+        msgs = encerrar_jobrunners(server, inv, r, th, _agora())
+    except Exception:  # noqa: BLE001 - nunca derruba a coleta
+        log.exception("encerramento automatico do JobRunner em %s", server.name)
+        msgs = []
+    if msgs and notify.enabled():
+        notify.send(f"RMonitor — {exibicao.com_ip(server.name)}\n" + "\n".join(msgs))
+    return r
 
 
 def aplicar_rdp(r: dict, es: dict | None) -> None:
@@ -1022,9 +1159,15 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
         return
     _restaurar_estado(s.name for s in inv.servers)
     th = {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
+    # host em manutencao: quem esta mexendo nele decide (o encerramento
+    # automatico do JobRunner tambem fica de fora)
+    try:
+        manut = set(manutencao.ativas(_agora()))
+    except Exception:  # noqa: BLE001
+        manut = set()
     with ThreadPoolExecutor(max_workers=min(8, len(inv.servers))) as pool:
         futures = {
-            pool.submit(collect_server, s, inv.winrm, inv.defaults): s
+            pool.submit(_coletar, s, inv, th, manut): s
             for s in inv.servers
         }
         coletas = []

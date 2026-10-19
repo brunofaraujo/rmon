@@ -374,3 +374,56 @@ def test_agente_parado_logo_apos_o_boot_ainda_nao_e_problema():
     # Elastic Agent e "Automatico (atraso na inicializacao)": sobe ~2 min depois do boot
     assert scheduler.problems(coleta(uptime_sec=120, services=[agente()]), TH) == {}
     assert "agente:Elastic Agent" in scheduler.problems(coleta(uptime_sec=900, services=[agente()]), TH)
+
+
+# ------------------------------------------------------------ encerramento automatico (19/10)
+
+def amostra(pid, mb, ts, start="2026-10-19 09:24:38"):
+    return {f"{pid}|{start}": (ts, mb)}
+
+
+def proc(pid, mb, start="2026-10-19 09:24:38"):
+    return {"pid": pid, "private_mb": mb, "start": start}
+
+
+def test_encerra_acima_de_4gb_mesmo_sem_leitura_anterior():
+    # .188 em 19/10: 373 MB as 10:35, 4280 MB as 10:36:49, sem WinRM as 10:38
+    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(7760, 4280), proc(1, 90)]}, {}, TH, 1000)
+    assert [p["pid"] for p, _ in alvos] == [7760]
+    assert "4.2 GB" in alvos[0][1]
+
+
+def test_encerra_quem_cresce_rapido_acima_do_minimo():
+    # .222 em 19/10: 340 MB as 10:29:54, 854 MB as 10:30:53, travado as 10:31
+    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(2172, 854)]},
+                                            amostra(2172, 340, 1000 - 59), TH, 1000)
+    assert [p["pid"] for p, _ in alvos] == [2172]
+    assert "340 para 854 MB" in alvos[0][1]
+
+
+def test_carga_inicial_rapida_nao_encerra():
+    # o maior salto normal em 5 dias: 64 -> 496 MB em um minuto (.223)
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(9, 496)]}, amostra(9, 64, 940), TH, 1000) == []
+    # e crescimento lento acima do minimo tambem nao
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(9, 1500)]}, amostra(9, 1300, 880), TH, 1000) == []
+
+
+def test_pid_reaproveitado_nao_conta_como_crescimento():
+    anterior = amostra(2172, 100, 940, start="2026-10-19 08:00:00")
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(2172, 900)]}, anterior, TH, 1000) == []
+
+
+def test_leitura_velha_nao_mede_ritmo():
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(5, 2000)]}, amostra(5, 100, 1000 - 3600),
+                                           TH, 1000) == []
+
+
+def test_leitura_do_elastic_e_zero_desligam():
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(1, 9000)], "fonte": "elastic"}, {}, TH, 1) == []
+    th = {**TH, "jobrunner_kill_gb": 0, "jobrunner_kill_mb_min": 0}
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(1, 9000)]}, amostra(1, 100, 0), th, 30) == []
+
+
+def test_processo_encerrado_sai_dos_alertas_de_memoria():
+    jr = {"top": [{"pid": 7760, "private_mb": 9000, "encerrado": 1.0}]}
+    assert scheduler.jobrunner_problems(jr, TH) == {}
