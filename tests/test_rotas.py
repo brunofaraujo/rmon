@@ -365,3 +365,16 @@ def test_nlb_sem_canal_do_incus_diz_o_que_falta(app_falso):
     app_falso.entrar()
     html = app_falso.c.get("/nlb").text
     assert "não configurado" in html and "instalar-no-hypervisor.sh" in html
+
+
+def test_tela_mostra_encerramento_automatico(app_falso):
+    app_falso.entrar()
+    html = app_falso.c.get("/server/app-34").text
+    assert "Encerramento automático:" in html and "<b>ligado</b>" in html and "a partir de 4 GB" in html
+    jr = coleta()["jobrunners"]
+    jr["top"][0]["encerrado"] = AGORA - 20
+    app_falso.estado.coletas[:] = [coleta(jobrunners=jr)]
+    html = app_falso.c.get("/server/app-34").text
+    assert "encerrado pelo RMon" in html
+    app_falso.estado.config["alerts"] = {"jobrunner_kill_gb": 0, "jobrunner_kill_mb_min": 0}
+    assert "<b>desligado</b>" in app_falso.c.get("/server/app-34").text
