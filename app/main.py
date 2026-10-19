@@ -114,6 +114,7 @@ templates.env.globals["papel_label"] = PAPEIS
 # descricao(chave) = papel e ambiente por extenso. A chave segue nas URLs.
 templates.env.filters["nome"] = nomes.titulo
 templates.env.globals["descricao"] = nomes.descricao
+templates.env.globals["computador"] = nomes.computador
 templates.env.globals["ip_de"] = nomes.ip
 
 
