@@ -30,7 +30,15 @@ flowchart TD
 
 ## Fluxo de coleta (por ciclo)
 
-1. `scheduler.poll_all` roda a cada `poll_interval_seconds`, com um `ThreadPoolExecutor` (até 8 workers em paralelo).
+1. `scheduler.poll_all` roda a cada `poll_interval_seconds`. `scheduler.coletar_todos`
+   dispara uma coleta por servidor num pool permanente e espera no máximo
+   `defaults.coleta_espera_s` (padrão: o intervalo menos 15 s, ou seja 45 s). Quem não
+   terminou conta como "sem resposta" neste ciclo e segue rodando: o resultado atrasado
+   entra no ciclo em que ficar pronto, e nunca há duas coletas do mesmo servidor ao mesmo
+   tempo. Assim um host travado não atrasa os outros. Em 19/10, com o .222 travado, o
+   ciclo de todos foi de 60 s para cerca de 2 min.
+   Entre as coletas, `scheduler.sondar_jobrunners` lê só os JobRunners de cada servidor a
+   cada `jobrunner.sonda_seg` (15 s) e alimenta o encerramento automático.
 2. Para cada servidor, `collector.collect_server`:
    - resolve a credencial do perfil (`config.credential_for`);
    - abre uma sessão WinRM e executa um **script PowerShell** que devolve JSON compacto (CPU, memória, discos, uptime, serviços, ocorrências do Event Log, nº de sessões);

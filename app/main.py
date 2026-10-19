@@ -518,9 +518,19 @@ def server_detail(request: Request, name: str):
          "jr_aviso_gb": th.get("jobrunner_warn_gb"), "jr_limite_gb": th.get("jobrunner_gb"),
          "jr_kill": {"gb": th.get("jobrunner_kill_gb"), "mb_min": th.get("jobrunner_kill_mb_min"),
                      "min_mb": th.get("jobrunner_kill_min_mb")},
+         "jr_sonda": _sonda_do_servidor(name),
          "es": _elastic_do_servidor(name, hist[0], th, horas if horas in (24, 168, 720) else 24),
          "manut": manut, "flash": flash},
     )
+
+
+def _sonda_do_servidor(name: str) -> dict:
+    """A sonda de 15 s dos JobRunners neste servidor: intervalo e ultima leitura."""
+    from .collector import jobrunner_settings
+    seg = int(jobrunner_settings(STATE["inv"].defaults if STATE.get("inv") else {}).get("sonda_seg") or 0)
+    ult = scheduler.sonda_ultima.get(name)
+    return {"seg": seg, "idade": int(time.time() - ult[0]) if ult else None,
+            "ok": bool(ult and ult[1])}
 
 
 def _elastic_do_servidor(name: str, coleta: dict, th: dict, horas: int) -> dict | None:

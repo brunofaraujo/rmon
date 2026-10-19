@@ -298,6 +298,9 @@ JOBRUNNER_DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "process": "RM.Host.JobRunner",
     "top": 5,
+    # sonda leve (so os JobRunners) entre as coletas, a cada tantos segundos,
+    # alimentando o encerramento automatico (scheduler.sondar_jobrunners). 0 desliga.
+    "sonda_seg": 15,
 }
 
 
@@ -819,6 +822,72 @@ def kill_jobrunner(server: ServerConfig, wc: WinRMConfig, pid: int, inicio: str 
         return interpretar_encerramento(_decode(r.std_out), int(pid))
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
+# --- Sonda leve dos JobRunners (entre as coletas) ---
+# So o Get-Process dos JobRunners, no mesmo formato do bloco `jobrunners` da
+# coleta. Roda a cada `sonda_seg` (15 s) para o encerramento automatico ver o
+# processo crescendo antes da coleta completa seguinte: em 19/10 o .188 foi de
+# 0,4 a 4,2 GB entre duas coletas de um minuto e travou na seguinte.
+_PS_SONDA_JR = r"""
+$jrAll = @(Get-Process -Name __NAME__ -ErrorAction SilentlyContinue)
+$jrTop = @($jrAll | Sort-Object PrivateMemorySize64 -Descending | Select-Object -First __TOP__ | ForEach-Object {
+    $ini = $null
+    try { $ini = $_.StartTime.ToString('yyyy-MM-dd HH:mm:ss') } catch { }
+    [pscustomobject]@{
+        pid = $_.Id; private_mb = [math]::Round($_.PrivateMemorySize64 / 1MB, 0)
+        ws_mb = [math]::Round($_.WorkingSet64 / 1MB, 0); start = $ini }
+})
+[pscustomobject]@{ count = $jrAll.Count; top = $jrTop; computer = $env:COMPUTERNAME } | ConvertTo-Json -Compress -Depth 3
+"""
+# Prazo curto e uma tentativa so: sonda que nao responde em 20 s fica para a
+# proxima (a coleta completa e quem diz se o host esta fora).
+SONDA_TIMEOUT = WinRMConfig(read_timeout_sec=15, operation_timeout_sec=10)
+
+
+def script_sonda_jobrunners(processo: str, top: int) -> str:
+    if not _re.fullmatch(r"[A-Za-z0-9._-]+", processo or ""):
+        raise ValueError("nome de processo inválido")
+    return (_PS_SONDA_JR.replace("__NAME__", _ps_str(processo))
+            .replace("__TOP__", str(max(1, min(20, int(top))))))
+
+
+def ler_sonda(saida: str) -> dict | None:
+    """O JSON da sonda no formato de `jobrunners` (top sempre lista)."""
+    try:
+        d = json.loads((saida or "").strip() or "null")
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    top = d.get("top")
+    d["top"] = top if isinstance(top, list) else [top] if isinstance(top, dict) else []
+    return d
+
+
+def sonda_jobrunners(server: ServerConfig, wc: WinRMConfig, processo: str,
+                     top: int = 5) -> dict | None:
+    """Os maiores JobRunners do host agora, ou None se o host nao respondeu a tempo."""
+    try:
+        script = script_sonda_jobrunners(processo, top)
+    except (TypeError, ValueError):
+        return None
+    user, pw = credential_for(server.cred)
+    if not user or not pw:
+        return None
+    rapido = WinRMConfig(scheme=wc.scheme, port=wc.port, transport=wc.transport,
+                         server_cert_validation=wc.server_cert_validation,
+                         read_timeout_sec=SONDA_TIMEOUT.read_timeout_sec,
+                         operation_timeout_sec=SONDA_TIMEOUT.operation_timeout_sec)
+    try:
+        session = _winrm_session(server.host, rapido, user, pw)
+        r = _run_ps(session, script, time.monotonic() + 20)
+    except Exception as exc:  # noqa: BLE001 - sonda perdida nao e falha de nada
+        log.debug("sonda JobRunner %s: %s", server.host, exc)
+        return None
+    if r.status_code != 0:
+        return None
+    return ler_sonda(_decode(r.std_out))
 
 
 # --- NLB: drenar / reingressar o proprio no ---

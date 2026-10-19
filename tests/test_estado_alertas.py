@@ -604,6 +604,8 @@ def encerrar(ambiente, monkeypatch):
     from app import jobstats
     feitos = []
     monkeypatch.setattr(scheduler, "_jr_amostra", {})
+    monkeypatch.setattr(scheduler, "_jr_encerrados", {})
+    monkeypatch.setattr(scheduler, "_jr_matando", set())
     monkeypatch.setattr(scheduler, "kill_jobrunner",
                         lambda srv, wc, pid, inicio, processo: feitos.append((pid, inicio)) or
                         (True, f"PID {pid} encerrado (4280 MB de memória privada liberados)"))

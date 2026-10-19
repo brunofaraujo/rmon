@@ -13,6 +13,9 @@ Copiado de `config/servers.example.yaml`. Estrutura completa:
 
 ```yaml
 poll_interval_seconds: 60          # intervalo do polling (segundos)
+# defaults.coleta_espera_s (opcional): quanto o ciclo espera as coletas (padrão: o
+# intervalo - 15 s). Coleta normal leva 2,5 a 5 s; quem passa disso conta como "sem
+# resposta" no ciclo e não atrasa os outros servidores.
 
 winrm:
   scheme: https                    # https (5986, recomendado) ou http (5985)
@@ -49,6 +52,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     enabled: true
     process: RM.Host.JobRunner     # nome do processo (sem .exe)
     top: 5                         # quantos dos maiores vão para o payload
+    sonda_seg: 15                  # sonda leve (só os JobRunners) entre as coletas, para o encerramento automático (0 desliga)
   services: []                     # lista padrão de serviços fixos (se um servidor não definir a sua)
   service_patterns: ["RM.Host*"]
   agent_patterns: ["Elastic Agent"]   # agentes de coleta: âmbar quando parados, o RMon sobe sozinho ([] desliga)   # descoberta automática (curinga) — ver abaixo
@@ -614,18 +618,29 @@ o PID 7760 foi de 373 MB a 4,2 GB entre duas coletas e o .188 parou de responder
 seguinte; o 2172 passou de 340 a 854 MB em um minuto e o .222 travou logo depois. O aviso
 de 4 GB chegou, mas ninguém teria tempo de agir, e sem WinRM o botão ✕ some.
 
-Por isso o RMon **encerra sozinho** o JobRunner, na mesma hora da coleta do servidor
-(antes de esperar os outros), quando:
+Por isso o RMon **encerra sozinho** o JobRunner, logo depois de cada leitura do servidor,
+quando:
 
 | Chave | Padrão | Regra |
 |---|---|---|
 | `alerts.jobrunner_kill_gb` | `4` | memória privada a partir disso |
-| `alerts.jobrunner_kill_mb_min` | `400` | cresceu isso por minuto desde a coleta anterior (mesmo PID e hora de início)... |
+| `alerts.jobrunner_kill_mb_min` | `400` | cresceu isso por minuto em relação à leitura de 45 s a 5 min atrás (mesmo PID e hora de início)... |
 | `alerts.jobrunner_kill_min_mb` | `768` | ...e já passa disso |
 
 `0` desliga cada regra; as três também ficam em *Admin* → *Limiares de alerta*. Nos 5 dias
 anteriores, o maior salto normal foi de 441 MB/min, sempre parando abaixo de 500 MB
 (carga inicial do job): só os dois casos de 19/10 cresceram assim acima de 800 MB.
+
+As leituras vêm de dois lugares, cada uma sem esperar as dos outros servidores:
+
+- a **coleta** completa, a cada `poll_interval_seconds` (60 s);
+- a **sonda** dos JobRunners, a cada `jobrunner.sonda_seg` (15 s, `0` desliga): só um
+  `Get-Process`, uma tentativa e prazo de 20 s. Ela lê os servidores cuja última coleta
+  respondeu e tem JobRunner. Sonda que ainda não voltou não ganha outra por cima. A tela
+  do servidor mostra o intervalo e quando foi a última leitura.
+
+O ritmo é medido contra a leitura de 45 s a 5 min atrás, e não contra a anterior, para
+que um salto de poucos segundos (carga do job) não vire MB/min inflado com a sonda de 15 s.
 
 O encerramento usa o mesmo caminho do ✕ (confere PID, nome e hora de início no host),
 vai para a linha do tempo, a auditoria (`rmon`) e o canal com o job e quem o pediu. O
