@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -13,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from . import db, elastic, execution, fontes, inventory, jobstats, manutencao, nlb, notify, packages
 from . import reinicio
 from . import nomes as exibicao
-from .collector import SEM_RESPOSTA, collect_server, kill_jobrunner, subir_servicos
+from .collector import SEM_RESPOSTA, collect_server, kill_jobrunner, sonda_jobrunners, subir_servicos
 from .collector import jobrunner_settings as collector_jobrunner_settings
 from .collector import nlb_window as collector_nlb_window
 from .config import Inventory, Settings
@@ -34,12 +35,33 @@ _avisado: dict[str, dict[str, float]] = {}
 _tentado: dict[tuple[str, str], list[float]] = {}
 # Boot de cada servidor visto no ciclo anterior (epoch), para a hora nao oscilar
 _boot: dict[str, float] = {}
-# Ultima leitura de cada JobRunner por servidor ("pid|inicio" -> (epoch, MB)),
-# para medir quanto ele cresceu desde a coleta anterior (jobrunners_a_encerrar)
-_jr_amostra: dict[str, dict[str, tuple[float, float]]] = {}
+# Leituras recentes de cada JobRunner por servidor ("pid|inicio" -> [(epoch,
+# MB)], ate JR_JANELA_MAX_S), da coleta e da sonda, para medir quanto ele
+# cresceu (jobrunners_a_encerrar). Coleta e sonda escrevem de threads diferentes.
+_jr_amostra: dict[str, dict[str, list[tuple[float, float]]]] = {}
+_jr_lock = threading.Lock()
 # Processos que o RMon tentou e NAO conseguiu encerrar ("servidor|pid|inicio"):
 # a falha vai ao canal uma vez; as repeticoes ficam so no log e na auditoria
 _jr_falhou: set[str] = set()
+# Encerrados pelo RMon ("servidor|pid|inicio" -> epoch) e os que estao sendo
+# encerrados agora: coleta e sonda nao tentam o mesmo processo duas vezes
+_jr_encerrados: dict[str, float] = {}
+_jr_matando: set[str] = set()
+# Ritmo de crescimento: comparado com a leitura mais recente que tenha entre 45 s
+# e 5 min. Com a sonda de 15 s, um salto de poucos segundos (carga do job) nao
+# vira MB/min inflado; com so a coleta de 60 s, e a leitura anterior.
+JR_JANELA_MIN_S = 45
+JR_JANELA_MAX_S = 300
+# Coleta independente por servidor (coletar_todos): a que nao terminou no prazo
+# segue rodando aqui, e o resultado entra no ciclo em que ficar pronto
+_em_curso: dict[str, tuple[Future, float]] = {}
+_pools: dict[str, ThreadPoolExecutor] = {}
+# Sonda dos JobRunners (sondar_jobrunners): a de cada servidor em andamento, a
+# ultima leitura de cada um (epoch, respondeu?) - a tela mostra - e quem sondar:
+# os servidores cuja ultima coleta respondeu e tem JobRunner
+_sondas: dict[str, Future] = {}
+sonda_ultima: dict[str, tuple[float, bool]] = {}
+_com_jobrunner: set[str] = set()
 
 
 def _agora() -> float:
@@ -704,7 +726,13 @@ def _jr_chave(proc: dict) -> str:
     return f"{proc.get('pid')}|{proc.get('start') or ''}"
 
 
-def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, float]] | None,
+def _referencia(amostras, agora: float) -> tuple[float, float] | None:
+    """A leitura mais recente com JR_JANELA_MIN_S a JR_JANELA_MAX_S de idade."""
+    validas = [a for a in (amostras or []) if JR_JANELA_MIN_S <= agora - a[0] <= JR_JANELA_MAX_S]
+    return max(validas, key=lambda a: a[0]) if validas else None
+
+
+def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, list[tuple[float, float]]] | None,
                           th: dict, agora: float) -> list[tuple[dict, str]]:
     """JobRunners que o RMon encerra sozinho: [(processo, motivo)]. Funcao pura.
 
@@ -718,8 +746,8 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, floa
 
     * `jobrunner_kill_gb` (4): memoria privada a partir disso;
     * `jobrunner_kill_mb_min` (400) com `jobrunner_kill_min_mb` (768): cresceu
-      pelo menos tanto por minuto desde a coleta anterior (o mesmo processo:
-      PID e hora de inicio) e ja passa do minimo. Em 5 dias de historico do
+      pelo menos tanto por minuto em relacao a leitura de 45 s a 5 min atras (o
+      mesmo processo: PID e hora de inicio) e ja passa do minimo. Em 5 dias de historico do
       parque, os saltos rapidos normais (ate 441 MB/min) sao carga inicial e
       param abaixo de 500 MB; so os dois de 19/10 cresceram assim acima de
       800 MB.
@@ -736,6 +764,8 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, floa
     for proc in _procs(jr):
         if not isinstance(proc, dict) or proc.get("pid") is None or proc.get("private_mb") is None:
             continue
+        if proc.get("encerrado"):
+            continue
         try:
             mb = float(proc["private_mb"])
         except (TypeError, ValueError):
@@ -743,13 +773,11 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, floa
         if limite_gb and mb / 1024 >= limite_gb:
             alvos.append((proc, f"{mb / 1024:.1f} GB de memória privada (limite: {limite_gb:g} GB)"))
             continue
-        antes = anterior.get(_jr_chave(proc))
+        antes = _referencia(anterior.get(_jr_chave(proc)), agora)
         if not (ritmo and antes and mb >= piso_mb):
             continue
         minutos = (agora - antes[0]) / 60
-        if not 0 < minutos <= 5:
-            continue
-        por_min = (mb - antes[1]) / max(minutos, 0.5)
+        por_min = (mb - antes[1]) / minutos
         if por_min >= ritmo:
             alvos.append((proc, f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
                                 f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
@@ -758,10 +786,10 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, tuple[float, floa
 
 
 def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float) -> list[str]:
-    """Encerra no host, logo depois da coleta, o JobRunner que esta estourando.
+    """Encerra no host, logo depois da leitura, o JobRunner que esta estourando.
 
-    Roda no mesmo worker da coleta do servidor, antes de esperar os outros: no
-    .222 o WinRM durou um minuto depois da ultima leitura boa. Usa o mesmo
+    Roda no mesmo worker da coleta do servidor (ou da sonda de 15 s), sem esperar
+    os outros: no .222 o WinRM durou um minuto depois da ultima leitura boa. Usa o mesmo
     caminho do botao da tela (collector.kill_jobrunner: confere PID, nome e hora
     de inicio antes de matar). O processo encerrado fica marcado na coleta
     (`encerrado`), sai dos alertas de 4/8 GB e vai para a linha do tempo, a
@@ -770,12 +798,39 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
     jr = r.get("jobrunners") if isinstance(r.get("jobrunners"), dict) else None
     if not r.get("reachable") or not jr:
         return []
-    anterior = _jr_amostra.get(server.name) or {}
     procs = [p for p in _procs(jr) if isinstance(p, dict) and p.get("pid") is not None and p.get("private_mb") is not None]
-    _jr_amostra[server.name] = {_jr_chave(p): (agora, float(p["private_mb"])) for p in procs}
-    alvos = jobrunners_a_encerrar(jr, anterior, th, agora)
+    with _jr_lock:
+        hist = _jr_amostra.setdefault(server.name, {})
+        anterior = {k: list(v) for k, v in hist.items()}
+        for p in procs:
+            k = _jr_chave(p)
+            hist[k] = [a for a in hist.get(k, []) if agora - a[0] <= JR_JANELA_MAX_S]
+            hist[k].append((agora, float(p["private_mb"])))
+        # coleta e sonda gravam de threads diferentes: a lista nao fica em ordem
+        for k in [k for k, v in hist.items() if not v or agora - max(a[0] for a in v) > JR_JANELA_MAX_S]:
+            del hist[k]
+        for k in [k for k, t in _jr_encerrados.items() if agora - t > 3600]:
+            del _jr_encerrados[k]
+        for p in procs:
+            # ja encerrado pelo RMon (pela sonda ou pela coleta): leitura de antes do fim
+            t = _jr_encerrados.get(f"{server.name}|{_jr_chave(p)}")
+            if t:
+                p["encerrado"] = t
+        alvos = [(p, m) for p, m in jobrunners_a_encerrar(jr, anterior, th, agora)
+                 if f"{server.name}|{_jr_chave(p)}" not in _jr_matando]
+        for p, _ in alvos:
+            _jr_matando.add(f"{server.name}|{_jr_chave(p)}")
     if not alvos:
         return []
+    try:
+        return _encerrar(server, inv, jr, alvos, agora)
+    finally:
+        with _jr_lock:
+            for p, _ in alvos:
+                _jr_matando.discard(f"{server.name}|{_jr_chave(p)}")
+
+
+def _encerrar(server, inv: Inventory, jr: dict, alvos: list, agora: float) -> list[str]:
     try:
         jobs = jobstats.executions_by_pid(jr.get("computer"), [p["pid"] for p, _ in alvos]) or {}
     except Exception:  # noqa: BLE001 - sem o nome do job, encerra do mesmo jeito
@@ -796,6 +851,8 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
                  f"{server.name} PID {pid} ({quem}; {motivo}) -> {ok}: {retorno}"[:900])
         if ok:
             proc["encerrado"] = agora
+            with _jr_lock:
+                _jr_encerrados[f"{server.name}|{_jr_chave(proc)}"] = agora
             texto = (f"RMon encerrou o processo de job PID {pid} ({quem}): {motivo}. "
                      f"{retorno[:1].upper() + retorno[1:]}. O RM perde esta execução: avise quem pediu")
             db.record_alert(server.name, "acao", f"jobrunner-kill:{pid}", texto)
@@ -806,6 +863,125 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
             msgs.append(f"\u26A0\uFE0F RMon NÃO conseguiu encerrar o processo de job PID {pid} "
                         f"({quem}; {motivo}): {retorno}")
     return msgs
+
+
+def _limiares(inv: Inventory) -> dict:
+    """Limiares efetivos: defaults do codigo < YAML < ajuste no painel."""
+    return {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
+
+
+def _pool(nome: str, n: int) -> ThreadPoolExecutor:
+    """Pool permanente (nao espera ninguem ao fim do ciclo); cresce com o inventario."""
+    quer = max(8, 2 * n)
+    p = _pools.get(nome)
+    if p is None or p._max_workers < quer:
+        if p is not None:
+            p.shutdown(wait=False)
+        p = _pools[nome] = ThreadPoolExecutor(max_workers=quer, thread_name_prefix=f"rmon-{nome}")
+    return p
+
+
+def espera_coleta(inv: Inventory) -> float:
+    """Quanto o ciclo espera as coletas: `defaults.coleta_espera_s`, ou o intervalo - 15 s.
+
+    Coleta normal leva 2,5 a 5 s (medido em 19/10); passa disso o host engasgado.
+    """
+    try:
+        v = float(inv.defaults.get("coleta_espera_s") or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    if v <= 0:
+        v = max(15.0, float(getattr(inv, "poll_interval_seconds", 60) or 60) - 15)
+    return v
+
+
+def coletar_todos(inv: Inventory, th: dict, manut: set[str]) -> list[tuple]:
+    """Coleta todos os servidores sem deixar um travado atrasar os outros.
+
+    Em 19/10, com o .222 travado, cada ciclo esperava as duas tentativas de 30 s
+    dele: o ciclo de TODOS foi de 60 s para ~2 min, justo enquanto o .188 estourava.
+    Agora o ciclo espera no maximo `espera_coleta` (45 s). A coleta que nao
+    terminou segue rodando no pool (cada uma tem o proprio prazo no coletor) e
+    conta como "sem resposta" neste ciclo; no ciclo em que ficar pronta, o
+    resultado dela entra no lugar de uma coleta nova. Nunca ha duas coletas do
+    mesmo servidor ao mesmo tempo.
+    """
+    pool = _pool("coleta", len(inv.servers))
+    inicio = time.monotonic()
+    for s in inv.servers:
+        if s.name not in _em_curso:
+            _em_curso[s.name] = (pool.submit(_coletar, s, inv, th, manut), inicio)
+    wait([_em_curso[s.name][0] for s in inv.servers], timeout=espera_coleta(inv))
+    saida = []
+    for s in inv.servers:
+        fut, desde = _em_curso[s.name]
+        if fut.done():
+            del _em_curso[s.name]
+            try:
+                r = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                r = {"reachable": False, "error": f"poll: {exc}"}
+        else:
+            r = {"reachable": False, "pendente": True,
+                 "error": f"sem resposta em {int(time.monotonic() - desde)}s (a coleta segue em "
+                          "andamento, sem atrasar os outros servidores)"}
+        saida.append((s, r))
+    return saida
+
+
+def _marcar_sondaveis(coletas: list[tuple]) -> None:
+    """Quem a sonda le: ultima coleta respondeu pelo WinRM e tem JobRunner."""
+    global _com_jobrunner
+    sim = set()
+    for server, r in coletas:
+        jr = r.get("jobrunners") if isinstance(r.get("jobrunners"), dict) else None
+        if r.get("reachable") and jr and jr.get("fonte") != "elastic" and (jr.get("count") or _procs(jr)):
+            sim.add(server.name)
+    _com_jobrunner = sim
+
+
+def sondar_jobrunners(inv: Inventory) -> None:
+    """A cada `jobrunner.sonda_seg` (15 s): le so os JobRunners de cada servidor.
+
+    Dispara uma sonda por servidor e volta na hora: nenhum espera o outro, e
+    servidor cuja sonda anterior ainda nao voltou fica para a vez seguinte (nada
+    se empilha num host engasgado). A leitura alimenta o mesmo encerramento
+    automatico da coleta (encerrar_jobrunners). So servidores cuja ultima coleta
+    respondeu e tem JobRunner, fora de manutencao, com alguma regra ligada.
+    """
+    cfg = collector_jobrunner_settings(inv.defaults)
+    if not cfg.get("enabled", True) or not _com_jobrunner:
+        return
+    th = _limiares(inv)
+    if not (_limiar(th, "jobrunner_kill_gb") or _limiar(th, "jobrunner_kill_mb_min")):
+        return
+    try:
+        manut = set(manutencao.ativas(_agora()))
+    except Exception:  # noqa: BLE001
+        manut = set()
+    pool = _pool("sonda", len(inv.servers))
+    for s in inv.servers:
+        if s.name in manut or s.name not in _com_jobrunner:
+            continue
+        f = _sondas.get(s.name)
+        if f is not None and not f.done():
+            continue
+        _sondas[s.name] = pool.submit(_sondar, s, inv, th, cfg)
+
+
+def _sondar(server, inv: Inventory, th: dict, cfg: dict) -> None:
+    try:
+        jr = sonda_jobrunners(server, inv.winrm, cfg.get("process") or "RM.Host.JobRunner",
+                              int(cfg.get("top") or 5))
+        agora = _agora()
+        sonda_ultima[server.name] = (agora, jr is not None)
+        if jr is None:
+            return
+        msgs = encerrar_jobrunners(server, inv, {"reachable": True, "jobrunners": jr}, th, agora)
+        if msgs and notify.enabled():
+            notify.send(f"RMonitor — {exibicao.com_ip(server.name)}\n" + "\n".join(msgs))
+    except Exception:  # noqa: BLE001 - sonda nunca derruba nada
+        log.exception("sonda do JobRunner em %s", server.name)
 
 
 def _coletar(server, inv: Inventory, th: dict, manut: set[str]) -> dict:
@@ -1175,152 +1351,144 @@ def poll_all(inv: Inventory, settings: Settings) -> None:
     if not inv.servers:
         return
     _restaurar_estado(s.name for s in inv.servers)
-    th = {**DEFAULT_ALERTS, **(inv.defaults.get("alerts") or {}), **(db.get_config("alerts", {}) or {})}
+    th = _limiares(inv)
     # host em manutencao: quem esta mexendo nele decide (o encerramento
     # automatico do JobRunner tambem fica de fora)
     try:
         manut = set(manutencao.ativas(_agora()))
     except Exception:  # noqa: BLE001
         manut = set()
-    with ThreadPoolExecutor(max_workers=min(8, len(inv.servers))) as pool:
-        futures = {
-            pool.submit(_coletar, s, inv, th, manut): s
-            for s in inv.servers
-        }
-        coletas = []
-        for fut, server in list(futures.items()):
-            try:
-                result = fut.result()
-            except Exception as exc:  # noqa: BLE001
-                result = {"reachable": False, "error": f"poll: {exc}"}
-            if server.jobs:
-                jb = server.jobs
-                result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
-                # A fila fica no mesmo bloco `jobs` de proposito: e a mesma
-                # coluna jsonb do banco, sem migracao de schema so para isso.
-                if isinstance(result.get("jobs"), dict):
-                    result["jobs"]["queue"] = jobstats.queue(
-                        jb.get("servidor"), th.get("jobs_stuck_min", 30),
-                        th.get("jobs_orphan_min", 360))
-            coletas.append((server, result))
+    coletas = []
+    for server, result in coletar_todos(inv, th, manut):
+        if server.jobs:
+            jb = server.jobs
+            result["jobs"] = jobstats.query(jb.get("window_min", 15), jb.get("success_status", [2]), jb.get("failed_status", [5, 7]), jb.get("servidor"))
+            # A fila fica no mesmo bloco `jobs` de proposito: e a mesma
+            # coluna jsonb do banco, sem migracao de schema so para isso.
+            if isinstance(result.get("jobs"), dict):
+                result["jobs"]["queue"] = jobstats.queue(
+                    jb.get("servidor"), th.get("jobs_stuck_min", 30),
+                    th.get("jobs_orphan_min", 360))
+        coletas.append((server, result))
 
-        # Elasticsearch (opcional): contagens de RDP do NLB e JobRunner de host
-        # sem WinRM. Antes de gravar, para o painel e o alerta verem o mesmo dado.
-        nomes_es, vistos_es = {}, {}
-        try:
-            nomes_es, vistos_es = _enriquecer_elastic(inv, coletas)
-        except Exception:  # noqa: BLE001
-            log.exception("Elasticsearch: falha ao completar a coleta (seguindo pelo WinRM)")
-        # De onde veio cada dado deste ciclo, para a tela dizer (app/fontes.py)
-        es_ativo = elastic.ativo(elastic.settings_for(inv.defaults))
-        fontes.registrar(coletas, nomes_es, vistos_es, es_ativo)
-        # Padronizacao: gravada com a coleta, para painel, mural e alerta verem o mesmo
-        padrao = padrao_cluster(coletas, vistos_es, nomes_es, es_ativo)
-        for server, result in coletas:
-            result["padrao"] = dict(padrao.get(server.name) or {})
-            # Elastic sem resposta neste ciclo nao "resolve" o agente parado
-            # que ja estava acusado: sem leitura, o estado anterior vale.
-            if es_ativo and not vistos_es:
-                velho = (_last.get(server.name) or {}).get("PADRAO:elastic")
-                if velho:
-                    result["padrao"]["PADRAO:elastic"] = velho
-        fontes.registrar_padrao({s.name: r["padrao"] for s, r in coletas})
-        for server, result in coletas:
-            _identificar_jobrunners(result.get("jobrunners"), th)
-        janela_boot = _minutos(th, "boot_janela_min") * 60
-        for server, result in coletas:
-            boot = marcar_pos_boot(result, _desde.get(server.name) or {}, _agora(), janela_boot,
-                                   _boot.get(server.name))
-            if boot is not None:
-                _boot[server.name] = boot
+    # Elasticsearch (opcional): contagens de RDP do NLB e JobRunner de host
+    # sem WinRM. Antes de gravar, para o painel e o alerta verem o mesmo dado.
+    nomes_es, vistos_es = {}, {}
+    try:
+        nomes_es, vistos_es = _enriquecer_elastic(inv, coletas)
+    except Exception:  # noqa: BLE001
+        log.exception("Elasticsearch: falha ao completar a coleta (seguindo pelo WinRM)")
+    # De onde veio cada dado deste ciclo, para a tela dizer (app/fontes.py)
+    es_ativo = elastic.ativo(elastic.settings_for(inv.defaults))
+    fontes.registrar(coletas, nomes_es, vistos_es, es_ativo)
+    # Padronizacao: gravada com a coleta, para painel, mural e alerta verem o mesmo
+    padrao = padrao_cluster(coletas, vistos_es, nomes_es, es_ativo)
+    for server, result in coletas:
+        result["padrao"] = dict(padrao.get(server.name) or {})
+        # Elastic sem resposta neste ciclo nao "resolve" o agente parado
+        # que ja estava acusado: sem leitura, o estado anterior vale.
+        if es_ativo and not vistos_es:
+            velho = (_last.get(server.name) or {}).get("PADRAO:elastic")
+            if velho:
+                result["padrao"]["PADRAO:elastic"] = velho
+    fontes.registrar_padrao({s.name: r["padrao"] for s, r in coletas})
+    for server, result in coletas:
+        _identificar_jobrunners(result.get("jobrunners"), th)
+    _marcar_sondaveis(coletas)
+    janela_boot = _minutos(th, "boot_janela_min") * 60
+    for server, result in coletas:
+        boot = marcar_pos_boot(result, _desde.get(server.name) or {}, _agora(), janela_boot,
+                               _boot.get(server.name))
+        if boot is not None:
+            _boot[server.name] = boot
 
-        for server, result in coletas:
-            db.insert_check(server.name, result)
-            if result.get("reachable"):
-                # O caso comum: uma linha por servidor por ciclo, ~11 mil por
-                # dia so de sucesso. Em DEBUG, para nao afogar o resto.
-                log.debug("coleta %s -> OK", server.name)
-            else:
-                log.warning("coleta %s -> FALHA (%s)", server.name, result.get("error"))
+    for server, result in coletas:
+        db.insert_check(server.name, result)
+        if result.get("reachable"):
+            # O caso comum: uma linha por servidor por ciclo, ~11 mil por
+            # dia so de sucesso. Em DEBUG, para nao afogar o resto.
+            log.debug("coleta %s -> OK", server.name)
+        else:
+            log.warning("coleta %s -> FALHA (%s)", server.name, result.get("error"))
 
-        # Veredito do broker depois de gravar: a referencia e o historico de cada
-        # host e a estabilidade compara esta coleta com a anterior - as duas
-        # perguntas sao para o banco, uma vez por ciclo, nao por servidor.
-        ref = broker_reference(th.get("broker_history_days"))
-        estado = db.broker_estado()
-        filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
-        agora = _agora()
-        janelas = manutencao.todas()
-        # Janela vencida ainda cala neste ciclo: quem fala por ela e a mensagem
-        # de fim de manutencao, logo abaixo. Senao o "resolvido" de algo que
-        # abriu calado durante a janela chegaria solto, sem o alerta de antes.
-        calar = set(janelas)
-        try:
-            intervalo = max(0.0, float(th.get("lembrete_h") or 0)) * 3600
-        except (TypeError, ValueError):
-            intervalo = 0.0
-        for server, result in coletas:
-            nome = server.name
-            streak = 0 if result.get("reachable") else db.fail_streak(nome)
-            probs = problems(result, th, streak, ref.get(nome),
-                             estado.get(nome), filas.get(nome))
-            prev = _last.get(nome, {})
-            atual, new_keys, gone_keys = transicoes(prev, probs, result)
-            calados = {k for k in gone_keys if fora_do_monitoramento(k, result)}
-            desde = _desde.setdefault(nome, {})
-            avisado = _avisado.setdefault(nome, {})
-            for k in new_keys:
-                db.record_alert(nome, "raised", k, atual[k])
-                desde[k] = avisado[k] = agora
-            for k in gone_keys:
-                db.record_alert(nome, "resolved", k,
-                                prev[k] + (" (saiu do monitoramento)" if k in calados else ""))
-                desde.pop(k, None)
-                avisado.pop(k, None)
-            _last[nome] = atual
-            if nome in calar:
-                continue
-            # Aviso (job com erro, SQL fora do ar) fica registrado e aparece na
-            # tela, mas nao vira mensagem: alerta que nao exige acao imediata
-            # so ensina o time a ignorar o canal.
-            msgs = ["\U0001F534 " + atual[k] for k in new_keys if notifica(k)]
-            msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys
-                     if notifica(k) and k not in calados]
-            for k in lembretes_devidos(atual, avisado, agora, intervalo):
-                aberto = _duracao(agora - desde.get(k, avisado[k]))
-                db.record_alert(nome, "reminder", k, f"segue aberto há {aberto}: {atual[k]}")
-                avisado[k] = agora
-                msgs.append(f"⏰ segue aberto há {aberto}: {atual[k]}")
-            msgs += iniciar_automatico(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
-                                       _minutos(th, "autocorrecao_teto_min") * 60, desde, atual)
-            if msgs and notify.enabled():
-                notify.send(f"RMonitor — {exibicao.com_ip(nome)}\n" + "\n".join(msgs))
+    # Veredito do broker depois de gravar: a referencia e o historico de cada
+    # host e a estabilidade compara esta coleta com a anterior - as duas
+    # perguntas sao para o banco, uma vez por ciclo, nao por servidor.
+    ref = broker_reference(th.get("broker_history_days"))
+    estado = db.broker_estado()
+    filas = db.fila_hist(max(1, int(th.get("jobs_stuck_checks", 3) or 1)))
+    agora = _agora()
+    janelas = manutencao.todas()
+    # Janela vencida ainda cala neste ciclo: quem fala por ela e a mensagem
+    # de fim de manutencao, logo abaixo. Senao o "resolvido" de algo que
+    # abriu calado durante a janela chegaria solto, sem o alerta de antes.
+    calar = set(janelas)
+    try:
+        intervalo = max(0.0, float(th.get("lembrete_h") or 0)) * 3600
+    except (TypeError, ValueError):
+        intervalo = 0.0
+    for server, result in coletas:
+        nome = server.name
+        streak = 0 if result.get("reachable") else db.fail_streak(nome)
+        probs = problems(result, th, streak, ref.get(nome),
+                         estado.get(nome), filas.get(nome))
+        prev = _last.get(nome, {})
+        atual, new_keys, gone_keys = transicoes(prev, probs, result)
+        calados = {k for k in gone_keys if fora_do_monitoramento(k, result)}
+        desde = _desde.setdefault(nome, {})
+        avisado = _avisado.setdefault(nome, {})
+        for k in new_keys:
+            db.record_alert(nome, "raised", k, atual[k])
+            desde[k] = avisado[k] = agora
+        for k in gone_keys:
+            db.record_alert(nome, "resolved", k,
+                            prev[k] + (" (saiu do monitoramento)" if k in calados else ""))
+            desde.pop(k, None)
+            avisado.pop(k, None)
+        _last[nome] = atual
+        if nome in calar:
+            continue
+        # Aviso (job com erro, SQL fora do ar) fica registrado e aparece na
+        # tela, mas nao vira mensagem: alerta que nao exige acao imediata
+        # so ensina o time a ignorar o canal.
+        msgs = ["\U0001F534 " + atual[k] for k in new_keys if notifica(k)]
+        msgs += ["\U0001F7E2 resolvido: " + prev[k] for k in gone_keys
+                 if notifica(k) and k not in calados]
+        for k in lembretes_devidos(atual, avisado, agora, intervalo):
+            aberto = _duracao(agora - desde.get(k, avisado[k]))
+            db.record_alert(nome, "reminder", k, f"segue aberto há {aberto}: {atual[k]}")
+            avisado[k] = agora
+            msgs.append(f"⏰ segue aberto há {aberto}: {atual[k]}")
+        msgs += iniciar_automatico(server, inv, result, _minutos(th, "boot_iniciar_min") * 60, agora,
+                                   _minutos(th, "autocorrecao_teto_min") * 60, desde, atual)
+        if msgs and notify.enabled():
+            notify.send(f"RMonitor — {exibicao.com_ip(nome)}\n" + "\n".join(msgs))
 
-        fechadas = manutencao.vencidas(agora, janelas)
-        hosts = {s.name: s.host for s in inv.servers}
-        for nome, janela in fechadas.items():
-            if nome in hosts:
-                _fechar_manutencao(nome, hosts[nome], janela, agora)
-        if fechadas:
-            manutencao.remover(list(fechadas), agora)
+    fechadas = manutencao.vencidas(agora, janelas)
+    hosts = {s.name: s.host for s in inv.servers}
+    for nome, janela in fechadas.items():
+        if nome in hosts:
+            _fechar_manutencao(nome, hosts[nome], janela, agora)
+    if fechadas:
+        manutencao.remover(list(fechadas), agora)
 
-        # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
-        # ciclo. Nunca derruba a coleta - erro aqui vira log. Host em
-        # manutencao fica em hold: a automacao nao mexe em quem esta sendo mexido.
-        try:
-            nlb.run_cycle(inv, {s.name: r for s, r in coletas},
-                          hold=manutencao.ativas(agora, janelas),
-                          es=batimento_nlb(inv, nomes_es, vistos_es, es_ativo))
-        except Exception:  # noqa: BLE001
-            log.exception("NLB: falha no ciclo de avaliação")
-        # Servidor fora do NLB travado sem contato: reinicio pela iLO/hypervisor
-        # (o .222 em 19/10). Mesma confirmacao do Elastic que o NLB exige.
-        try:
-            reinicio.run_cycle(inv, {s.name: r for s, r in coletas},
-                               batimento(nomes_es, vistos_es, es_ativo, reinicio.servidores(inv)),
-                               hold=manutencao.ativas(agora, janelas))
-        except Exception:  # noqa: BLE001
-            log.exception("reinício: falha no ciclo de avaliação")
+    # Drenagem/reingresso do NLB: depois dos alertas, com as coletas deste
+    # ciclo. Nunca derruba a coleta - erro aqui vira log. Host em
+    # manutencao fica em hold: a automacao nao mexe em quem esta sendo mexido.
+    try:
+        nlb.run_cycle(inv, {s.name: r for s, r in coletas},
+                      hold=manutencao.ativas(agora, janelas),
+                      es=batimento_nlb(inv, nomes_es, vistos_es, es_ativo))
+    except Exception:  # noqa: BLE001
+        log.exception("NLB: falha no ciclo de avaliação")
+    # Servidor fora do NLB travado sem contato: reinicio pela iLO/hypervisor
+    # (o .222 em 19/10). Mesma confirmacao do Elastic que o NLB exige.
+    try:
+        reinicio.run_cycle(inv, {s.name: r for s, r in coletas},
+                           batimento(nomes_es, vistos_es, es_ativo, reinicio.servidores(inv)),
+                           hold=manutencao.ativas(agora, janelas))
+    except Exception:  # noqa: BLE001
+        log.exception("reinício: falha no ciclo de avaliação")
 
 
 def texto_resumo(abertos: dict[str, dict[str, str]], tempos: dict[str, dict[str, dict]],
@@ -1593,6 +1761,10 @@ def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:
         poll_all, "interval", seconds=inv.poll_interval_seconds, args=[inv, settings],
         id="poll_all", max_instances=1, coalesce=True,
     )
+    sonda = int(collector_jobrunner_settings(inv.defaults).get("sonda_seg") or 0)
+    if sonda > 0:
+        sched.add_job(sondar_jobrunners, "interval", seconds=max(5, sonda), args=[inv],
+                      id="sondar_jobrunners", max_instances=1, coalesce=True)
     sched.add_job(db.prune, "interval", hours=6, id="prune", max_instances=1, coalesce=True)
     # De hora em hora: resumo_diario decide se e a hora configurada.
     sched.add_job(resumo_diario, "cron", minute=0, args=[inv], id="resumo_diario",

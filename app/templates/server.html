@@ -236,7 +236,9 @@
     <div class="muted small" style="margin-top:.4rem">&#128721; Encerramento automático:
       {% if jr_kill.gb or (jr_kill.mb_min and jr_kill.min_mb is not none) %}<b>ligado</b>. O RMon encerra sozinho o processo de job
       {% if jr_kill.gb %}a partir de {{ jr_kill.gb }} GB{% endif %}{% if jr_kill.gb and jr_kill.mb_min %} ou {% endif %}{% if jr_kill.mb_min %}que cresce {{ jr_kill.mb_min }} MB por minuto acima de {{ jr_kill.min_mb }} MB{% endif %},
-      logo depois da coleta, antes de o servidor travar. O aviso vai para o canal com o job e quem o pediu.
+      logo depois da leitura, antes de o servidor travar. O aviso vai para o canal com o job e quem o pediu.
+      {% if jr_sonda and jr_sonda.seg %}Além da coleta, a sonda lê os processos de job a cada {{ jr_sonda.seg }} s{% if jr_sonda.idade is not none %}
+      (última leitura há {{ jr_sonda.idade }} s{% if not jr_sonda.ok %}, <b class="txt-amber">sem resposta</b>{% endif %}){% endif %}.{% endif %}
       {% else %}<b>desligado</b> (Admin &rarr; Limiares de alerta).{% endif %}</div>
   </div>
   {% endif %}

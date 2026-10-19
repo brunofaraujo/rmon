@@ -379,7 +379,7 @@ def test_agente_parado_logo_apos_o_boot_ainda_nao_e_problema():
 # ------------------------------------------------------------ encerramento automatico (19/10)
 
 def amostra(pid, mb, ts, start="2026-10-19 09:24:38"):
-    return {f"{pid}|{start}": (ts, mb)}
+    return {f"{pid}|{start}": [(ts, mb)]}
 
 
 def proc(pid, mb, start="2026-10-19 09:24:38"):
@@ -427,3 +427,19 @@ def test_leitura_do_elastic_e_zero_desligam():
 def test_processo_encerrado_sai_dos_alertas_de_memoria():
     jr = {"top": [{"pid": 7760, "private_mb": 9000, "encerrado": 1.0}]}
     assert scheduler.jobrunner_problems(jr, TH) == {}
+
+
+def test_sonda_de_15s_mede_o_ritmo_numa_janela_de_45s():
+    # .188: com leituras a cada 15 s, um salto de 150 MB em 15 s acima do minimo
+    # (carga) nao vira 600 MB/min: a base e a leitura de 45 s a 5 min atras
+    hist = {"7760|2026-10-19 09:24:38": [(1000 - 60, 800), (1000 - 45, 810), (1000 - 30, 815), (1000 - 15, 820)]}
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(7760, 970)]}, hist, TH, 1000) == []
+    # crescimento continuo de verdade: 400 -> 1400 MB em 45 s
+    hist = {"7760|2026-10-19 09:24:38": [(1000 - 45, 400), (1000 - 30, 700), (1000 - 15, 1000)]}
+    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(7760, 1400)]}, hist, TH, 1000)
+    assert alvos and "1333 MB/min" in alvos[0][1]
+
+
+def test_sem_leitura_de_45s_nao_mede_ritmo():
+    hist = {"9|2026-10-19 09:24:38": [(1000 - 30, 100), (1000 - 15, 500)]}
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(9, 2000)]}, hist, TH, 1000) == []

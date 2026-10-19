@@ -378,3 +378,13 @@ def test_tela_mostra_encerramento_automatico(app_falso):
     assert "encerrado pelo RMon" in html
     app_falso.estado.config["alerts"] = {"jobrunner_kill_gb": 0, "jobrunner_kill_mb_min": 0}
     assert "<b>desligado</b>" in app_falso.c.get("/server/app-34").text
+
+
+def test_tela_mostra_a_sonda_dos_jobrunners(app_falso, monkeypatch):
+    from app import scheduler
+    app_falso.entrar()
+    monkeypatch.setattr(scheduler, "sonda_ultima", {"app-34": (time.time() - 7, True)})
+    html = app_falso.c.get("/server/app-34").text
+    assert "a sonda lê os processos de job a cada 15 s" in html and "última leitura há 7 s" in html
+    monkeypatch.setattr(scheduler, "sonda_ultima", {"app-34": (time.time() - 3, False)})
+    assert "sem resposta" in app_falso.c.get("/server/app-34").text

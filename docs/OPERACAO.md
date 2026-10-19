@@ -264,7 +264,7 @@ ficam em *Admin* → *Limiares de alerta* e mudam sem restart.
 ### Encerrar um JobRunner que está estourando
 
 **O RMon encerra sozinho** o JobRunner que passa de 4 GB ou que cresce 400 MB/min acima de
-768 MB, logo depois da coleta do servidor. Isso vale desde 19/10, quando o .188 e o .222
+768 MB. Ele lê os processos de job a cada 15 s, além da coleta de 60 s. Isso vale desde 19/10, quando o .188 e o .222
 travaram minutos depois do aviso. A mensagem no canal diz o job e quem o pediu: avise o
 usuário, porque o RM perde aquela execução. Na tela do servidor o processo aparece como
 **encerrado pelo RMon**. Limiares e como desligar:
