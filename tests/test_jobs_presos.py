@@ -295,3 +295,10 @@ def test_encerrar_pelo_job_sem_banco_nao_faz_nada(app_falso, aberta, monkeypatch
     r = app_falso.c.post("/jobrunner/encerrar", data={"server": "app-34", "pid": "9001", "confirm": "9001",
                                                       "idjob": "2450147"})
     assert r.status_code == 409 and app_falso.estado.mortes == []
+
+
+def test_linha_do_job_so_fica_vermelha_com_a_fila_travada():
+    """Job preso com o executor concluindo outros e aviso (cartao verde ou
+    ambar): a linha acompanha, em ambar. Vermelho so no cartao em falha."""
+    js = (Path(main.__file__).parent / "static" / "tv.js").read_text(encoding="utf-8")
+    assert '(aguarda || s.sev < 2 ? " aguarda" : "")' in js
