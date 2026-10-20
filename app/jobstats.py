@@ -85,7 +85,85 @@ def _fila_vazia(parada_min: int, residuo_min: int, erro: str | None) -> dict[str
             "orphans": None, "oldest_min": None, "waiting_min": None,
             "done_recent": None, "since_last_min": None,
             "window_min": _minutos(parada_min, 30), "residue_min": _minutos(residuo_min, 360),
-            "col": None, "error": erro}
+            "col": None, "items": [], "error": erro}
+
+
+# Quantas execucoes presas vao para a tela por leitura. A lista fica gravada com
+# cada coleta (checks.jobs), entao tem teto: no pior dia do historico foram 8 de
+# uma vez no mesmo executor.
+ITENS_MAX = 10
+
+
+def _viva(prefixo: str = "") -> str:
+    terminais = ", ".join(str(s) for s in _STATUS_TERMINAIS)
+    return (f"{prefixo}EMCANCELAMENTO IS NULL "
+            f"AND ({prefixo}STATUS IS NULL OR {prefixo}STATUS NOT IN ({terminais}))")
+
+
+def _host(servidor: Any) -> str:
+    """"srv11:8052" -> "srv11": o RM grava o executor como host:porta."""
+    return str(servidor or "").split(":", 1)[0].strip()
+
+
+def _itens(cur, col: str | None, viva: str, w: int, z: int, servidor: str | None) -> list[dict[str, Any]]:
+    """QUAIS execucoes estao presas, para a tela dizer o que parar e como.
+
+    So roda quando a contagem ja achou alguma - o ciclo normal nao ganha
+    consulta. Mesmos dois criterios da contagem: em andamento ha mais de `w`
+    minutos (e menos de `z`), ou com a hora programada vencida ha mais de `w`
+    sem ninguem comecar. Coluna que esta versao do RM nao tem vira NULL.
+    """
+    def c(nome: str) -> str:
+        return f"E.{nome}" if _tem(cur, nome) else "NULL"
+
+    params: list[Any] = []
+    srv = ""
+    limpo = re.sub(r"[^A-Za-z0-9_.-]", "", servidor or "")
+    conds = []
+    if col:
+        conds.append(f"(E.{col} IS NOT NULL AND E.{col} >= DATEADD(day, -7, GETDATE()) "
+                     f"AND DATEDIFF(minute, E.{col}, GETDATE()) > {w} "
+                     f"AND DATEDIFF(minute, E.{col}, GETDATE()) <= {z}"
+                     + (" AND E.SERVIDOR LIKE %s)" if limpo else ")"))
+        if limpo:
+            params.append(limpo + ":%")
+    if _tem(cur, "DATAINIEXEC", "DATAPROGRAMADA"):
+        conds.append(f"(E.DATAINIEXEC IS NULL "
+                     f"AND E.DATAPROGRAMADA <= DATEADD(minute, -{w}, GETDATE()) "
+                     f"AND E.DATAPROGRAMADA >= DATEADD(minute, -{z}, GETDATE())"
+                     + (" AND (E.SERVIDOR IS NULL OR E.SERVIDOR = '' OR E.SERVIDOR LIKE %s))"
+                        if limpo else ")"))
+        if limpo:
+            params.append(limpo + ":%")
+    if not conds:
+        return []
+    ini = f"E.{col}" if col else "NULL"
+    cur.execute(
+        f"""SELECT TOP {ITENS_MAX} E.IDJOB, {c('IDEXECUCAO')}, {c('SERVIDOR')}, {c('PROCESSID')},
+                   CONVERT(varchar(19), {ini}, 120), DATEDIFF(minute, {ini}, GETDATE()),
+                   CONVERT(varchar(16), {c('DATAPROGRAMADA')}, 120),
+                   DATEDIFF(minute, {c('DATAPROGRAMADA')}, GETDATE()),
+                   {c('PERCPROGRESSO')}, {c('STATUS')}, LEFT({c('TEXTOSTATUS')}, 160),
+                   J.CODUSUARIO, J.NOME, J.CLASSEPROCESSO, {c('RECCREATEDBY')}
+              FROM dbo.GJOBXEXECUCAO E LEFT JOIN dbo.GJOBX J ON J.IDJOB = E.IDJOB
+             WHERE E.DATAFIMEXEC IS NULL AND {viva} AND ({' OR '.join(conds)})
+             ORDER BY COALESCE({ini}, {c('DATAPROGRAMADA')})""",
+        tuple(params))
+    saida = []
+    for r in cur.fetchall():
+        rodando = r[4] is not None
+        pid = str(r[3]).strip() if r[3] is not None else ""
+        saida.append({
+            "idjob": r[0], "idexec": r[1], "servidor": r[2], "host": _host(r[2]),
+            "pid": int(pid) if pid.isdigit() else None,
+            "inicio": r[4], "idade_min": r[5] if rodando else None,
+            "programada": r[6], "espera_min": None if rodando else r[7],
+            "progresso": r[8], "status": r[9], "texto": (r[10] or "").strip() or None,
+            "usuario": (r[11] or r[14] or "").strip() or None,
+            "nome": (r[12] or r[13] or "").strip() or None, "classe": r[13],
+            "tipo": "presa" if rodando else "aguardando",
+        })
+    return saida
 
 
 def queue(servidor: str | None = None, parada_min: int = 30,
@@ -142,11 +220,9 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         # preenche a data de fim. Contar isso como fila era contar defunto.
         # Sem as colunas (outra versao do RM), tudo conta como vivo e o veredito
         # fica so com a idade.
-        terminais = ", ".join(str(s) for s in _STATUS_TERMINAIS)
-        viva = ("EMCANCELAMENTO IS NULL "
-                f"AND (STATUS IS NULL OR STATUS NOT IN ({terminais}))")
+        viva, viva_e = _viva(), _viva("E.")
         if not _tem(cur, "EMCANCELAMENTO", "STATUS"):
-            viva = "1 = 1"
+            viva = viva_e = "1 = 1"
 
         em_curso = presas = orfas = 0
         idade = None
@@ -198,12 +274,21 @@ def queue(servidor: str | None = None, parada_min: int = 30,
             if row:
                 aguardando = int(row[0] or 0)
                 espera = int(row[1]) if row[1] is not None else None
+
+        # A contagem diz que ha algo preso; a lista diz o que e. Falhar aqui nao
+        # derruba os numeros acima, que sao o que decide o alerta.
+        itens: list[dict[str, Any]] = []
+        if presas or aguardando:
+            try:
+                itens = _itens(cur, col, viva_e, w, z, servidor)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("jobstats.queue (itens): %s", exc)
         conn.close()
         return {"pending": em_curso + presas + aguardando, "running": em_curso,
                 "stuck": presas, "waiting": aguardando, "orphans": orfas,
                 "oldest_min": idade, "waiting_min": espera,
                 "done_recent": concluidas, "since_last_min": desde,
-                "window_min": w, "residue_min": z, "col": col, "error": None}
+                "window_min": w, "residue_min": z, "col": col, "items": itens, "error": None}
     except Exception as exc:  # noqa: BLE001
         log.warning("jobstats.queue: %s", exc)
         try:
@@ -211,6 +296,65 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         except Exception:  # noqa: BLE001
             pass
         return _fila_vazia(parada_min, residuo_min, f"{type(exc).__name__}: {exc}"[:150])
+
+
+def execucao_aberta(idjob: Any, idexec: Any = None) -> dict[str, Any] | None:
+    """A execucao ainda esta aberta, e em que processo? Lida na hora, no banco.
+
+    O RM.Host.JobRunner e reaproveitado: o mesmo PID roda um job atras do
+    outro (o 5420 do SRV11 estava no ar desde a vespera quando pegou o
+    relatorio preso de 20/10). Encerrar pelo PID que a coleta anotou minutos
+    atras pode matar o job SEGUINTE - por isso, antes de encerrar pelo job, a
+    rota pergunta de novo se aquela execucao segue sem fim e em qual PID.
+
+    Devolve {"pid", "servidor", "host", "inicio", "aberta", "nome", "usuario"};
+    None se o SQL nao estiver configurado ou a consulta falhar (quem chama
+    recusa a acao).
+    """
+    try:
+        idjob = int(idjob)
+        idexec = int(idexec) if idexec not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+    try:
+        conn = _connect()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.execucao_aberta: %s", exc)
+        return None
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor()
+        col = _coluna_inicio(cur) or "RECCREATEDON"
+        if not _tem(cur, "PROCESSID", "SERVIDOR"):
+            conn.close()
+            return None
+        filtro, params = "E.IDJOB = %s", [idjob]
+        if idexec is not None and _tem(cur, "IDEXECUCAO"):
+            filtro += " AND E.IDEXECUCAO = %s"
+            params.append(idexec)
+        cur.execute(
+            f"""SELECT TOP 1 E.PROCESSID, E.SERVIDOR, CONVERT(varchar(19), E.{col}, 120),
+                       CASE WHEN E.DATAFIMEXEC IS NULL THEN 1 ELSE 0 END, J.NOME, J.CODUSUARIO
+                  FROM dbo.GJOBXEXECUCAO E LEFT JOIN dbo.GJOBX J ON J.IDJOB = E.IDJOB
+                 WHERE {filtro}
+                 ORDER BY E.{col} DESC""", tuple(params))
+        r = cur.fetchone()
+        conn.close()
+        if not r:
+            return {"pid": None, "servidor": None, "host": "", "inicio": None, "aberta": False,
+                    "nome": None, "usuario": None}
+        pid = str(r[0] or "").strip()
+        return {"pid": int(pid) if pid.isdigit() else None, "servidor": r[1],
+                "host": _host(r[1]), "inicio": r[2], "aberta": bool(r[3]),
+                "nome": (r[4] or "").strip() or None, "usuario": (r[5] or "").strip() or None}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.execucao_aberta: %s", exc)
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 _FILTRO_RE = re.compile(r"\(\((.{1,400}?)\)\)", re.S)

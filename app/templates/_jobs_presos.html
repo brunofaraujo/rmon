@@ -1,0 +1,61 @@
+{# Jobs presos: QUAIS sao e COMO parar cada um. Usado em /jobs (pool inteiro) e
+   em /server/<nome> (so os daquele executor). `itens` vem de main._jobs_presos. #}
+{% macro painel(itens, fila, is_admin, titulo='Jobs presos agora', servidor=None) %}
+<div class="panel presos" id="presos">
+  <h2>&#9203; {{ titulo }} <span class="badge-count">{{ itens | length }}</span>
+    <span class="muted small">em andamento há mais de {{ fila.window_min }} min, ou com a hora marcada vencida sem ninguém começar</span></h2>
+
+  <ol class="presos-como">
+    <li><b>Encerrar aqui</b>{% if not is_admin %} <span class="muted">(perfil admin)</span>{% endif %}: o RMon confere no banco do RM que o job continua preso
+      naquele processo e fecha o processo (JobRunner) no servidor. O RM perde a execução e o servidor recupera a memória. Fica na auditoria e no canal.</li>
+    <li><b>Cancelar pelo RM</b>: Gerenciamento de Jobs, procure o número do job e cancele. É o caminho para os que estão <b>aguardando</b>, que ainda não têm processo.</li>
+    <li><b>Avisar quem pediu</b>: relatório sem filtro é a causa mais comum. Peça para gerar de novo com filtro, e não repetir enquanto o primeiro não terminar.</li>
+  </ol>
+
+  <div class="presos-lista">
+  {% for it in itens %}
+    {% set aguardando = it.tipo != 'presa' %}
+    <div class="preso {{ 'aguardando' if aguardando else '' }}">
+      <div class="preso-idade" title="{{ ('Hora marcada: ' ~ (it.programada | hhmm)) if aguardando else ('Começou às ' ~ (it.inicio | hhmm)) }}">
+        <b>{{ it.minutos | minutos }}</b><span>{{ 'aguardando' if aguardando else 'preso' }}</span></div>
+      <div class="preso-corpo">
+        <div class="preso-titulo">{{ it.nome or it.classe or 'Job sem nome' }}
+          <span class="preso-num" title="Número do job no RM (IDJOB){% if it.idexec %} &middot; execução {{ it.idexec }}{% endif %}">job {{ it.idjob }}</span></div>
+        <div class="preso-meta">
+          <span>Pedido por {% if it.usuario %}<a class="linkish" href="/sessions?user={{ it.usuario }}" title="Procurar a sessão deste usuário"><b>{{ it.usuario }}</b></a>{% else %}<b>?</b>{% endif %}</span>
+          {% if not servidor %}<span>em {% if it.server %}<a class="linkish" href="/server/{{ it.server }}">{{ it.label }}</a>{% else %}<b>{{ it.host or 'nenhum executor' }}</b>{% endif %}</span>{% endif %}
+          {% if aguardando %}
+            <span>marcado para {{ it.programada | hhmm }}{% if it.host %} no executor {{ it.servidor }}{% endif %}, ninguém começou</span>
+          {% else %}
+            <span>desde {{ it.inicio | hhmm }}{% if it.pid %} &middot; processo <span class="mono">PID {{ it.pid }}</span>{% if it.mb is not none %} com {{ it.mb }} MB{% endif %}{% endif %}</span>
+            <span>progresso {{ (it.progresso ~ '%') if it.progresso is not none else 'não informado' }}</span>
+          {% endif %}
+          {% if it.texto %}<span class="muted" title="Situação gravada pelo RM">&ldquo;{{ it.texto }}&rdquo;</span>{% endif %}
+        </div>
+        {% if it.pedidos > 1 %}
+        <div class="preso-aviso">&#9888; <b>{{ it.usuario }}</b> pediu este mesmo job {{ it.pedidos }} vezes: provavelmente tentou de novo porque não terminava. Encerrar só um não resolve.</div>
+        {% endif %}
+      </div>
+      <div class="preso-acoes">
+        {% if it.encerravel and is_admin %}
+        <button type="button" class="btn danger jr-kill"
+                data-server="{{ it.server }}" data-nome="{{ it.label }}" data-pid="{{ it.pid }}"
+                data-gb="{{ ((it.mb or 0) / 1024) | round(1) if it.mb is not none else '' }}"
+                data-idjob="{{ it.idjob }}" data-idexec="{{ it.idexec or '' }}"
+                data-job="job {{ it.idjob }} '{{ it.nome or it.classe or '?' }}' de {{ it.usuario or '?' }}"
+                title="Fecha o processo deste job no servidor (o RM perde a execução)">&#10005; Encerrar job</button>
+        {% elif it.encerravel %}
+        <span class="muted small">Encerrar daqui exige perfil admin.</span>
+        {% else %}
+        <span class="muted small">{{ it.sem_encerrar }}: cancele pelo RM.</span>
+        {% endif %}
+        <button type="button" class="btn ghost copiar" data-copiar="{{ it.idjob }}" title="Copiar o número do job para procurar no Gerenciamento de Jobs do RM">Copiar nº {{ it.idjob }}</button>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  {% if (fila.stuck or 0) + (fila.waiting or 0) > itens | length %}
+  <div class="muted small" style="margin-top:.5rem">Mostrando {{ itens | length }} de {{ (fila.stuck or 0) + (fila.waiting or 0) }}: os mais antigos primeiro.</div>
+  {% endif %}
+</div>
+{% endmacro %}

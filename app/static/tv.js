@@ -175,14 +175,8 @@
         t.push('<span class="jb' + (falhou ? " warn" : "") + '">jobs ' + s.jobs.win + " min: " +
           s.jobs.ok + " ok" + (falhou ? " &middot; " + s.jobs.failed + " com erro" : "") + "</span>");
       }
-      // Fila parada e outra historia: execucao presa ha tempo demais, ou com a
-      // hora programada vencida sem ninguem comecar, significa RM sem processar.
-      // Fila apenas cheia (jobs em curso) nao entra - nem execucao orfa de host
-      // reiniciado, que o backend ja separa e nao manda em `qs`.
-      if (s.jobs.qs) {
-        t.push('<span class="jb warn">fila parada: ' + s.jobs.qs + " job(s)" +
-          (s.jobs.qmin ? " há " + s.jobs.qmin + " min" : "") + "</span>");
-      }
+      // Fila parada (job preso) nao mora mais aqui: no rodape o texto era
+      // cortado ("fila parada: 1 job(") e nao dizia QUAL job. Ver presoHTML().
     }
     if (s.users !== null && s.users !== undefined) {
       t.push("<span>" + s.users + " " + plural(s.users, "usuário", "usuários") + "</span>");
@@ -190,10 +184,48 @@
     return t.join("");
   }
 
+  function fmtMin(m) {
+    if (m === null || m === undefined) { return ""; }
+    if (m < 60) { return m + " min"; }
+    var h = Math.floor(m / 60), r = m % 60;
+    if (h < 24) { return h + "h" + (r < 10 ? "0" : "") + r; }
+    return Math.floor(h / 24) + "d " + (h % 24) + "h";
+  }
+
+  /* Job preso ganha linha propria no cartao, acima do rodape: execucao presa ha
+     tempo demais, ou com a hora marcada vencida sem ninguem comecar, e o RM sem
+     processar. A linha diz QUAL job e de QUEM (o mais antigo; "+N" o resto) e,
+     para o admin fora do modo quiosque, leva a lista do servidor, onde se
+     encerra o job.
+     Fila apenas cheia (jobs em curso) nao entra - nem execucao orfa de host
+     reiniciado, que o backend ja separa e nao manda em `qs`. */
+  function presoHTML(s) {
+    if (!s.jobs || !s.jobs.qs) { return ""; }
+    var p = (s.jobs.qj && s.jobs.qj[0]) || null;
+    var aguarda = p && p.t !== "presa";
+    var idade = p ? fmtMin(p.m) : (s.jobs.qmin ? fmtMin(s.jobs.qmin) : "");
+    // duas linhas: o rotulo em caixa alta comia a largura e cortava o nome do
+    // job, que e o que importa - ele fica sozinho na segunda linha
+    var txt = p
+      ? "<b>job " + (aguarda ? "aguardando" : "preso") + (idade ? " há " + idade : "") + "</b>" +
+        '<span class="ln"><span class="nm">' + esc(p.n) + "</span>" +
+        (p.u ? '<span class="us">' + esc(p.u) + "</span>" : "") + "</span>"
+      : "<b>" + s.jobs.qs + " job(s) preso(s)" + (idade ? " há " + idade : "") + "</b>";
+    var resto = p ? s.jobs.qs - 1 : 0;
+    var corpo = '<span class="ic">&#9203;</span><span class="tx">' + txt + "</span>" +
+      (resto > 0 ? '<span class="mais">+' + resto + "</span>" : "");
+    var cls = "tvc-job" + (aguarda ? " aguarda" : "");
+    var dica = p ? ' title="job ' + esc(p.j) + " &middot; " + esc(p.n) + " de " + esc(p.u || "?") +
+      (TOKEN || !ADMIN ? "" : " &middot; clique para ver e encerrar") + '"' : "";
+    if (TOKEN || !ADMIN) { return '<div class="' + cls + '"' + dica + ">" + corpo + "</div>"; }
+    return '<a class="' + cls + '" href="/server/' + encodeURIComponent(s.name) + '#presos"' + dica + ">" +
+      corpo + "</a>";
+  }
+
   function cardHTML(s, th, mostraTags) {
     // cartao normal nao ganha etiqueta: o ponto verde ja diz "online" e a
     // largura toda fica para o hostname. Etiqueta so quando ha o que avisar.
-    var estado = s.sev === 2 ? "atencao" : (s.sev === 1 ? "aviso" : "");
+    var estado = s.sev === 2 ? "atenção" : (s.sev === 1 ? "aviso" : "");
     // janela de manutencao: o host pode estar fora de proposito (reboot,
     // atualizacao) e nao deve acender a TV do NOC
     var manut = s.manut ? " manut" : "";
@@ -232,6 +264,7 @@
     return '<article class="tvc sev' + s.sev + manut + '">' + head(estado) +
       '<div class="tvc-bars">' + barHTML("CPU", s.cpu, 90) + barHTML("Memória", s.mem, th.mem) + "</div>" +
       (mostraTags ? '<div class="tvc-tags">' + tagsHTML(s, th) + "</div>" : "") +
+      presoHTML(s) +
       '<div class="tvc-ft' + alerta + '"><span class="up">ligado há ' + fmtDur(s.uptime) + "</span>" +
       '<span class="jobs">' + rod + "</span>" +
       '<span class="hr">' + fmtClock(s.ts) + "</span></div>" +
@@ -473,6 +506,8 @@
   // Modo quiosque: o mural foi aberto por token (iframe de outro dominio), entao
   // nao ha sessao/cookie e mandar para /login so quebraria o embed.
   var TOKEN = (document.body.getAttribute("data-token") || "");
+  // So o admin sai do mural (o viewer e devolvido a ele): link so para o admin
+  var ADMIN = document.body.getAttribute("data-admin") === "1";
   var API = "/api/tv" + (TOKEN ? "?token=" + encodeURIComponent(TOKEN) : "");
 
   function carrega() {

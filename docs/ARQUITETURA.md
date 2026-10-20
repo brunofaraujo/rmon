@@ -143,7 +143,7 @@ Além das telas (ver [OPERACAO.md](OPERACAO.md#telas-do-painel)):
 | `/nlb/acao` | POST | Drenar/reingressar um nó do NLB ou ligar/desligar a manutenção (admin, auditado) |
 | `/manutencao/iniciar` | POST | Abre ou estende a janela de manutenção de um host: cala as notificações e põe o nó em hold no NLB (admin, auditado) |
 | `/manutencao/encerrar` | POST | Adianta o fim da janela; o resumo sai na próxima coleta (admin, auditado) |
-| `/jobrunner/encerrar` | POST | Encerra no host um `RM.Host.JobRunner` da última coleta, com o PID digitado (admin, auditado, notificado) |
+| `/jobrunner/encerrar` | POST | Encerra no host um `RM.Host.JobRunner` da última coleta, com o PID digitado (admin, auditado, notificado). Com `idjob`, confere antes no banco do RM que o job preso segue naquele PID e servidor |
 | `/pacotes/stage/{id}` | GET | Entrega o pacote ao host durante a instalação — sem sessão, com HMAC e prazo, só com a execução habilitada |
 
 ## Perfil `viewer` (quiosque)

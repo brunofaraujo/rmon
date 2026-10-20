@@ -538,3 +538,44 @@ details.ajuda > summary::before { content: "\24D8  "; }
 details.ajuda > div { margin-top: .55rem; padding: .7rem .9rem; border-left: 2px solid var(--line-2);
   background: var(--surface-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; line-height: 1.55; }
 details.ajuda p { margin: 0 0 .45rem; } details.ajuda p:last-child { margin-bottom: 0; }
+
+/* ---------- Jobs presos: qual e, onde esta e como parar ---------- */
+.panel.presos { border-color: rgba(248,113,113,.45);
+  background: linear-gradient(180deg, rgba(248,113,113,.07), transparent 140px), var(--surface); }
+.panel.presos > h2 { flex-wrap: wrap; }
+.panel.presos > h2 .muted { font-weight: 400; }
+.presos-como { margin: 0 0 1rem; padding: .7rem .9rem .7rem 2.1rem; border-radius: var(--radius-sm);
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); font-size: .86rem;
+  display: grid; gap: .3rem; }
+.presos-como b { color: var(--text); }
+.presos-lista { display: grid; gap: .6rem; }
+.preso { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr) auto; gap: .9rem; align-items: center;
+  padding: .75rem .9rem; border-radius: var(--radius-sm); background: var(--surface-2);
+  border: 1px solid var(--line); border-left: 4px solid var(--red); }
+.preso.aguardando { border-left-color: var(--amber); }
+.preso-idade { display: flex; flex-direction: column; align-items: center; text-align: center; line-height: 1.1; }
+.preso-idade b { font-size: 1.35rem; font-weight: 800; color: var(--red); letter-spacing: -.02em; }
+.preso.aguardando .preso-idade b { color: var(--amber); }
+.preso-idade span { font-size: .7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-top: .15rem; }
+.preso-titulo { font-weight: 700; font-size: 1rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem; }
+.preso-num { font-weight: 600; font-size: .78rem; color: var(--muted); background: var(--surface-3);
+  border: 1px solid var(--line-2); border-radius: 999px; padding: .05rem .5rem; font-variant-numeric: tabular-nums; }
+.preso-meta { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin-top: .3rem; font-size: .84rem; color: var(--muted); }
+.preso-meta b { color: var(--text); }
+.preso-meta .linkish { color: var(--accent); text-decoration: none; }
+.preso-meta .linkish:hover { text-decoration: underline; }
+.preso-aviso { margin-top: .45rem; font-size: .83rem; color: var(--amber); }
+.preso-acoes { display: flex; flex-direction: column; align-items: stretch; gap: .4rem; min-width: 11rem; max-width: 15rem; }
+.preso-acoes .btn { justify-content: center; }
+.preso-acoes .btn.ghost { font-size: .8rem; padding: .35rem .7rem; color: var(--muted); }
+.preso-acoes .muted { text-align: center; }
+@media (max-width: 760px) {
+  .preso { grid-template-columns: 4.4rem minmax(0, 1fr); }
+  .preso-acoes { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; max-width: none; }
+  .preso-acoes > * { flex: 1 1 10rem; }
+}
+/* pilula do cartao do painel: o job preso pelo nome, sem abrir outra tela */
+.preso-linha { display: block; margin-top: .35rem; font-size: .78rem; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preso-linha b { color: var(--red); }
+.pills .preso-linha { flex-basis: 100%; margin-top: -.25rem; }

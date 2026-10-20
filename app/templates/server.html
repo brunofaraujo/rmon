@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_jobs_presos.html" import painel as painel_presos %}
 {% block title %}{{ name | nome }} - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
@@ -151,15 +152,17 @@
       {% set fila = d.jobs.queue or {} %}
       {% if fila and fila.get('pending') is not none %}
       {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
-      <a class="stat" href="/jobs" title="Fila viva: em andamento + presas + esperando para começar. Execução abandonada por servidor reiniciado ({{ fila.orphans or 0 }}) fica de fora.">
+      <a class="stat" href="{{ '#presos' if presos else '/jobs' }}" title="Fila viva: em andamento + presas + esperando para começar. Execução abandonada por servidor reiniciado ({{ fila.orphans or 0 }}) fica de fora.">
         <div class="v {{ 'txt-red' if presas else '' }}">{{ fila.pending }}</div>
-        <div class="k">Jobs na fila{% if presas %} &middot; {{ presas }} parado(s){% if fila.oldest_min is not none %} há {{ fila.oldest_min }} min{% endif %}{% endif %}</div></a>
+        <div class="k">Jobs na fila{% if presas %} &middot; {{ presas }} preso(s){% if fila.oldest_min is not none %} há {{ fila.oldest_min | minutos }}{% endif %} &middot; <span class="txt-accent">ver quais</span>{% endif %}</div></a>
       {% endif %}
       {% elif d.jobs and d.jobs.error %}
       <a class="stat" href="/jobs"><div class="v txt-amber" style="font-size:1rem">sem leitura</div><div class="k">Jobs &middot; {{ d.jobs.error }}</div></a>
       {% endif %}
     </div>
   </div>
+
+  {% if presos %}{{ painel_presos(presos, d.jobs.queue, is_admin, 'Jobs presos neste servidor', servidor=name) }}{% endif %}
 
   <div class="panel">
     <h2>Serviços monitorados</h2>
