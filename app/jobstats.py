@@ -94,10 +94,29 @@ def _fila_vazia(parada_min: int, residuo_min: int, erro: str | None) -> dict[str
 ITENS_MAX = 10
 
 
-def _viva(prefixo: str = "") -> str:
+def _viva(cur, prefixo: str = "") -> str:
+    """Execucao que o RM ainda considera em andamento: sem cancelamento pedido e
+    sem status terminal. Sem as colunas (outra versao do RM), tudo conta como
+    vivo e o veredito fica so com a idade.
+
+    Fora isso, a execucao que o RM mandou cancelar antes de comecar e nunca
+    fechou: STATUS 3 (esperando), sem inicio e com o texto da rotina de
+    cancelamento. Nao vai rodar nunca - o job 2450548 (20/10) ficou 6h na lista
+    de presos assim, e foram 5 iguais em 90 dias. Os COALESCE seguram o NOT:
+    sem eles, STATUS ou TEXTOSTATUS nulo daria UNKNOWN e tiraria da fila
+    execucao viva de verdade.
+    """
+    if not _tem(cur, "EMCANCELAMENTO", "STATUS"):
+        return "1 = 1"
     terminais = ", ".join(str(s) for s in _STATUS_TERMINAIS)
-    return (f"{prefixo}EMCANCELAMENTO IS NULL "
+    viva = (f"{prefixo}EMCANCELAMENTO IS NULL "
             f"AND ({prefixo}STATUS IS NULL OR {prefixo}STATUS NOT IN ({terminais}))")
+    if _tem(cur, "DATAINIEXEC", "TEXTOSTATUS"):
+        # %% vira % quando a consulta leva parametro; sem parametro fica %%, que
+        # no LIKE e o mesmo curinga - vale dos dois jeitos
+        viva += (f" AND NOT (COALESCE({prefixo}STATUS, -1) = 3 AND {prefixo}DATAINIEXEC IS NULL "
+                 f"AND COALESCE({prefixo}TEXTOSTATUS, '') LIKE '%%rotina de cancelamento%%')")
+    return viva
 
 
 def _host(servidor: Any) -> str:
@@ -213,16 +232,12 @@ def queue(servidor: str | None = None, parada_min: int = 30,
     try:
         cur = conn.cursor()
         col = _coluna_inicio(cur)
-        # "Viva" e a execucao que o RM ainda considera em andamento: sem
-        # cancelamento pedido e sem status terminal. Das 87 execucoes sem
-        # DATAFIMEXEC dos ultimos 90 dias, 76 estao em status 4 ou 7 (abortada,
-        # falha critica) - o RM marca assim quando o servico volta, mas nunca
-        # preenche a data de fim. Contar isso como fila era contar defunto.
-        # Sem as colunas (outra versao do RM), tudo conta como vivo e o veredito
-        # fica so com a idade.
-        viva, viva_e = _viva(), _viva("E.")
-        if not _tem(cur, "EMCANCELAMENTO", "STATUS"):
-            viva = viva_e = "1 = 1"
+        # "Viva" e a execucao que o RM ainda considera em andamento (ver _viva).
+        # Das 87 execucoes sem DATAFIMEXEC dos ultimos 90 dias, 76 estao em
+        # status 4 ou 7 (abortada, falha critica) - o RM marca assim quando o
+        # servico volta, mas nunca preenche a data de fim. Contar isso como fila
+        # era contar defunto.
+        viva, viva_e = _viva(cur), _viva(cur, "E.")
 
         em_curso = presas = orfas = 0
         idade = None

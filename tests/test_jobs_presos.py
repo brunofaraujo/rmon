@@ -101,6 +101,28 @@ def test_fila_traz_quais_jobs_estao_presos(banco):
     assert f"TOP {jobstats.ITENS_MAX}" in sql and "E.EMCANCELAMENTO IS NULL" in sql
 
 
+def test_cancelado_antes_de_comecar_e_residuo(banco):
+    """Job 2450548 (20/10): STATUS 3, sem inicio, "entrou na rotina de
+    Cancelamento" 4 s depois de criado - ficou 6h como aguardando. As tres
+    consultas (contagem, espera e lista) tiram esse caso da fila; a contagem o
+    poe nos residuos (viva = 0)."""
+    jobstats.queue("SRV11")
+    regra = ("NOT (COALESCE({p}STATUS, -1) = 3 AND {p}DATAINIEXEC IS NULL "
+             "AND COALESCE({p}TEXTOSTATUS, '') LIKE '%%rotina de cancelamento%%')")
+    contagem, _, espera, lista = banco.sqls[1:]
+    assert regra.format(p="") in contagem and "THEN 1 ELSE 0 END viva" in contagem
+    assert regra.format(p="") in espera
+    assert regra.format(p="E.") in lista
+
+
+def test_rm_sem_texto_de_status_nao_perde_a_fila(banco, monkeypatch):
+    monkeypatch.setattr(jobstats, "_colunas", {c for c in COLUNAS if c != "TEXTOSTATUS"})
+    monkeypatch.setattr(jobstats, "_col_inicio", "DATAINIEXEC")
+    jobstats.queue("SRV11")
+    assert not any("rotina de cancelamento" in s for s in banco.sqls)
+    assert "EMCANCELAMENTO IS NULL" in banco.sqls[0]
+
+
 def test_sem_preso_nao_ha_consulta_a_mais(banco):
     banco.contagem, banco.espera = (3, 0, 0, 5), (0, None)
     f = jobstats.queue("SRV11")
