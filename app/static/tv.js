@@ -214,7 +214,10 @@
     var resto = p ? s.jobs.qs - 1 : 0;
     var corpo = '<span class="ic">&#9203;</span><span class="tx">' + txt + "</span>" +
       (resto > 0 ? '<span class="mais">+' + resto + "</span>" : "");
-    var cls = "tvc-job" + (aguarda ? " aguarda" : "");
+    // Vermelho so com a fila travada (cartao em falha, alerta JOBQUEUE). Um job
+    // preso enquanto o executor segue concluindo outros e aviso: ambar, como o
+    // cartao - linha vermelha em cartao verde parecia servidor caindo.
+    var cls = "tvc-job" + (aguarda || s.sev < 2 ? " aguarda" : "");
     var dica = p ? ' title="job ' + esc(p.j) + " &middot; " + esc(p.n) + " de " + esc(p.u || "?") +
       (TOKEN || !ADMIN ? "" : " &middot; clique para ver e encerrar") + '"' : "";
     if (TOKEN || !ADMIN) { return '<div class="' + cls + '"' + dica + ">" + corpo + "</div>"; }
