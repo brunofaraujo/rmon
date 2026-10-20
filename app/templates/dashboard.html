@@ -90,7 +90,8 @@
               {# Fila cheia nao e fila travada: so vira pilula vermelha o que esta
                  preso (em andamento ha tempo demais) ou esperando alguem comecar. #}
               {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
-              {% if presas %}<span class="pill red chip-link" data-href="/jobs" title="Execuções presas há mais de {{ fila.window_min }} minutos ou com a hora programada vencida sem ninguém iniciar">&#9203; Fila de jobs parada: {{ presas }}{% if fila.oldest_min is not none %} há {{ fila.oldest_min }} min{% endif %}</span>
+              {% if presas %}{% set it = (fila["items"] or [none])[0] %}<span class="pill red chip-link" data-href="/server/{{ chave }}#presos" title="Execuções presas há mais de {{ fila.window_min }} minutos ou com a hora programada vencida sem ninguém iniciar. Clique para ver quais são e encerrar.">&#9203; {{ presas }} job(s) preso(s){% if fila.oldest_min is not none %} há {{ fila.oldest_min | minutos }}{% endif %} &middot; ver e parar</span>
+              {% if it %}<span class="preso-linha chip-link" data-href="/server/{{ chave }}#presos"><b>{{ it.nome or it.classe or 'job ' ~ it.idjob }}</b> de {{ it.usuario or '?' }}{% if (fila["items"] | length) > 1 %} e mais {{ (fila["items"] | length) - 1 }}{% endif %}</span>{% endif %}
               {% elif fila.running %}<span class="pill chip-link" data-href="/jobs" title="Execuções em andamento dentro do tempo normal">&#9203; {{ fila.running }} job(s) em andamento</span>{% endif %}
             {% endif %}
           {% endif %}

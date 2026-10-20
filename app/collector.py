@@ -774,6 +774,9 @@ def subir_servicos(server: ServerConfig, wc: WinRMConfig, itens: list[tuple[str,
 # O PID vem do formulario, entao o script confere tudo no host antes de matar:
 # o processo existe, ainda e um JobRunner e e o MESMO que a coleta viu (hora de
 # inicio igual) - PID reaproveitado por outro processo nao morre por engano.
+# Quando o alvo vem de um job preso (o PID gravado no banco do RM), a hora exata
+# nao e conhecida: vale entao "o processo ja existia quando o job comecou"
+# (__BEFORE__) - processo mais novo que o job e outro, que herdou o PID.
 _PS_KILL_JR = r"""
 $p = Get-Process -Id __PID__ -ErrorAction SilentlyContinue
 if (-not $p) { 'GONE' }
@@ -781,7 +784,7 @@ elseif ($p.ProcessName -ne __NAME__) { 'NOT_JR ' + $p.ProcessName }
 else {
     $ini = $null
     try { $ini = $p.StartTime.ToString('yyyy-MM-dd HH:mm:ss') } catch { }
-    if (__START__ -and $ini -ne __START__) { 'REUSED ' + $ini }
+    if ((__START__ -and $ini -ne __START__) -or (__BEFORE__ -and (-not $ini -or $ini -gt __BEFORE__))) { 'REUSED ' + $ini }
     else {
         $mb = [math]::Round($p.PrivateMemorySize64 / 1MB, 0)
         Stop-Process -Id __PID__ -Force -ErrorAction Stop
@@ -809,15 +812,18 @@ def jobrunner_alvo(coleta: dict | None, pid) -> dict | None:
     return None
 
 
-def script_encerrar_jobrunner(pid: int, inicio: str | None, processo: str) -> str:
+def script_encerrar_jobrunner(pid: int, inicio: str | None, processo: str,
+                              antes: str | None = None) -> str:
     pid = int(pid)
     if pid <= 0:
         raise ValueError("PID inválido")
     if not _re.fullmatch(r"[A-Za-z0-9._-]+", processo or ""):
         raise ValueError("nome de processo inválido")
     inicio = inicio if inicio and _INICIO_RE.fullmatch(str(inicio)) else ""
+    antes = antes if antes and _INICIO_RE.fullmatch(str(antes)) else ""
     return (_PS_KILL_JR.replace("__PID__", str(pid))
-            .replace("__NAME__", _ps_str(processo)).replace("__START__", _ps_str(inicio)))
+            .replace("__NAME__", _ps_str(processo)).replace("__START__", _ps_str(inicio))
+            .replace("__BEFORE__", _ps_str(antes)))
 
 
 def interpretar_encerramento(saida: str, pid: int) -> tuple[bool, str]:
@@ -836,10 +842,10 @@ def interpretar_encerramento(saida: str, pid: int) -> tuple[bool, str]:
 
 
 def kill_jobrunner(server: ServerConfig, wc: WinRMConfig, pid: int, inicio: str | None,
-                   processo: str) -> tuple[bool, str]:
+                   processo: str, antes: str | None = None) -> tuple[bool, str]:
     """Encerra um RM.Host.JobRunner pelo PID (Stop-Process -Force), com as conferencias acima."""
     try:
-        script = script_encerrar_jobrunner(pid, inicio, processo)
+        script = script_encerrar_jobrunner(pid, inicio, processo, antes)
     except (TypeError, ValueError) as exc:
         return False, str(exc)
     user, pw = credential_for(server.cred)

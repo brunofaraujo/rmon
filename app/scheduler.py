@@ -695,8 +695,23 @@ def job_problems(jb: dict | None, th: dict, fila_hist: list[dict] | None = None,
                        for k in (ja_detectado or {})):
         travada = False
     if travada:
-        p["JOBQUEUE"] = f"fila de jobs travada: {motivo}"
+        p["JOBQUEUE"] = f"fila de jobs travada: {motivo}" + _qual_job((jb.get("queue") or {}).get("items"))
     return p
+
+
+def _qual_job(itens) -> str:
+    """" - 'Gerar Relatório' de fulano (job 2450153, PID 8188) e mais 1": o
+    alerta diz o que parar. O texto so e montado quando o alerta abre (a chave
+    e que decide a notificacao), entao a idade fica de fora de proposito."""
+    itens = [i for i in (itens or []) if isinstance(i, dict)]
+    if not itens:
+        return ""
+    it = itens[0]
+    texto = (f" — '{it.get('nome') or it.get('classe') or '?'}' de {it.get('usuario') or '?'}"
+             f" (job {it.get('idjob')}" + (f", PID {it['pid']}" if it.get("pid") else "") + ")")
+    if len(itens) > 1:
+        texto += f" e mais {len(itens) - 1}"
+    return texto
 
 
 def _identificar_jobrunners(jr: dict | None, th: dict) -> None:

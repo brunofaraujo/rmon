@@ -195,14 +195,20 @@
       e.preventDefault(); e.stopPropagation();
       var srv = b.getAttribute('data-server'), pid = b.getAttribute('data-pid');
       var nome = b.getAttribute('data-nome') || srv;
-      var resp = prompt('Encerrar o processo de job (JobRunner) PID ' + pid + ' (' + b.getAttribute('data-gb') + ' GB, ' +
-        b.getAttribute('data-job') + ') em ' + nome + '?\n\nO RM perde esta execução do job. ' +
+      var gb = b.getAttribute('data-gb'), idjob = b.getAttribute('data-idjob');
+      var resp = prompt('Encerrar o processo de job (JobRunner) PID ' + pid + ' (' + (gb ? gb + ' GB, ' : '') +
+        b.getAttribute('data-job') + ') em ' + nome + '?\n\nO RM perde esta execução do job' +
+        (idjob ? ': avise quem pediu para gerar de novo, com filtro' : '') + '. ' +
         'Para confirmar, digite o PID:');
       if (resp === null) return;
       if (resp.trim() !== pid) { alert('PID diferente: nada foi feito.'); return; }
       b.disabled = true;
-      rmonTask.start('Encerrar o JobRunner ' + pid, 'em ' + nome + ' — conferindo o processo no servidor…');
+      rmonTask.start('Encerrar o JobRunner ' + pid, 'em ' + nome + ' — ' + (idjob
+        ? 'conferindo o job ' + idjob + ' no banco do RM e o processo no servidor…'
+        : 'conferindo o processo no servidor…'));
       var fd = new FormData(); fd.append('server', srv); fd.append('pid', pid); fd.append('confirm', resp.trim());
+      // a partir de um job preso: o servidor confere no banco que o job segue nesse PID
+      if (idjob) { fd.append('idjob', idjob); fd.append('idexec', b.getAttribute('data-idexec') || ''); }
       fetch('/jobrunner/encerrar', { method: 'POST', body: fd, credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (d) {
@@ -214,6 +220,26 @@
           rmonTask.done('Erro de rede', false, false);
           b.disabled = false;
         });
+    });
+
+    // Copiar o numero do job para procurar no Gerenciamento de Jobs do RM. Pela
+    // 8080 (http) o navigator.clipboard nao existe: cai no execCommand.
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-copiar]') : null;
+      if (!b) return;
+      e.preventDefault(); e.stopPropagation();
+      var txt = b.getAttribute('data-copiar'), antes = b.textContent;
+      function ok() { b.textContent = 'Copiado: ' + txt; setTimeout(function () { b.textContent = antes; }, 1800); }
+      function velho() {
+        var t = document.createElement('textarea'); t.value = txt; t.setAttribute('readonly', '');
+        t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+        var foi = false;
+        try { foi = document.execCommand('copy'); } catch (x) { foi = false; }
+        document.body.removeChild(t);
+        if (foi) { ok(); } else { prompt('Copie o número do job:', txt); }
+      }
+      if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(txt).then(ok, velho); }
+      else { velho(); }
     });
 
     // Atalho para dentro do cartao do servidor: o cartao inteiro ja e um link

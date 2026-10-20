@@ -277,6 +277,32 @@ coleta viu (PID reaproveitado não morre por engano). O RM perde aquela execuç�
 para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job no RM: o ✕
 é para quando não dá tempo.
 
+### Job preso: achar qual é e parar
+
+Job **preso** é execução em andamento há mais de `jobs_stuck_min` (30 min), ou com a hora
+marcada vencida sem nenhum executor começar (**aguardando**). Toda tela diz qual é:
+
+- **Mural**: o cartão ganha uma linha vermelha com o job mais antigo e quem pediu
+  (`PRESO HÁ 3H14 · Gerar Relatório · fulano`, e `+N` para o resto). O letreiro repete com o
+  número do job. Para o admin, a linha leva à lista do servidor.
+- **Painel** (`/`): a pílula "N job(s) preso(s) · ver e parar" mostra o nome logo abaixo.
+- **Jobs** (`/jobs`, todos os servidores) e **tela do servidor** (só os dele): o bloco
+  *Jobs presos* lista cada execução com idade, nome, número do job, quem pediu, executor,
+  PID e memória do processo. Pedido repetido da mesma pessoa é destacado: em 20/10 a mesma
+  usuária gerou o mesmo relatório quatro vezes, em três executores, porque não terminava.
+
+Como parar, em cada linha:
+
+1. **✕ Encerrar job** (admin): fecha o JobRunner daquela execução. Na hora do clique o
+   RMon pergunta de novo ao banco do RM se o job segue aberto, naquele servidor e naquele
+   PID. O JobRunner é reaproveitado entre jobs, e o PID que a coleta viu minutos antes pode
+   já estar rodando o job seguinte. Se o PID não está entre os maiores da coleta, o host só
+   encerra processo que já existia quando o job começou. Tudo vai para a auditoria e o canal.
+2. **Cancelar pelo RM**: *Gerenciamento de Jobs*, procure o número (o botão *Copiar nº*
+   ajuda). É o único caminho para os que estão **aguardando**: ainda não há processo.
+3. **Avisar quem pediu**: o nome leva às sessões da pessoa. Relatório sem filtro é a causa
+   mais comum.
+
 ### Servidor travado sem contato
 
 Sem WinRM e com o Elastic também mudo, o Windows travou, e não só o WinRM. VM é reiniciada

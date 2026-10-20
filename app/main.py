@@ -8,6 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -82,7 +83,29 @@ def _fmt_idle(minutos) -> str:
     return f"{d}d {hh}h"
 
 
+def _fmt_min(minutos) -> str:
+    """Idade em minutos para quem le de longe: "3h14", "45 min", "2d 3h"."""
+    try:
+        if int(minutos) <= 0:
+            return "agora"
+    except (TypeError, ValueError):
+        return "-"
+    return _fmt_idle(minutos)
+
+
+def _fmt_hhmm(quando) -> str:
+    """"2026-10-20 08:32[:00]" do SQL -> "08:32" se for hoje, "19/10 23:50" se nao."""
+    texto = str(quando or "")
+    try:
+        d = datetime.strptime(texto[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return texto or "?"
+    return d.strftime("%H:%M" if d.date() == datetime.now().date() else "%d/%m %H:%M")
+
+
 templates.env.filters["dt"] = _fmt_dt
+templates.env.filters["minutos"] = _fmt_min
+templates.env.filters["hhmm"] = _fmt_hhmm
 templates.env.filters["ocioso"] = _fmt_idle
 templates.env.filters["dur"] = _fmt_dur
 templates.env.globals["ui_refresh"] = 60
@@ -321,6 +344,25 @@ def _tv_thresholds() -> dict:
             **(db.get_config("alerts", {}) or {})}
 
 
+def _presos_tv(jobs: dict | None) -> list[dict]:
+    """Jobs presos de um servidor no formato curto do mural."""
+    itens = ((jobs or {}).get("queue") or {}).get("items") or []
+    return [{"n": it.get("nome") or it.get("classe") or f"job {it.get('idjob')}",
+             "u": it.get("usuario"), "j": it.get("idjob"), "t": it.get("tipo"),
+             "m": it.get("idade_min") if it.get("tipo") == "presa" else it.get("espera_min")}
+            for it in itens if isinstance(it, dict)]
+
+
+def _presos_texto(presos: list[dict]) -> str:
+    p = presos[0]
+    estado = "preso" if p.get("t") == "presa" else "aguardando"
+    texto = (f"job {estado} há {_fmt_min(p.get('m'))}: {p.get('n')} de {p.get('u') or '?'}"
+             f" (nº {p.get('j')})")
+    if len(presos) > 1:
+        texto += f" e mais {len(presos) - 1}"
+    return texto
+
+
 def _tv_payload() -> dict:
     """Estado completo do mural em JSON. Cache curto: varias TVs nao multiplicam consultas."""
     now = time.time()
@@ -373,10 +415,15 @@ def _tv_payload() -> dict:
         elif sev == 1:
             summary["warn"] += 1
 
+        presos = _presos_tv(jobs)
         if not manut:
             for key, text in probs.items():
                 issues.append({"server": nomes.titulo(cfg.name), "text": text,
                                "sev": 2 if scheduler.critico(key) else 1})
+            # com JOBQUEUE aberto o texto do alerta ja nomeia o job
+            if presos and "JOBQUEUE" not in probs:
+                issues.append({"server": nomes.titulo(cfg.name), "sev": 1,
+                               "text": _presos_texto(presos)})
             if not up and "DOWN" not in probs:
                 issues.append({"server": nomes.titulo(cfg.name), "sev": 1,
                                "text": f"coleta instável ({streak}x sem resposta do WinRM)"})
@@ -408,7 +455,9 @@ def _tv_payload() -> dict:
                       "qp": (jobs.get("queue") or {}).get("pending"),
                       "qs": ((jobs.get("queue") or {}).get("stuck") or 0)
                             + ((jobs.get("queue") or {}).get("waiting") or 0),
-                      "qmin": (jobs.get("queue") or {}).get("oldest_min")}
+                      "qmin": (jobs.get("queue") or {}).get("oldest_min"),
+                      # quais: os mais antigos primeiro (o cartao mostra 1, o "+N" o resto)
+                      "qj": presos[:3]}
                      if jobs else None),
             "events": len(events),
             "err": (d["error"] if d else "aguardando a primeira coleta") if not up else None,
@@ -430,6 +479,7 @@ def _tv_payload() -> dict:
 def _tv_response(request: Request, token: str | None = None) -> HTMLResponse:
     return templates.TemplateResponse(
         "tv.html", {"request": request, "payload": _tv_payload(),
+                    "is_admin": not token and _role(request) == "admin",
                     "version": __version__, "tv_token": token})
 
 
@@ -521,6 +571,8 @@ def server_detail(request: Request, name: str):
          "jr_sonda": _sonda_do_servidor(name),
          "limite_jr": limite_jr.resumo(hist[0].get("limite_jr")),
          "es": _elastic_do_servidor(name, hist[0], th, horas if horas in (24, 168, 720) else 24),
+         "presos": _jobs_presos((((hist[0].get("jobs") or {}).get("queue") or {}).get("items"))),
+         "is_admin": _role(request) == "admin",
          "manut": manut, "flash": flash},
     )
 
@@ -649,6 +701,33 @@ async def manutencao_encerrar(request: Request):
     return _server_redirect(request, srv.name, msg)
 
 
+def _mais_minutos(quando: str | None, minutos: int) -> str | None:
+    try:
+        return (datetime.strptime(str(quando), "%Y-%m-%d %H:%M:%S")
+                + timedelta(minutes=minutos)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _recusa_job_preso(preso: dict | None, srv, ultimo: dict, pid: str) -> str | None:
+    """Motivo para NAO encerrar o processo de um job preso (None = pode)."""
+    if preso is None:
+        return "não deu para conferir o job no banco do RM agora: nada feito"
+    if not preso.get("aberta"):
+        return "esse job já terminou no RM: nada a encerrar (recarregue a tela)"
+    if str(preso.get("pid") or "") != str(pid).strip():
+        return (f"o job agora está no PID {preso.get('pid') or '?'}, não no {pid}: nada feito "
+                "(recarregue a tela)")
+    computador = ((ultimo.get("jobrunners") or {}).get("computer") or "").upper()
+    executor = ((srv.jobs or {}).get("servidor") or "").upper()
+    host = (preso.get("host") or "").upper()
+    if not host or host not in {computador, executor} - {""}:
+        return (f"o job roda em {preso.get('host') or '?'}, não neste servidor: nada feito")
+    if not _mais_minutos(preso.get("inicio"), 2) and not jobrunner_alvo(ultimo, pid):
+        return "o banco do RM não diz quando o job começou: sem isso não dá para conferir o PID"
+    return None
+
+
 @app.post("/jobrunner/encerrar")
 async def jobrunner_encerrar(request: Request):
     """Encerra no host um RM.Host.JobRunner da ultima coleta (admin, auditado).
@@ -673,29 +752,104 @@ async def jobrunner_encerrar(request: Request):
                                                  "WinRM não responde: sem WinRM não há como encerrar"},
                             status_code=409)
     proc = jobrunner_alvo(ultimo, pid)
+    idjob = (form.get("idjob") or "").strip()
+    antes = None
+    preso = None
+    if idjob:
+        # Pedido a partir de um job preso: o PID vem do banco do RM, e o
+        # JobRunner e reaproveitado entre jobs - entao a execucao tem de seguir
+        # aberta, NESTE servidor e NESTE PID, agora (nao na coleta de minutos atras).
+        preso = await run_in_threadpool(jobstats.execucao_aberta, idjob, form.get("idexec"))
+        recusa = _recusa_job_preso(preso, srv, ultimo, pid)
+        if recusa:
+            return JSONResponse({"ok": False, "msg": recusa}, status_code=409)
+        if not proc:
+            # fora dos maiores da coleta: so encerra processo que ja existia
+            # quando o job comecou (folga de 2 min entre os relogios)
+            proc = {"pid": int(pid), "private_mb": None, "start": None}
+            antes = _mais_minutos(preso.get("inicio"), 2)
     if not proc:
         return JSONResponse({"ok": False, "msg": "esse PID não está entre os JobRunners da última "
                                                  "coleta: recarregue a tela"}, status_code=409)
     pid_i = int(proc["pid"])
     ex = ((ultimo.get("jobrunners") or {}).get("jobs") or {}).get(str(pid_i)) or {}
+    if preso:
+        ex = {"idjob": int(idjob), "nome": preso.get("nome") or ex.get("nome"),
+              "usuario": preso.get("usuario") or ex.get("usuario")}
     gb = float(proc.get("private_mb") or 0) / 1024
     quem = (f"job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}' de "
             f"{ex.get('usuario') or '?'}" if ex else "job não identificado")
     processo = jobrunner_settings(STATE["inv"].defaults).get("process") or "RM.Host.JobRunner"
-    ok, msg = await run_in_threadpool(kill_jobrunner, srv, STATE["inv"].winrm, pid_i,
-                                      proc.get("start"), processo)
+    if antes:
+        ok, msg = await run_in_threadpool(kill_jobrunner, srv, STATE["inv"].winrm, pid_i,
+                                          None, processo, antes)
+    else:
+        ok, msg = await run_in_threadpool(kill_jobrunner, srv, STATE["inv"].winrm, pid_i,
+                                          proc.get("start"), processo)
     user = request.session.get("user") or "?"
-    detalhe = f"{srv.name} PID {pid_i} ({gb:.1f} GB, {quem})"
+    tam = f"{gb:.1f} GB, " if proc.get("private_mb") is not None else ""
+    if preso:
+        quem += " preso"
+    detalhe = f"{srv.name} PID {pid_i} ({tam}{quem})"
     db.audit(user, "jobrunner_kill", f"{detalhe} -> {ok}: {msg}"[:900], _ip(request))
     log.warning("JobRunner %s encerrado por %s -> %s (%s)", detalhe, user, ok, msg)
     if ok:
         db.record_alert(srv.name, "acao", f"jobrunner-kill:{pid_i}",
-                        f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) encerrado por {user}")
+                        f"JobRunner PID {pid_i} ({tam}{quem}) encerrado por {user}")
         if notify.enabled():
             await run_in_threadpool(notify.send, f"\U0001F6D1 RMonitor \u2014 {nomes.com_ip(srv.name)}: "
-                                                  f"JobRunner PID {pid_i} ({gb:.1f} GB, {quem}) "
+                                                  f"JobRunner PID {pid_i} ({tam}{quem}) "
                                                   f"encerrado por {user}")
     return JSONResponse({"ok": ok, "msg": msg})
+
+
+def _jobs_presos(itens: list | None, latest: dict | None = None) -> list[dict]:
+    """Cada execucao presa com o que a tela precisa para dizer COMO para-la.
+
+    O banco do RM sabe o job, quem pediu, o executor ("srv11:8052") e o PID; a
+    coleta sabe se aquele PID esta vivo no Windows e quanto ocupa. Juntando os
+    dois, a linha diz se da para encerrar daqui ou, se nao, o motivo e o que
+    fazer no lugar. Pedido repetido e destacado: em 20/10 a mesma usuaria gerou
+    o mesmo relatorio em tres executores, um atras do outro, porque nao terminava.
+    """
+    if not itens:
+        return []
+    inv = STATE["inv"]
+    if latest is None:
+        latest = {r["server"]: r for r in db.latest_per_server()}
+    por_host: dict[str, str] = {}
+    for srv in inv.servers:
+        for h in ((srv.jobs or {}).get("servidor"),
+                  ((latest.get(srv.name) or {}).get("jobrunners") or {}).get("computer")):
+            if h:
+                por_host.setdefault(str(h).upper(), srv.name)
+    pedidos: dict[tuple, int] = {}
+    for it in itens:
+        chave = (it.get("usuario"), it.get("nome"))
+        pedidos[chave] = pedidos.get(chave, 0) + 1
+    saida = []
+    for it in itens:
+        x = dict(it)
+        nome = por_host.get(str(it.get("host") or "").upper())
+        coleta = latest.get(nome) or {} if nome else {}
+        proc = jobrunner_alvo(coleta, it.get("pid")) if it.get("pid") else None
+        jr = coleta.get("jobrunners") or {}
+        if it.get("tipo") != "presa":
+            motivo = "nenhum executor começou: não há processo para encerrar"
+        elif not it.get("pid"):
+            motivo = "o RM não gravou o processo (PID) desta execução"
+        elif not nome:
+            motivo = f"o executor {it.get('host') or '?'} não é monitorado pelo RMon"
+        elif not coleta.get("reachable") or jr.get("fonte") == "elastic":
+            motivo = "o WinRM deste servidor não responde agora"
+        else:
+            motivo = None
+        x.update(server=nome, label=nomes.titulo(nome) if nome else None,
+                 mb=(proc or {}).get("private_mb"), encerravel=motivo is None,
+                 sem_encerrar=motivo, pedidos=pedidos[(it.get("usuario"), it.get("nome"))],
+                 minutos=it.get("idade_min") if it.get("tipo") == "presa" else it.get("espera_min"))
+        saida.append(x)
+    return saida
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -720,6 +874,8 @@ def jobs_page(request: Request):
     fila = jobstats.queue(None, th.get("jobs_stuck_min", 30), th.get("jobs_orphan_min", 360))
     return templates.TemplateResponse(
         "jobs.html", {"request": request, "pool": pool, "fila": fila,
+                      "presos": _jobs_presos((fila or {}).get("items")),
+                      "is_admin": _role(request) == "admin",
                       "window": window, "version": __version__})
 
 

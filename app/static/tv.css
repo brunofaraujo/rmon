@@ -246,6 +246,28 @@ html[data-theme="light"] .tv-tag.bad  { color: #b42318; }
    aplicacao: sinaliza em ambar, nunca em vermelho de servidor em falha */
 .tvc-ft .jb.warn { color: var(--amber); font-weight: 700; }
 
+/* job preso: linha propria, acima do rodape, que diz QUAL job e de QUEM. No
+   rodape o texto era cortado ("fila parada: 1 job(") e nao identificava nada. */
+.tvc-job { flex: none; display: flex; align-items: center; gap: .45em; min-width: 0;
+  font-size: .84em; padding: .32em .6em; border-radius: .5em; color: var(--text); text-decoration: none;
+  background: rgba(255, 90, 90, .12); border: 1px solid rgba(255, 90, 90, .45); }
+.tvc-job.aguarda { background: rgba(255, 176, 32, .12); border-color: rgba(255, 176, 32, .42); }
+a.tvc-job:hover { border-color: var(--red); background: rgba(255, 90, 90, .2); }
+.tvc-job .ic { flex: none; font-size: 1.1em; }
+.tvc-job .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+.tvc-job .tx b, .tvc-job .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvc-job .tx b { color: #ffb3b3; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; font-size: .78em; }
+.tvc-job.aguarda .tx b { color: #ffd689; }
+.tvc-job .nm { font-weight: 700; }
+.tvc-job .us { color: var(--muted); margin-left: .35em; }
+.tvc-job .us::before { content: "\00b7\00a0"; }
+.tvc-job .mais { flex: none; font-weight: 800; color: var(--muted); font-size: .9em; }
+html[data-theme="light"] .tvc-job .tx b { color: #b42318; }
+html[data-theme="light"] .tvc-job.aguarda .tx b { color: #8a5200; }
+/* micro: uma linha so, rotulo e nome lado a lado */
+.tv-grid.t-micro .tvc-job { font-size: .78em; padding: .2em .45em; }
+.tv-grid.t-micro .tvc-job .tx { flex-direction: row; gap: .4em; align-items: baseline; }
+
 /* cartao fora do ar */
 .tvc-down { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: .3em;
   min-height: 0; }

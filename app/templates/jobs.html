@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_jobs_presos.html" import painel as painel_presos %}
 {% block title %}Jobs - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
@@ -14,6 +15,9 @@
 {% elif pool.error %}
   <div class="alert">Não foi possível consultar o banco do RM: {{ pool.error }}</div>
 {% else %}
+  {# O que exige acao vem antes dos numeros: quem abre esta tela pela pilula
+     "fila parada" quer saber QUAL job e como para-lo, nao a contagem. #}
+  {% if presos %}{{ painel_presos(presos, fila, is_admin) }}{% endif %}
   <div class="kpis">
     <div class="kpi ok"><div class="val txt-green">{{ pool.ok }}</div><div class="lbl">Concluídos com sucesso</div></div>
     {# Erro de job e validacao/regra de negocio: ambar. O vermelho da tela fica
@@ -22,9 +26,9 @@
     <div class="kpi"><div class="val">{{ pool.total }}</div><div class="lbl">Total executado</div></div>
     {% if fila and fila.get('pending') is not none %}
     {% set presas = (fila.stuck or 0) + (fila.waiting or 0) %}
-    <div class="kpi {{ 'bad' if presas else 'ok' }}">
+    <a class="kpi {{ 'bad' if presas else 'ok' }}" {% if presas %}href="#presos" title="Ver quais são e como parar"{% endif %}>
       <div class="val {{ 'txt-red' if presas else '' }}">{{ fila.pending }}</div>
-      <div class="lbl">Na fila agora{% if presas %} &middot; {{ presas }} parado(s){% endif %}</div></div>
+      <div class="lbl">Na fila agora{% if presas %} &middot; {{ presas }} preso(s){% endif %}</div></a>
     {% endif %}
     <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Usuários que pediram jobs</div></div>
   </div>
