@@ -43,6 +43,8 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     jobrunner_kill_gb: 4           # o RMon ENCERRA sozinho o JobRunner com 4+ GB (0 desliga)
     jobrunner_kill_mb_min: 400     # ... ou que cresce 400+ MB/min entre duas coletas (0 desliga)
     jobrunner_kill_min_mb: 768     # ... já acima de 768 MB (abaixo disso é carga inicial)
+    jobrunner_kill_carga_mb: 150   # ... e em carga (acima de 150 MB)
+    jobrunner_kill_carga_s: 60     # ... há 60+ s (0 em qualquer um desliga a condição)
     lembrete_h: 4                  # crítico (vermelho) ainda aberto é notificado de novo a cada 4h (0 desliga)
     resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
     boot_janela_min: 30            # serviço automático parado cujo alerta abriu até 30 min após o boot = "não subiu após o reboot"
@@ -625,11 +627,25 @@ quando:
 |---|---|---|
 | `alerts.jobrunner_kill_gb` | `4` | memória privada a partir disso |
 | `alerts.jobrunner_kill_mb_min` | `400` | cresceu isso por minuto em relação à leitura de 45 s a 5 min atrás (mesmo PID e hora de início)... |
-| `alerts.jobrunner_kill_min_mb` | `768` | ...e já passa disso |
+| `alerts.jobrunner_kill_min_mb` | `768` | ...e já passa disso... |
+| `alerts.jobrunner_kill_carga_mb` / `alerts.jobrunner_kill_carga_s` | `150` / `60` | ...e está acima de 150 MB há pelo menos 60 s (`0` em qualquer um desliga só esta condição; até 240 s) |
 
 `0` desliga cada regra; as três também ficam em *Admin* → *Limiares de alerta*. Nos 5 dias
 anteriores, o maior salto normal foi de 441 MB/min, sempre parando abaixo de 500 MB
 (carga inicial do job): só os dois casos de 19/10 cresceram assim acima de 800 MB.
+
+**Tempo em carga (desde 23/10).** O crescimento rápido sozinho encerrou relatórios normais:
+em 20/10 o SENAI005 (66 → 1053 MB em 1 min) e em 23/10 o SENAI-EP.002 (64 → 777 MB), que
+refeitos concluíram em 8 s e 14 s. O processo que travou o .222 cresceu **mais devagar**
+(517 MB/min) e com **menos** memória (854 MB) que eles, então nenhum ajuste de ritmo ou de
+mínimo separa os casos. O que separa é o tempo: ele estava acima de 190 MB havia 5 min
+quando acelerou; os relatórios normais saem do processo parado (63 a 80 MB) e terminam em
+segundos. Simulado nos 110 dias do Elastic (115 processos acima de 500 MB) e nas coletas,
+150 MB por 60 s só muda esses três falsos positivos (o terceiro, de 14/08, foi a 902 MB e
+sumiu no minuto seguinte); os demais encerramentos saem iguais, no mesmo instante. Os
+estouros grandes (60 a 82 GB) crescem devagar no começo e ficam com a regra dos 4 GB. Um
+processo que dispare a partir do parado espera até 60 s a mais, coberto pelos 4 GB, pela
+sonda de 15 s e, no .222, pelo teto do Windows.
 
 As leituras vêm de dois lugares, cada uma sem esperar as dos outros servidores:
 
