@@ -93,6 +93,9 @@ DEFAULT_ALERTS = {"disk_pct": 90, "mem_pct": 90, "app_ms": 3000, "jobs_failed": 
                   # tantos MB. 0 desliga cada regra.
                   "jobrunner_kill_gb": 4, "jobrunner_kill_mb_min": 400,
                   "jobrunner_kill_min_mb": 768,
+                  # ...e o crescimento rapido so encerra quem ja esta em carga
+                  # (acima de tantos MB) ha tantos segundos (0 em qualquer um desliga)
+                  "jobrunner_kill_carga_mb": 150, "jobrunner_kill_carga_s": 60,
                   # critico ainda aberto e lembrado a cada tantas horas (0 desliga)
                   "lembrete_h": 4,
                   # hora do resumo diario dos alertas (-1 desliga)
@@ -747,6 +750,20 @@ def _referencia(amostras, agora: float) -> tuple[float, float] | None:
     return max(validas, key=lambda a: a[0]) if validas else None
 
 
+def em_carga_ha(amostras, agora: float, carga_mb: float) -> float:
+    """Ha quantos segundos o processo esta acima de `carga_mb` sem descer, pelas
+    leituras guardadas (ate JR_JANELA_MAX_S): conta da primeira leitura depois
+    da ultima abaixo do limiar. So a leitura de agora acima = 0."""
+    desde = agora
+    for t, mb in sorted(amostras or [], reverse=True):
+        if t >= agora:
+            continue
+        if mb < carga_mb:
+            break
+        desde = t
+    return agora - desde
+
+
 def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, list[tuple[float, float]]] | None,
                           th: dict, agora: float) -> list[tuple[dict, str]]:
     """JobRunners que o RMon encerra sozinho: [(processo, motivo)]. Funcao pura."""
@@ -774,6 +791,16 @@ def _alvos_com_regra(jr: dict | None, anterior: dict[str, list[tuple[float, floa
       param abaixo de 500 MB; so os dois de 19/10 cresceram assim acima de
       800 MB.
 
+    O crescimento rapido ainda exige que o processo esteja em carga ha um
+    tempo (`jobrunner_kill_carga_mb` 150 por `jobrunner_kill_carga_s` 60 s).
+    O 2172 do .222 estava acima de 190 MB havia 5 min quando acelerou; ja os
+    relatorios normais saem do processo parado (~64 MB), sobem e terminam em
+    segundos. Em 20 e 23/10 a regra encerrou dois assim (64 -> 777 MB e
+    66 -> 1053 MB), que refeitos concluiram em 14 s e 8 s: o 2172 cresceu MAIS
+    DEVAGAR (517 MB/min) e com MENOS memoria (854 MB) que eles, entao nenhum
+    ajuste de ritmo ou de minimo separa um caso do outro - o tempo em carga
+    separa. Nos 110 dias do Elastic, isso so muda esses tres casos.
+
     Leitura do Elastic (host sem WinRM) nao entra: sem WinRM nao ha como encerrar.
     """
     if not isinstance(jr, dict) or jr.get("fonte") == "elastic":
@@ -781,6 +808,8 @@ def _alvos_com_regra(jr: dict | None, anterior: dict[str, list[tuple[float, floa
     limite_gb = _limiar(th, "jobrunner_kill_gb")
     ritmo = _limiar(th, "jobrunner_kill_mb_min")
     piso_mb = _limiar(th, "jobrunner_kill_min_mb")
+    carga_mb = _limiar(th, "jobrunner_kill_carga_mb")
+    carga_s = _limiar(th, "jobrunner_kill_carga_s")
     anterior = anterior or {}
     alvos = []
     for proc in _procs(jr):
@@ -801,13 +830,19 @@ def _alvos_com_regra(jr: dict | None, anterior: dict[str, list[tuple[float, floa
             continue
         minutos = (agora - antes[0]) / 60
         por_min = (mb - antes[1]) / minutos
-        if por_min >= ritmo:
-            alvos.append((proc, {"motivo": f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
-                                           f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
-                                           f"{ritmo:g} MB/min acima de {piso_mb:g} MB)",
-                                 "regra": "ritmo", "mb": round(mb), "antes_mb": round(antes[1]),
-                                 "segundos": round(agora - antes[0]), "mb_min": round(por_min),
-                                 "limite_mb_min": ritmo, "piso_mb": piso_mb}))
+        if por_min < ritmo:
+            continue
+        carga = em_carga_ha(anterior.get(_jr_chave(proc)), agora, carga_mb) if carga_mb and carga_s else None
+        if carga is not None and carga < carga_s:
+            continue      # saiu agora do processo parado: carga do job, que termina em segundos
+        alvos.append((proc, {"motivo": f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
+                                       f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
+                                       f"{ritmo:g} MB/min acima de {piso_mb:g} MB"
+                                       + (f", em carga há {round(carga)} s" if carga is not None else "") + ")",
+                             "regra": "ritmo", "mb": round(mb), "antes_mb": round(antes[1]),
+                             "segundos": round(agora - antes[0]), "mb_min": round(por_min),
+                             "limite_mb_min": ritmo, "piso_mb": piso_mb,
+                             "em_carga_s": round(carga) if carga is not None else None}))
     return alvos
 
 

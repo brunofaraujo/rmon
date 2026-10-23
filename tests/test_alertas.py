@@ -5,6 +5,8 @@ Funcoes puras, sem rede nem banco. Os cenarios sao os que ja deram alarme falso
 """
 from __future__ import annotations
 
+import pytest
+
 from app import scheduler
 from app.scheduler import DEFAULT_ALERTS
 
@@ -393,12 +395,52 @@ def test_encerra_acima_de_4gb_mesmo_sem_leitura_anterior():
     assert "4.2 GB" in alvos[0][1]
 
 
+def serie(pid, pontos, start="2026-10-19 09:24:38"):
+    """Leituras guardadas de um processo: [(segundos antes de agora=1000, MB)]."""
+    return {f"{pid}|{start}": [(1000 - s, mb) for s, mb in pontos]}
+
+
+# .222 em 19/10, como as coletas gravaram: 63 MB as 10:25:01, 196 as 10:25:56,
+# parado em ~197 ate 10:28:54, 340 as 10:29:54, 854 as 10:30:53 - travado as 10:31
+CURVA_222 = [(297, 196), (240, 197), (179, 197), (119, 198), (59, 340)]
+
+
 def test_encerra_quem_cresce_rapido_acima_do_minimo():
-    # .222 em 19/10: 340 MB as 10:29:54, 854 MB as 10:30:53, travado as 10:31
-    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(2172, 854)]},
-                                            amostra(2172, 340, 1000 - 59), TH, 1000)
+    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(2172, 854)]}, serie(2172, CURVA_222), TH, 1000)
     assert [p["pid"] for p, _ in alvos] == [2172]
-    assert "340 para 854 MB" in alvos[0][1]
+    assert "340 para 854 MB" in alvos[0][1] and "em carga há 297 s" in alvos[0][1]
+
+
+@pytest.mark.parametrize("antes, agora", [
+    (64, 777),     # 23/10, SENAI-EP.002 da maria: refeito, concluiu em 14 s
+    (66, 1053),    # 20/10, SENAI005 da Mariane: refeito, concluiu em 8 s
+    (102, 902),    # 14/08, win2016-2: foi a 902 MB e sumiu no minuto seguinte
+])
+def test_relatorio_que_sai_do_processo_parado_nao_e_encerrado(antes, agora):
+    hist = serie(9368, [(60, antes), (45, antes)])
+    assert scheduler.jobrunners_a_encerrar({"top": [proc(9368, agora)]}, hist, TH, 1000) == []
+
+
+def test_se_continuar_crescendo_em_carga_e_encerrado():
+    # o mesmo salto do parado, mas o job seguiu crescendo: a leitura de 60 s depois encerra
+    hist = serie(9368, [(120, 64), (60, 777), (45, 900), (30, 1100), (15, 1300)])
+    alvos = scheduler.jobrunners_a_encerrar({"top": [proc(9368, 1600)]}, hist, TH, 1000)
+    assert [p["pid"] for p, _ in alvos] == [9368] and "em carga há 60 s" in alvos[0][1]
+
+
+def test_tempo_em_carga_zerado_volta_a_regra_antiga():
+    hist = serie(9368, [(60, 64)])
+    for chave in ("jobrunner_kill_carga_mb", "jobrunner_kill_carga_s"):
+        th = {**TH, chave: 0}
+        alvos = scheduler.jobrunners_a_encerrar({"top": [proc(9368, 777)]}, hist, th, 1000)
+        assert [p["pid"] for p, _ in alvos] == [9368] and "em carga" not in alvos[0][1]
+
+
+def test_em_carga_conta_desde_a_ultima_leitura_abaixo():
+    assert scheduler.em_carga_ha([(900, 64), (940, 300), (970, 500)], 1000, 150) == 60
+    assert scheduler.em_carga_ha([(900, 300), (940, 100), (970, 500)], 1000, 150) == 30
+    assert scheduler.em_carga_ha([(800, 370), (900, 371)], 1000, 150) == 200
+    assert scheduler.em_carga_ha([], 1000, 150) == 0
 
 
 def test_carga_inicial_rapida_nao_encerra():
@@ -434,8 +476,9 @@ def test_sonda_de_15s_mede_o_ritmo_numa_janela_de_45s():
     # (carga) nao vira 600 MB/min: a base e a leitura de 45 s a 5 min atras
     hist = {"7760|2026-10-19 09:24:38": [(1000 - 60, 800), (1000 - 45, 810), (1000 - 30, 815), (1000 - 15, 820)]}
     assert scheduler.jobrunners_a_encerrar({"top": [proc(7760, 970)]}, hist, TH, 1000) == []
-    # crescimento continuo de verdade: 400 -> 1400 MB em 45 s
-    hist = {"7760|2026-10-19 09:24:38": [(1000 - 45, 400), (1000 - 30, 700), (1000 - 15, 1000)]}
+    # crescimento continuo de verdade, ja em carga: 400 -> 1400 MB em 45 s
+    hist = {"7760|2026-10-19 09:24:38": [(1000 - 90, 370), (1000 - 45, 400), (1000 - 30, 700),
+                                         (1000 - 15, 1000)]}
     alvos = scheduler.jobrunners_a_encerrar({"top": [proc(7760, 1400)]}, hist, TH, 1000)
     assert alvos and "1333 MB/min" in alvos[0][1]
 

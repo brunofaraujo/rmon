@@ -53,6 +53,8 @@
         {{ campo('jobrunner_kill_gb', 'Encerrar processo de job a partir de (GB)', 'O RMon encerra sozinho, logo depois da leitura (coleta de 60 s ou sonda de 15 s), o processo de job que chegar a essa memória. O RM perde a execução e o aviso vai para o canal com o job e quem pediu. Em 19/10 um processo foi de 0,4 a 4,2 GB entre duas coletas e o servidor travou na seguinte. 0 desliga.', 0, 512) }}
         {{ campo('jobrunner_kill_mb_min', 'Encerrar se crescer (MB por minuto)', 'O RMon também encerra o processo de job que cresce essa quantidade por minuto em relação à leitura de 45 s a 5 min atrás, já acima do mínimo abaixo. Nos 5 dias anteriores a 19/10, o maior salto normal foi de 441 MB/min, sempre parando abaixo de 500 MB. 0 desliga.', 0, 100000) }}
         {{ campo('jobrunner_kill_min_mb', 'Crescimento só conta acima de (MB)', 'Abaixo disso o crescimento rápido é carga inicial do job e não encerra nada.', 0, 524288) }}
+        {{ campo('jobrunner_kill_carga_mb', 'Crescimento só conta em carga acima de (MB)', 'O processo de job parado fica em 63 a 80 MB. Acima disto ele está trabalhando: o crescimento rápido só encerra quem já está em carga há o tempo abaixo. 0 desliga esta condição.', 0, 524288) }}
+        {{ campo('jobrunner_kill_carga_s', '...há pelo menos (segundos)', 'Relatório normal sai do processo parado, sobe e termina em segundos: em 20 e 23/10 dois assim foram encerrados (64 para 777 MB e 66 para 1053 MB) e, refeitos, concluíram em 14 s e 8 s. O processo que travou o .222 em 19/10 estava em carga havia 5 min. Até 240 s; 0 desliga esta condição.', 0, 240) }}
       </div>
       <details class="ajuda" style="margin:-.4rem 0 1rem">
         <summary>Quando um problema de jobs vira alerta</summary>
