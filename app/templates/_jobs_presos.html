@@ -9,7 +9,7 @@
     <li><b>Encerrar aqui</b>{% if not is_admin %} <span class="muted">(perfil admin)</span>{% endif %}: o RMon confere no banco do RM que o job continua preso
       naquele processo e fecha o processo (JobRunner) no servidor. O RM perde a execução e o servidor recupera a memória. Fica na auditoria e no canal.</li>
     <li><b>Cancelar pelo RM</b>: Gerenciamento de Jobs, procure o número do job e cancele. É o caminho para os que estão <b>aguardando</b>, que ainda não têm processo.</li>
-    <li><b>Avisar quem pediu</b>: relatório sem filtro é a causa mais comum. Peça para gerar de novo com filtro, e não repetir enquanto o primeiro não terminar.</li>
+    <li><b>Avisar quem pediu</b>: relatório sem filtro, ou filtrado só pela coligada, é a causa mais comum (veja o <b>provável motivo</b> em cada job). Peça para gerar de novo com filtro, e não repetir enquanto o primeiro não terminar.</li>
   </ol>
 
   <div class="presos-lista">
@@ -19,7 +19,8 @@
       <div class="preso-idade" title="{{ ('Hora marcada: ' ~ (it.programada | hhmm)) if aguardando else ('Começou às ' ~ (it.inicio | hhmm)) }}">
         <b>{{ it.minutos | minutos }}</b><span>{{ 'aguardando' if aguardando else 'preso' }}</span></div>
       <div class="preso-corpo">
-        <div class="preso-titulo">{{ it.nome or it.classe or 'Job sem nome' }}
+        <div class="preso-titulo">{{ (it.relatorio.descricao if it.relatorio and it.relatorio.descricao) or it.nome or it.classe or 'Job sem nome' }}
+          {% if it.relatorio and it.relatorio.codigo %}<span class="preso-num" title="Código do relatório no RM (RRPTREPORT.ID {{ it.relatorio.id }})">{{ it.relatorio.codigo }}</span>{% endif %}
           <span class="preso-num" title="Número do job no RM (IDJOB){% if it.idexec %} &middot; execução {{ it.idexec }}{% endif %}">job {{ it.idjob }}</span></div>
         <div class="preso-meta">
           <span>Pedido por {% if it.usuario %}<a class="linkish" href="/sessions?user={{ it.usuario }}" title="Procurar a sessão deste usuário"><b>{{ it.usuario }}</b></a>{% else %}<b>?</b>{% endif %}</span>
@@ -32,6 +33,10 @@
           {% endif %}
           {% if it.texto %}<span class="muted" title="Situação gravada pelo RM">&ldquo;{{ it.texto }}&rdquo;</span>{% endif %}
         </div>
+        {% if it.diag %}
+        <div class="preso-motivo {{ it.diag.tipo }}"><b>Provável motivo:</b> {{ it.diag.motivo }}</div>
+        {% if it.diag.pistas %}<ul class="preso-pistas">{% for p in it.diag.pistas %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
+        {% endif %}
         {% if it.pedidos > 1 %}
         <div class="preso-aviso">&#9888; <b>{{ it.usuario }}</b> pediu este mesmo job {{ it.pedidos }} vezes: provavelmente tentou de novo porque não terminava. Encerrar só um não resolve.</div>
         {% endif %}

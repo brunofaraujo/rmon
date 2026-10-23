@@ -320,6 +320,36 @@ def jobrunner_pid(cfg: dict, nome: str, processo: str, pid: int, desde: float,
     return {"pontos": pontos, "processo_desde": _epoch((ag.get("inicio") or {}).get("value"))}
 
 
+def processo_agora(cfg: dict, nome: str, processo: str, pid: int, minutos: int = 15) -> dict | None:
+    """O que um JobRunner preso esta fazendo: CPU e memoria nos ultimos minutos.
+
+    `cpu` e a media de system.process.cpu.total.pct: 1.0 = um nucleo inteiro
+    (o relatorio do RM e de uma thread so: em 23/10 os dois presos ficaram em
+    0,93 por horas, com a memoria subindo ~35 MB/min). {"cpu", "mb_ini",
+    "mb_fim", "seg"}; None = Elastic fora ou o processo fora do topo do host.
+    """
+    if not nome or pid is None:
+        return None
+    d = _buscar(cfg, cfg["process_index"], {
+        "size": 0,
+        "query": {"bool": {"filter": [{"range": {"@timestamp": {"gte": f"now-{int(minutos)}m"}}},
+                                      _filtro_hosts([nome]), _filtro_processo(cfg, processo),
+                                      {"term": {"process.pid": int(pid)}}]}},
+        "aggs": {"cpu": {"avg": {"field": "system.process.cpu.total.pct"}},
+                 "t": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1m", "min_doc_count": 1},
+                       "aggs": {"m": {"max": {"field": "system.process.memory.size"}}}}}})
+    if d is None:
+        return None
+    ag = d.get("aggregations", {})
+    pts = [(float(b["key"]) / 1000, b["m"]["value"]) for b in ag.get("t", {}).get("buckets", [])
+           if (b.get("m") or {}).get("value") is not None]
+    cpu = (ag.get("cpu") or {}).get("value")
+    if not pts or cpu is None:
+        return None
+    return {"cpu": round(float(cpu), 3), "mb_ini": round(pts[0][1] / 2**20), "mb_fim": round(pts[-1][1] / 2**20),
+            "seg": round(pts[-1][0] - pts[0][0])}
+
+
 # ------------------------------------------------------------ desenho
 
 def grafico(pontos: list[dict], aviso_gb: float = 0, critico_gb: float = 0,

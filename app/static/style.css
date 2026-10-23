@@ -565,6 +565,16 @@ details.ajuda p { margin: 0 0 .45rem; } details.ajuda p:last-child { margin-bott
 .preso-meta .linkish { color: var(--accent); text-decoration: none; }
 .preso-meta .linkish:hover { text-decoration: underline; }
 .preso-aviso { margin-top: .45rem; font-size: .83rem; color: var(--amber); }
+/* o porque do job preso (app/diagnostico.py): o motivo em destaque, as pistas embaixo */
+.preso-motivo { margin-top: .5rem; padding: .4rem .6rem; border-radius: var(--radius-sm); font-size: .86rem;
+  background: var(--surface-3); border-left: 3px solid var(--line-2); }
+.preso-motivo.filtro { border-left-color: var(--amber); background: rgba(251,191,36,.08); }
+.preso-motivo.filtro b { color: var(--amber); }
+.preso-motivo.normal { border-left-color: var(--green); }
+.preso-motivo.parado { border-left-color: var(--red); }
+.preso-motivo.trabalhando { border-left-color: var(--accent); }
+.preso-pistas { margin: .35rem 0 0; padding-left: 1.1rem; font-size: .8rem; color: var(--muted); line-height: 1.5; }
+.preso-pistas li { overflow-wrap: anywhere; }
 .preso-acoes { display: flex; flex-direction: column; align-items: stretch; gap: .4rem; min-width: 11rem; max-width: 15rem; }
 .preso-acoes .btn { justify-content: center; }
 .preso-acoes .btn.ghost { font-size: .8rem; padding: .35rem .7rem; color: var(--muted); }
