@@ -20,8 +20,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, elastic, execution, fontes, incus, inventory, jobstats, limite_jr,
-               manutencao, nlb, nomes, notify, packages, scheduler)
+from . import (__version__, db, elastic, encerrados, execution, fontes, incus, inventory, jobstats,
+               limite_jr, manutencao, nlb, nomes, notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -108,6 +108,8 @@ templates.env.filters["minutos"] = _fmt_min
 templates.env.filters["hhmm"] = _fmt_hhmm
 templates.env.filters["ocioso"] = _fmt_idle
 templates.env.filters["dur"] = _fmt_dur
+templates.env.filters["duracao"] = encerrados.duracao
+templates.env.globals["quando"] = encerrados.quando
 templates.env.globals["ui_refresh"] = 60
 templates.env.globals["default_theme"] = "dark"
 templates.env.globals["tv_refresh"] = 15
@@ -793,6 +795,17 @@ async def jobrunner_encerrar(request: Request):
     detalhe = f"{srv.name} PID {pid_i} ({tam}{quem})"
     db.audit(user, "jobrunner_kill", f"{detalhe} -> {ok}: {msg}"[:900], _ip(request))
     log.warning("JobRunner %s encerrado por %s -> %s (%s)", detalhe, user, ok, msg)
+    if ok or not msg.startswith("o PID"):
+        job = {k: v for k, v in (("idjob", ex.get("idjob")), ("nome", ex.get("nome")),
+                                 ("classe", ex.get("classe")), ("usuario", ex.get("usuario")),
+                                 ("executor", (preso or {}).get("servidor") or ex.get("servidor")),
+                                 ("inicio", (preso or {}).get("inicio") or ex.get("inicio")),
+                                 ("filtro", ex.get("filtro"))) if v is not None}
+        db.record_job_kill(srv.name, pid_i, "manual", user, ok, {
+            **job, "regra": "manual", "preso": bool(preso), "retorno": msg,
+            "mb": round(float(proc["private_mb"])) if proc.get("private_mb") is not None else None,
+            "liberado_mb": scheduler._liberado_mb(msg), "start": proc.get("start"),
+            "computer": (ultimo.get("jobrunners") or {}).get("computer")})
     if ok:
         db.record_alert(srv.name, "acao", f"jobrunner-kill:{pid_i}",
                         f"JobRunner PID {pid_i} ({tam}{quem}) encerrado por {user}")
@@ -875,6 +888,7 @@ def jobs_page(request: Request):
     return templates.TemplateResponse(
         "jobs.html", {"request": request, "pool": pool, "fila": fila,
                       "presos": _jobs_presos((fila or {}).get("items")),
+                      "encerrados": encerrados.historico(inv),
                       "is_admin": _role(request) == "admin",
                       "window": window, "version": __version__})
 

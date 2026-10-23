@@ -1,6 +1,7 @@
 """Camada de dados em PostgreSQL (psycopg3). Conexoes curtas (sem estado compartilhado entre threads)."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import psycopg
@@ -109,6 +110,15 @@ _SCHEMA = [
         exit_code integer, comando text, output text, error text, checks jsonb
     )""",
     "CREATE INDEX IF NOT EXISTS idx_install_tasks_fila ON install_tasks(status, id)",
+    # processos de job (RM.Host.JobRunner) que o RMon encerrou: automatico ou
+    # pelo botao. O resto (motivo, memoria, job, amostras) fica em `dados`.
+    """CREATE TABLE IF NOT EXISTS job_kills (
+        id bigserial PRIMARY KEY,
+        ts timestamptz NOT NULL DEFAULT now(),
+        server text NOT NULL, pid integer, origem text NOT NULL, por text,
+        ok boolean NOT NULL, idjob bigint, usuario text, dados jsonb
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_job_kills_ts ON job_kills(ts DESC)",
 ]
 
 
@@ -131,6 +141,7 @@ def init_db() -> None:
         for stmt in _SCHEMA:
             c.execute(stmt)
     _migrar_inventario()
+    _carregar_job_kills_antigos()
 
 
 def _migrar_inventario() -> None:
@@ -514,6 +525,134 @@ def recent_alerts(hours: int = 48, limit: int = 500, server: str | None = None) 
     params.append(int(limit))
     with _conn() as c:
         return _epoch(c.execute(sql, tuple(params)).fetchall())
+
+
+# ---------- processos de job encerrados ----------
+def record_job_kill(server: str, pid: int | None, origem: str, por: str | None, ok: bool,
+                    dados: dict | None = None, ts: float | None = None) -> None:
+    """Um encerramento de JobRunner: `origem` 'auto' (regra do RMon) ou 'manual'
+    (botao, `por` = quem clicou). Nunca quebra o fluxo de quem encerrou."""
+    dados = dict(dados or {})
+    try:
+        with _conn() as c:
+            c.execute("""INSERT INTO job_kills (ts, server, pid, origem, por, ok, idjob, usuario, dados)
+                         VALUES (coalesce(to_timestamp(%s), now()), %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      (ts, server, pid, origem, por, bool(ok), dados.get("idjob"),
+                       dados.get("usuario"), Jsonb(dados)))
+    except Exception:
+        pass
+
+
+def recent_job_kills(days: int = 30, limit: int = 100) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("""SELECT * FROM job_kills WHERE ts >= now() - make_interval(days => %s)
+                             ORDER BY ts DESC LIMIT %s""", (int(days), int(limit))).fetchall()
+    return _epoch(rows)
+
+
+def job_kill_guardar(kill_id: int, extra: dict) -> None:
+    """Junta ao `dados` o que foi lido depois (Elastic, coletas): le uma vez so."""
+    try:
+        with _conn() as c:
+            c.execute("UPDATE job_kills SET dados = coalesce(dados, '{}'::jsonb) || %s WHERE id = %s",
+                      (Jsonb(extra), int(kill_id)))
+    except Exception:
+        pass
+
+
+def jobrunner_nas_coletas(server: str, pid: int, desde: float, ate: float) -> list[dict]:
+    """O que as coletas gravaram de um JobRunner e do servidor entre dois instantes:
+    [{t, mb (None se o PID nao estava entre os maiores), mem_pct, commit_pct}]."""
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT extract(epoch FROM ts) AS t, mem_pct, commit_pct,
+                      (SELECT (p->>'private_mb')::int FROM jsonb_array_elements(
+                               CASE WHEN jsonb_typeof(jobrunners->'top') = 'array'
+                                    THEN jobrunners->'top' ELSE '[]'::jsonb END) p
+                        WHERE p->>'pid' = %s LIMIT 1) AS mb
+                 FROM checks WHERE server = %s AND reachable
+                  AND ts BETWEEN to_timestamp(%s) AND to_timestamp(%s) ORDER BY ts""",
+            (str(int(pid)), server, float(desde), float(ate))).fetchall()
+    return [{"t": float(r["t"]), "mb": r["mb"], "mem_pct": r["mem_pct"], "commit_pct": r["commit_pct"]}
+            for r in rows]
+
+
+_KILL_AUTO_RE = re.compile(r"^(?P<server>\S+) PID (?P<pid>\d+) \((?P<quem>.*?); (?P<motivo>.*)\) -> "
+                           r"(?P<ok>True|False): (?P<retorno>.*)$", re.S)
+_KILL_MANUAL_RE = re.compile(r"^(?P<server>\S+) PID (?P<pid>\d+) \((?:(?P<gb>[\d.]+) GB, )?(?P<quem>.*?)\) -> "
+                             r"(?P<ok>True|False): (?P<retorno>.*)$", re.S)
+_QUEM_RE = re.compile(r"^job (?P<idjob>\d+) '(?P<nome>.*)' de (?P<usuario>\S+?)(?P<preso> preso)?$")
+_RITMO_RE = re.compile(r"cresceu de (\d+) para (\d+) MB em (\d+) min \((\d+) MB/min")
+_GB_RE = re.compile(r"^([\d.]+) GB de memória privada")
+_LIBERADO_RE = re.compile(r"\((\d+) MB de memória privada liberados\)")
+
+
+def kill_da_auditoria(acao: str, usuario: str | None, detalhe: str) -> dict | None:
+    """Uma linha 'jobrunner_kill[_auto]' do audit_log como registro de job_kills.
+
+    E como os encerramentos de antes da tabela existir (20/10 a 23/10) entram no
+    historico. "o PID ... ja tinha terminado" nao foi encerramento: fica de fora.
+    """
+    auto = acao == "jobrunner_kill_auto"
+    m = (_KILL_AUTO_RE if auto else _KILL_MANUAL_RE).match(detalhe or "")
+    if not m:
+        return None
+    ok = m["ok"] == "True"
+    retorno = m["retorno"].strip()
+    if not ok and retorno.startswith("o PID"):
+        return None
+    dados: dict[str, Any] = {"retorno": retorno}
+    q = _QUEM_RE.match(m["quem"].strip())
+    if q:
+        dados.update(idjob=int(q["idjob"]), nome=q["nome"], usuario=q["usuario"])
+        if q["preso"]:
+            dados["preso"] = True
+    lib = _LIBERADO_RE.search(retorno)
+    if lib:
+        dados["liberado_mb"] = int(lib.group(1))
+    if auto:
+        motivo = m["motivo"].strip()
+        dados["motivo"] = motivo
+        r = _RITMO_RE.search(motivo)
+        g = _GB_RE.match(motivo)
+        if r:
+            dados.update(regra="ritmo", antes_mb=int(r.group(1)), mb=int(r.group(2)),
+                         minutos=int(r.group(3)), mb_min=int(r.group(4)))
+        elif g:
+            dados.update(regra="memoria", mb=round(float(g.group(1)) * 1024))
+    else:
+        dados["regra"] = "manual"
+        if m["gb"]:
+            dados["mb"] = round(float(m["gb"]) * 1024)
+    if dados.get("mb") is None and dados.get("liberado_mb"):
+        dados["mb"] = dados["liberado_mb"]
+    return {"server": m["server"], "pid": int(m["pid"]), "origem": "auto" if auto else "manual",
+            "por": "rmon" if auto else usuario, "ok": ok, "dados": dados}
+
+
+def _carregar_job_kills_antigos() -> None:
+    """Uma vez so: os encerramentos gravados so na auditoria viram registros.
+    Falhar aqui nao pode impedir o RMon de subir: tenta de novo no proximo start."""
+    try:
+        _carregar_auditoria()
+    except Exception:
+        pass
+
+
+def _carregar_auditoria() -> None:
+    if get_config("job_kills_carga"):
+        return
+    with _conn() as c:
+        rows = c.execute("""SELECT extract(epoch FROM ts) AS ts, username, action, detail FROM audit_log
+                             WHERE action IN ('jobrunner_kill', 'jobrunner_kill_auto') ORDER BY ts""").fetchall()
+        ja = c.execute("SELECT count(*) AS n FROM job_kills").fetchone()["n"]
+    if not ja:
+        for r in rows:
+            k = kill_da_auditoria(r["action"], r["username"], r["detail"] or "")
+            if k:
+                record_job_kill(k["server"], k["pid"], k["origem"], k["por"], k["ok"], k["dados"],
+                                ts=float(r["ts"]))
+    set_config("job_kills_carga", 1)
 
 
 def get_config(key: str, default: Any = None) -> Any:

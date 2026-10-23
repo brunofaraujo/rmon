@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import struct
+import time
 from typing import Any
 
 log = logging.getLogger("rmon.jobstats")
@@ -445,6 +447,203 @@ def executions_by_pid(computador: str | None, pids) -> dict[str, dict[str, Any]]
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+# ---------------------------------------------------------------- encerrados
+
+_STATUS_TXT = {2: "concluído", 4: "abortado", 5: "terminou com erro", 6: "concluído com ressalva",
+               7: "falha crítica"}
+# o int32 que vem logo depois deste, no VALORPARAMETROS de um "Gerar Relatório",
+# e o RRPTREPORT.ID (BinaryFormatter do .NET: marcador 08 08 + int32 LE)
+_MARCA_RELATORIO = 11529
+# {idjob: (validade, leitura)}; validade 0 = nao muda mais (encerrado ha mais de um dia)
+_cache_enc: dict[int, tuple[float, dict[str, Any]]] = {}
+
+
+def parametros_do_job(blob: Any) -> dict[str, Any]:
+    """Do VALORPARAMETROS: {"relatorio": RRPTREPORT.ID ou None, "sem_filtro", "filtro"}.
+
+    Sem `((` no blob o pedido nao teve filtro - foi assim que os relatorios que
+    derrubaram o parque em 19 e 20/10 foram achados. O filtro vem cortado se
+    passar de 300 caracteres (e longo quando sao muitas turmas).
+    """
+    if blob is None:
+        return {"relatorio": None, "sem_filtro": None, "filtro": None}
+    if isinstance(blob, str):
+        blob = blob.encode("utf-8", "replace")
+    blob = bytes(blob)
+    ints, i = [], 0
+    while True:
+        i = blob.find(b"\x08\x08", i)
+        if i < 0 or i + 6 > len(blob):
+            break
+        ints.append(struct.unpack_from("<i", blob, i + 2)[0])
+        i += 2
+    rid = next((b for a, b in zip(ints, ints[1:]) if a == _MARCA_RELATORIO), None)
+    texto = blob.decode("utf-8", "replace")
+    ini = texto.find("((")
+    if ini < 0:
+        return {"relatorio": rid, "sem_filtro": True, "filtro": None}
+    fim = texto.find("))", ini)
+    trecho = texto[ini + 2:fim] if 0 < fim - ini <= 302 else texto[ini + 2:ini + 300] + "…"
+    trecho = " ".join("".join(ch if ch.isprintable() else " " for ch in trecho).split())
+    return {"relatorio": rid, "sem_filtro": False, "filtro": trecho}
+
+
+def _status(v: Any) -> tuple[int | None, str]:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None, "sem conclusão"
+    return n, _STATUS_TXT.get(n, "em andamento")
+
+
+def detalhes_encerrados(eventos: list[dict[str, Any]]) -> dict[int, dict[str, Any]] | None:
+    """O que o banco do RM sabe de cada job cujo processo o RMon encerrou.
+
+    `eventos`: [{"idjob", "seg"}], `seg` = segundos desde o encerramento no
+    relogio do RMon. As contas de tempo sao feitas no relogio do proprio SQL
+    (GETDATE() - seg): o dominio anda ~40 s a frente da VM, e em 23/10 o job
+    "comecou" 38 s DEPOIS de o RMon o encerrar. Assim, `dur_s` (de quando o
+    job comecou ate o encerramento) nao depende de relogio acertado.
+
+    Devolve {idjob: {...}}: execucao (executor, inicio, status, mensagem,
+    progresso), quem pediu (codigo e nome), o relatorio e o filtro, e os pedidos
+    do MESMO relatorio pela mesma pessoa nas 24 h seguintes (`depois`). None se
+    o SQL nao estiver configurado ou a consulta falhar.
+    """
+    agora = time.time()
+    pedidos: dict[int, float] = {}
+    for e in eventos:
+        try:
+            pedidos[int(e["idjob"])] = max(0.0, float(e.get("seg") or 0))
+        except (KeyError, TypeError, ValueError):
+            continue
+    saida: dict[int, dict[str, Any]] = {}
+    faltam: dict[int, float] = {}
+    for idjob, seg in pedidos.items():
+        c = _cache_enc.get(idjob)
+        if c and (c[0] == 0 or c[0] > agora):
+            saida[idjob] = c[1]
+        else:
+            faltam[idjob] = seg
+    if not faltam:
+        return saida
+    try:
+        conn = _connect(15)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.detalhes_encerrados: %s", exc)
+        return None
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor()
+        col = _coluna_inicio(cur) or "RECCREATEDON"
+
+        def c(nome: str) -> str:
+            return f"E.{nome}" if _tem(cur, nome) else "NULL"
+
+        # o VALORPARAMETROS passa de 16 KB: sem isso volta cortado em 4 KB
+        cur.execute("SET TEXTSIZE 2147483647")
+        marcas = ", ".join(["%s"] * len(faltam))
+        cur.execute(
+            f"""SELECT J.IDJOB, {c('IDEXECUCAO')}, {c('SERVIDOR')}, {c('PROCESSID')},
+                       CONVERT(varchar(19), E.{col}, 120), DATEDIFF(second, E.{col}, GETDATE()),
+                       {c('STATUS')}, {c('MENSAGEMSTATUS')}, {c('PERCPROGRESSO')},
+                       J.NOME, J.CLASSEPROCESSO, J.CODUSUARIO, U.NOME, J.VALORPARAMETROS
+                  FROM dbo.GJOBX J LEFT JOIN dbo.GJOBXEXECUCAO E ON E.IDJOB = J.IDJOB
+                  LEFT JOIN dbo.GUSUARIO U ON U.CODUSUARIO = J.CODUSUARIO
+                 WHERE J.IDJOB IN ({marcas})
+                 ORDER BY J.IDJOB, E.{col} DESC""", tuple(faltam))
+        novos: dict[int, dict[str, Any]] = {}
+        for r in cur.fetchall():
+            idjob = int(r[0])
+            if idjob in novos:
+                continue
+            status, status_txt = _status(r[6])
+            pid = str(r[3] or "").strip()
+            par = parametros_do_job(r[13])
+            novos[idjob] = {
+                "idexec": r[1], "executor": r[2], "pid": int(pid) if pid.isdigit() else None,
+                "inicio": r[4],
+                "dur_s": max(0, int(r[5]) - int(faltam[idjob])) if r[5] is not None else None,
+                "status": status, "status_txt": status_txt,
+                "mensagem": (r[7] or "").strip() or None, "progresso": r[8],
+                "nome": (r[9] or "").strip() or None, "classe": r[10],
+                "usuario": (r[11] or "").strip() or None, "usuario_nome": (r[12] or "").strip() or None,
+                "relatorio_id": par["relatorio"], "sem_filtro": par["sem_filtro"], "filtro": par["filtro"],
+                "relatorio": None, "depois": None,
+            }
+        rids = sorted({d["relatorio_id"] for d in novos.values() if d["relatorio_id"]})
+        if rids:
+            try:
+                cur.execute(f"""SELECT ID, CODIGO, DESCRICAO, FILTERREQUIRED FROM dbo.RRPTREPORT
+                                 WHERE ID IN ({", ".join(["%s"] * len(rids))})""", tuple(rids))
+                rel = {int(r[0]): {"id": int(r[0]), "codigo": (r[1] or "").strip(),
+                                   "descricao": (r[2] or "").strip(), "filtro_obrigatorio": bool(r[3])}
+                       for r in cur.fetchall()}
+            except Exception as exc:  # noqa: BLE001 - sem o nome do relatorio, segue
+                log.warning("jobstats.detalhes_encerrados (relatório): %s", exc)
+                rel = {}
+            for d in novos.values():
+                d["relatorio"] = rel.get(d["relatorio_id"])
+        for idjob, d in novos.items():
+            try:
+                d["depois"] = _pedidos_depois(cur, col, idjob, d, faltam[idjob])
+            except Exception as exc:  # noqa: BLE001 - o resto da leitura vale sem isso
+                log.warning("jobstats.detalhes_encerrados (pedidos depois): %s", exc)
+        conn.close()
+        for idjob, d in novos.items():
+            # depois de 24 h nao aparece pedido novo e o status ja e o final
+            fixo = faltam[idjob] > 86400 and d["status"] is not None
+            _cache_enc[idjob] = (0 if fixo else agora + 120, d)
+            saida[idjob] = d
+        return saida
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.detalhes_encerrados: %s", exc)
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def _pedidos_depois(cur, col: str, idjob: int, d: dict[str, Any], seg: float) -> list[dict[str, Any]] | None:
+    """A mesma pessoa pediu o mesmo job de novo nas 24 h seguintes? E deu certo?
+
+    "Gerar Relatório" e o nome de TODO relatorio: sem o RRPTREPORT.ID nao da
+    para dizer que e o mesmo, entao fica sem resposta (None). O IDJOB e
+    sequencial (~3.500 por dia em 10/2026): a busca fica nos 20 mil seguintes,
+    pela chave, sem varrer o GJOBX inteiro.
+    """
+    if not d.get("usuario") or not d.get("classe"):
+        return None
+    relatorio = d["classe"] == "RptProcGenerateReport"
+    if relatorio and not d.get("relatorio_id"):
+        return None
+    cur.execute(
+        f"""SELECT TOP 20 J.IDJOB, E.STATUS, CONVERT(varchar(19), E.{col}, 120),
+                   DATEDIFF(second, E.{col}, E.DATAFIMEXEC), J.NOME, J.VALORPARAMETROS
+              FROM dbo.GJOBX J LEFT JOIN dbo.GJOBXEXECUCAO E ON E.IDJOB = J.IDJOB
+             WHERE J.IDJOB > %s AND J.IDJOB <= %s AND J.CODUSUARIO = %s AND J.CLASSEPROCESSO = %s
+               AND J.RECCREATEDON >= DATEADD(second, -%s, GETDATE())
+               AND J.RECCREATEDON < DATEADD(second, 86400 - %s, GETDATE())
+             ORDER BY J.IDJOB""",
+        (idjob, idjob + 20000, d["usuario"], d["classe"], int(seg), int(seg)))
+    vistos, saida = set(), []
+    for r in cur.fetchall():
+        if int(r[0]) in vistos:
+            continue
+        vistos.add(int(r[0]))
+        par = parametros_do_job(r[5]) if relatorio else {}
+        if relatorio and par.get("relatorio") != d["relatorio_id"]:
+            continue
+        if not relatorio and (r[4] or "").strip() != (d.get("nome") or ""):
+            continue
+        status, status_txt = _status(r[1])
+        saida.append({"idjob": int(r[0]), "status": status, "status_txt": status_txt, "inicio": r[2],
+                      "dur_s": r[3], "sem_filtro": par.get("sem_filtro"), "filtro": par.get("filtro")})
+    return saida
 
 
 def query(window_min: int = 15, success_status=(2,), failed_status=(5, 7), servidor: str | None = None) -> dict[str, Any] | None:

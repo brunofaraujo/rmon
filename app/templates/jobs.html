@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_jobs_presos.html" import painel as painel_presos %}
+{% from "_jobs_encerrados.html" import painel as painel_encerrados %}
 {% block title %}Jobs - RMonitor{% endblock %}
 {% block head %}<meta http-equiv="refresh" content="{{ ui_refresh }}">{% endblock %}
 {% block content %}
@@ -12,8 +13,10 @@
 
 {% if not pool %}
   <div class="alert">A leitura do banco do RM não está configurada (variáveis <code>RMON_SQL_*</code>). Rode <code>deploy/definir-sql.sh</code>.</div>
+  {{ painel_encerrados(encerrados) }}
 {% elif pool.error %}
   <div class="alert">Não foi possível consultar o banco do RM: {{ pool.error }}</div>
+  {{ painel_encerrados(encerrados) }}
 {% else %}
   {# O que exige acao vem antes dos numeros: quem abre esta tela pela pilula
      "fila parada" quer saber QUAL job e como para-lo, nao a contagem. #}
@@ -31,6 +34,10 @@
       <div class="lbl">Na fila agora{% if presas %} &middot; {{ presas }} preso(s){% endif %}</div></a>
     {% endif %}
     <div class="kpi"><div class="val">{{ pool.requesters }}</div><div class="lbl">Usuários que pediram jobs</div></div>
+    {% set n_enc = encerrados.itens | length %}
+    <a class="kpi {{ 'warn' if n_enc else 'ok' }}" href="#encerrados" title="Ver quais foram, de quem e por quê">
+      <div class="val {{ 'txt-amber' if n_enc else '' }}">{{ n_enc }}</div>
+      <div class="lbl">Encerrados pelo RMon &middot; {{ encerrados.dias }} dias</div></a>
   </div>
 
   {% set presas = fila and ((fila.stuck or 0) + (fila.waiting or 0)) %}
@@ -57,6 +64,8 @@
       </div>
     </details>
   </div>
+
+  {{ painel_encerrados(encerrados) }}
 
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr))">
     <div class="panel">
