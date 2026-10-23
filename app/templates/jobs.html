@@ -53,6 +53,9 @@
     {% else %}
       Fila vazia: tudo o que entrou já terminou{% if fila and fila.done_recent %} ({{ fila.done_recent }} concluída(s) nos últimos {{ fila.window_min }} min){% endif %}.
     {% endif %}
+    {% if fila and fila.long %}
+      <span class="muted">&middot; {{ fila.long }} rotina(s) recorrente(s) rodando há mais de {{ fila.window_min }} min, mas dentro do tempo normal delas (até 1,5&times; a mais longa das últimas execuções do mesmo job): não contam como presas.</span>
+    {% endif %}
     {% if fila and fila.orphans %}
       <span class="muted">&middot; {{ fila.orphans }} execução(ões) abandonada(s) por servidor reiniciado no meio (sem conclusão há mais de {{ fila.residue_min }} min ou já canceladas pelo RM): ficam fora da conta da fila.</span>
     {% endif %}

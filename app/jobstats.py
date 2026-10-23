@@ -85,7 +85,7 @@ def _fila_vazia(parada_min: int, residuo_min: int, erro: str | None) -> dict[str
     """Payload de fila indisponivel: nenhum numero, so o motivo."""
     return {"pending": None, "running": None, "stuck": None, "waiting": None,
             "orphans": None, "oldest_min": None, "waiting_min": None,
-            "done_recent": None, "since_last_min": None,
+            "done_recent": None, "since_last_min": None, "long": None,
             "window_min": _minutos(parada_min, 30), "residue_min": _minutos(residuo_min, 360),
             "col": None, "items": [], "error": erro}
 
@@ -126,6 +126,35 @@ def _host(servidor: Any) -> str:
     return str(servidor or "").split(":", 1)[0].strip()
 
 
+# Job recorrente demorado nao e job preso. A Exportação de Dados das 12:30
+# (job 2347303) leva de 20 a 45 min todo dia e entrava na lista de presos e na
+# conta da fila parada todo dia, de 13:00 a 13:15. Execucao com pelo menos
+# NORMAL_MIN_EXEC execucoes anteriores do MESMO job concluidas (status 2 ou 6)
+# fica fora dos presos enquanto nao passar de FOLGA_NORMAL x a mais longa das
+# ultimas NORMAL_ULTIMAS. Job novo, ou pedido avulso (todo relatorio), nao tem
+# historico: segue a regra de sempre.
+NORMAL_MIN_EXEC = 3
+NORMAL_ULTIMAS = 10
+FOLGA_NORMAL = 1.5
+
+
+def _normal_apply(cur, col: str | None) -> tuple[str, str]:
+    """(OUTER APPLY com `H.normal_s` por execucao `E`, condicao "dentro do normal").
+
+    O tempo normal e a mais longa das ultimas execucoes concluidas do mesmo
+    IDJOB, pela chave - so pesa nas execucoes sem fim, que sao poucas."""
+    if not col or not _tem(cur, "STATUS"):
+        return "", "1 = 0"
+    apply = (f"""OUTER APPLY (SELECT CASE WHEN COUNT(*) >= {NORMAL_MIN_EXEC} THEN MAX(u.d) END normal_s
+                   FROM (SELECT TOP {NORMAL_ULTIMAS} DATEDIFF(second, P.{col}, P.DATAFIMEXEC) d
+                           FROM dbo.GJOBXEXECUCAO P
+                          WHERE P.IDJOB = E.IDJOB AND P.STATUS IN (2, 6)
+                            AND P.DATAFIMEXEC IS NOT NULL AND P.{col} IS NOT NULL
+                          ORDER BY P.{col} DESC) u) H""")
+    return apply, (f"(H.normal_s IS NOT NULL AND "
+                   f"DATEDIFF(second, E.{col}, GETDATE()) <= H.normal_s * {FOLGA_NORMAL})")
+
+
 def _itens(cur, col: str | None, viva: str, w: int, z: int, servidor: str | None) -> list[dict[str, Any]]:
     """QUAIS execucoes estao presas, para a tela dizer o que parar e como.
 
@@ -138,13 +167,14 @@ def _itens(cur, col: str | None, viva: str, w: int, z: int, servidor: str | None
         return f"E.{nome}" if _tem(cur, nome) else "NULL"
 
     params: list[Any] = []
-    srv = ""
     limpo = re.sub(r"[^A-Za-z0-9_.-]", "", servidor or "")
     conds = []
+    apply, normal = _normal_apply(cur, col)
     if col:
+        # rotina recorrente dentro do tempo normal dela nao e preso (ver FOLGA_NORMAL)
         conds.append(f"(E.{col} IS NOT NULL AND E.{col} >= DATEADD(day, -7, GETDATE()) "
                      f"AND DATEDIFF(minute, E.{col}, GETDATE()) > {w} "
-                     f"AND DATEDIFF(minute, E.{col}, GETDATE()) <= {z}"
+                     f"AND DATEDIFF(minute, E.{col}, GETDATE()) <= {z} AND NOT {normal}"
                      + (" AND E.SERVIDOR LIKE %s)" if limpo else ")"))
         if limpo:
             params.append(limpo + ":%")
@@ -167,6 +197,7 @@ def _itens(cur, col: str | None, viva: str, w: int, z: int, servidor: str | None
                    {c('PERCPROGRESSO')}, {c('STATUS')}, LEFT({c('TEXTOSTATUS')}, 160),
                    J.CODUSUARIO, J.NOME, J.CLASSEPROCESSO, {c('RECCREATEDBY')}
               FROM dbo.GJOBXEXECUCAO E LEFT JOIN dbo.GJOBX J ON J.IDJOB = E.IDJOB
+              {apply}
              WHERE E.DATAFIMEXEC IS NULL AND {viva} AND ({' OR '.join(conds)})
              ORDER BY COALESCE({ini}, {c('DATAPROGRAMADA')})""",
         tuple(params))
@@ -318,7 +349,7 @@ def historico_rotina(idjob: int, classe: str | None) -> dict[str, Any] | None:
     try:
         cur = conn.cursor()
         col = _coluna_inicio(cur) or "RECCREATEDON"
-        cur.execute(f"""SELECT TOP 20 DATEDIFF(second, {col}, DATAFIMEXEC) FROM dbo.GJOBXEXECUCAO
+        cur.execute(f"""SELECT TOP {NORMAL_ULTIMAS} DATEDIFF(second, {col}, DATAFIMEXEC) FROM dbo.GJOBXEXECUCAO
                          WHERE IDJOB = %s AND DATAFIMEXEC IS NOT NULL AND STATUS IN (2, 6)
                          ORDER BY {col} DESC""", (int(idjob),))
         mesmo = [r[0] for r in cur.fetchall()]
@@ -393,24 +424,33 @@ def queue(servidor: str | None = None, parada_min: int = 30,
         # era contar defunto.
         viva, viva_e = _viva(cur), _viva(cur, "E.")
 
-        em_curso = presas = orfas = 0
+        em_curso = presas = orfas = longas = 0
         idade = None
         if col:
+            # `longa`: rotina recorrente ainda dentro do tempo normal dela (ver
+            # FOLGA_NORMAL) - conta como em curso, nao como presa
+            apply, normal = _normal_apply(cur, col)
             cur.execute(
-                f"""SELECT SUM(CASE WHEN viva = 1 AND idade <= {w} THEN 1 ELSE 0 END),
-                           SUM(CASE WHEN viva = 1 AND idade > {w} AND idade <= {z} THEN 1 ELSE 0 END),
+                f"""SELECT SUM(CASE WHEN viva = 1 AND (idade <= {w} OR (idade <= {z} AND longa = 1))
+                                    THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN viva = 1 AND idade > {w} AND idade <= {z} AND longa = 0
+                                    THEN 1 ELSE 0 END),
                            SUM(CASE WHEN viva = 0 OR idade > {z} THEN 1 ELSE 0 END),
-                           MAX(CASE WHEN viva = 1 AND idade <= {z} THEN idade END)
-                      FROM (SELECT DATEDIFF(minute, {col}, GETDATE()) idade,
-                                   CASE WHEN {viva} THEN 1 ELSE 0 END viva
-                              FROM dbo.GJOBXEXECUCAO
+                           MAX(CASE WHEN viva = 1 AND idade <= {z} AND longa = 0 THEN idade END),
+                           SUM(CASE WHEN viva = 1 AND idade > {w} AND idade <= {z} AND longa = 1
+                                    THEN 1 ELSE 0 END)
+                      FROM (SELECT DATEDIFF(minute, E.{col}, GETDATE()) idade,
+                                   CASE WHEN {viva} THEN 1 ELSE 0 END viva,
+                                   CASE WHEN {normal} THEN 1 ELSE 0 END longa
+                              FROM dbo.GJOBXEXECUCAO E {apply}
                              WHERE DATAFIMEXEC IS NULL
-                               AND {col} >= DATEADD(day, -7, GETDATE()){srv_filter}) x""",
+                               AND E.{col} >= DATEADD(day, -7, GETDATE()){srv_filter}) x""",
                 tuple(params))
             row = cur.fetchone()
             if row:
                 em_curso, presas, orfas = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
                 idade = int(row[3]) if row[3] is not None else None
+                longas = int(row[4] or 0) if len(row) > 4 else 0
 
         # Conclusoes: quantas sairam na janela (a fila andou?) e ha quanto tempo
         # foi a ultima. As duas recortadas em 24h - sem o recorte o MAX varreria
@@ -454,7 +494,7 @@ def queue(servidor: str | None = None, parada_min: int = 30,
                 log.warning("jobstats.queue (itens): %s", exc)
         conn.close()
         return {"pending": em_curso + presas + aguardando, "running": em_curso,
-                "stuck": presas, "waiting": aguardando, "orphans": orfas,
+                "stuck": presas, "waiting": aguardando, "orphans": orfas, "long": longas,
                 "oldest_min": idade, "waiting_min": espera,
                 "done_recent": concluidas, "since_last_min": desde,
                 "window_min": w, "residue_min": z, "col": col, "items": itens, "error": None}

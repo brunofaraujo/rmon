@@ -334,3 +334,31 @@ def test_linha_do_job_so_fica_vermelha_com_a_fila_travada():
     ambar): a linha acompanha, em ambar. Vermelho so no cartao em falha."""
     js = (Path(main.__file__).parent / "static" / "tv.js").read_text(encoding="utf-8")
     assert '(aguarda || s.sev < 2 ? " aguarda" : "")' in js
+
+
+# ------------------------------------------------------------ rotina recorrente demorada
+
+def test_rotina_recorrente_no_tempo_normal_nao_e_presa(banco):
+    """Exportação de Dados das 12:30 (job 2347303): leva 20 a 45 min todo dia e
+    entrava na fila parada de 13:00 a 13:15. Em curso, nao presa."""
+    banco.contagem, banco.espera = (1, 0, 0, None, 1), (0, None)
+    f = jobstats.queue("WIN2016")
+    assert (f["stuck"], f["running"], f["long"]) == (0, 1, 1)
+    assert not any("LEFT JOIN dbo.GJOBX J" in s for s in banco.sqls)
+    contagem = banco.sqls[1]
+    assert "OUTER APPLY" in contagem and f"COUNT(*) >= {jobstats.NORMAL_MIN_EXEC}" in contagem
+    assert f"TOP {jobstats.NORMAL_ULTIMAS} DATEDIFF(second, P." in contagem and "P.IDJOB = E.IDJOB" in contagem
+    assert f"<= H.normal_s * {jobstats.FOLGA_NORMAL}" in contagem
+
+
+def test_lista_de_presos_deixa_de_fora_a_rotina_no_tempo_normal(banco):
+    jobstats.queue("SRV11")
+    lista = [s for s in banco.sqls if "LEFT JOIN dbo.GJOBX J" in s][0]
+    assert "OUTER APPLY" in lista and "AND NOT (H.normal_s IS NOT NULL" in lista
+
+
+def test_rm_sem_status_nao_tem_tempo_normal(banco, monkeypatch):
+    monkeypatch.setattr(jobstats, "_colunas", {c for c in COLUNAS if c != "STATUS"})
+    monkeypatch.setattr(jobstats, "_col_inicio", "DATAINIEXEC")
+    jobstats.queue("SRV11")
+    assert not any("OUTER APPLY" in s for s in banco.sqls)
