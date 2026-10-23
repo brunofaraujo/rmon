@@ -34,8 +34,8 @@ log = logging.getLogger("rmon.diagnostico")
 PRAZO_S = 4.0
 CACHE_HIST_S = 3600     # historico de relatorio/rotina muda devagar
 CACHE_PROC_S = 60       # o processo, a cada atualizacao da tela
-# "dentro do normal" = ate tanto x o p90 das execucoes que concluiram
-FOLGA_NORMAL = 1.5
+# "dentro do normal": a mesma regra da fila (jobstats.FOLGA_NORMAL)
+FOLGA_NORMAL = jobstats.FOLGA_NORMAL
 
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rmon-diag")
 _cache: dict[tuple, tuple[float, Future]] = {}
@@ -119,9 +119,14 @@ def diagnosticar(it: dict, rel: dict | None, rot: dict | None, proc: dict | None
     if eh_rel and it.get("filtro"):
         pistas.append(f"Filtro do pedido: {it['filtro']}")
 
-    rotina = None
+    # o mesmo job com historico usa a mais longa (a regra da fila); a classe, o p90
+    limite_normal = None
     if rot:
-        rotina = rot.get("mesmo_job") or rot.get("classe")
+        mesmo = rot.get("mesmo_job")
+        if mesmo and mesmo.get("concluidas", 0) >= jobstats.NORMAL_MIN_EXEC:
+            limite_normal = mesmo.get("max_s")
+        elif rot.get("classe"):
+            limite_normal = rot["classe"].get("p90_s")
         if rot.get("mesmo_job"):
             m = rot["mesmo_job"]
             pistas.append(f"Este job já rodou {m['concluidas']} vez(es): de {tempo(m['min_s'])} "
@@ -148,8 +153,8 @@ def diagnosticar(it: dict, rel: dict | None, rot: dict | None, proc: dict | None
     elif eh_rel and usual and not set(usual["campos"]) <= set(campos):
         motivo, tipo = (f"Filtro diferente do usual: os pedidos que concluem filtram por "
                         f"{_rotulo(usual['campos'])}.", "filtro")
-    elif rotina and rotina.get("p90_s") and idade_s <= rotina["p90_s"] * FOLGA_NORMAL:
-        motivo, tipo = (f"Dentro do tempo normal desta rotina: costuma levar até {tempo(rotina['p90_s'])}.",
+    elif limite_normal and idade_s <= limite_normal * FOLGA_NORMAL:
+        motivo, tipo = (f"Dentro do tempo normal desta rotina: costuma levar até {tempo(limite_normal)}.",
                         "normal")
     elif proc and (proc.get("cpu") or 0) < 0.05 and abs(proc["mb_fim"] - proc["mb_ini"]) < 20:
         motivo, tipo = ("O processo está parado, sem uso de CPU: provavelmente esperando o banco de dados "

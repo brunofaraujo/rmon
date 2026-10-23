@@ -178,3 +178,11 @@ def test_tela_mostra_o_provavel_motivo(app_falso, limpo, monkeypatch):  # noqa: 
     assert "Alunos por Disciplina - Para Assinatura(Lista de Presença)" in html and ">SENAI007<" in html
     assert 'class="preso-motivo filtro"' in html and "Filtro só por coligada" in html
     assert "SENAI007 em 30 dias: 4 pedido(s), nenhum concluído" in html
+
+
+def test_job_com_pouco_historico_usa_a_rotina():
+    # 2 execucoes do mesmo job nao bastam (a fila exige 3): vale a classe
+    rot = {"mesmo_job": {"concluidas": 2, "mediana_s": 3000, "p90_s": 3000, "min_s": 2900, "max_s": 3000},
+           "classe": {"concluidas": 202, "mediana_s": 1, "p90_s": 4, "min_s": 0, "max_s": 1724}}
+    d = diagnostico.diagnosticar(EXPORTACAO, None, rot, None)
+    assert d["tipo"] == "desconhecido"

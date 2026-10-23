@@ -303,7 +303,11 @@ tabela de coletas só guarda 30 dias.
 ### Job preso: achar qual é e parar
 
 Job **preso** é execução em andamento há mais de `jobs_stuck_min` (30 min), ou com a hora
-marcada vencida sem nenhum executor começar (**aguardando**). Toda tela diz qual é:
+marcada vencida sem nenhum executor começar (**aguardando**). Job **recorrente** que já
+concluiu pelo menos 3 vezes não conta como preso enquanto não passar de 1,5× a mais longa
+das suas últimas 10 execuções: a Exportação de Dados das 12:30 leva de 20 a 45 min todo dia e
+entrava na fila parada de 13:00 a 13:15. A tela de Jobs mostra quantas rotinas estão nessa
+situação. Toda tela diz qual é o job preso:
 
 - **Mural**: o cartão ganha uma linha vermelha com o job mais antigo e quem pediu
   (`PRESO HÁ 3H14 · Gerar Relatório · fulano`, e `+N` para o resto). O letreiro repete com o
