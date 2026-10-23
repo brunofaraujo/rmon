@@ -124,10 +124,13 @@ def _leituras(r: dict, dados: dict, server, cfg: dict, processo: str, desde: flo
         except Exception as exc:  # noqa: BLE001
             log.warning("encerrados: coletas de %s: %s", r["server"], exc)
     es = dados.get("elastic")
-    if es is None and r.get("pid") is not None and elastic.ativo(cfg):
+    if es is None and r.get("pid") is not None and elastic.ativo(cfg) and not cfg.get("_fora"):
         nome = elastic.nome_es(server, dados.get("computer") or nomes.computador(r["server"]))
         es = elastic.jobrunner_pid(cfg, nome, processo, r["pid"], desde, kill + 60)
-        if es is not None and guardar:
+        if es is None:
+            # Elastic fora: nao espera o timeout de novo para cada encerramento da lista
+            cfg["_fora"] = True
+        elif guardar:
             extra["elastic"] = es
     if extra and r.get("id") is not None:
         db.job_kill_guardar(r["id"], extra)

@@ -276,3 +276,18 @@ def test_historico_com_falha_e_sem_rm(monkeypatch):
     [e] = h["itens"]
     assert e["retorno"] == "Acesso negado" and e["dur_s"] is None and e["usuario"] == "maria"
     assert e["mem_pct"] is None and e["grafico"] is None
+
+
+def test_elastic_fora_nao_atrasa_a_tela(monkeypatch):
+    agora = time.time()
+    monkeypatch.setattr(db, "recent_job_kills", lambda d, l: [
+        {**kill_de_23_10(agora), "id": i, "ts": agora - 600 * i} for i in range(1, 6)])
+    monkeypatch.setattr(db, "jobrunner_nas_coletas", lambda *a: [])
+    monkeypatch.setattr(db, "job_kill_guardar", lambda *a: None)
+    monkeypatch.setattr(jobstats, "detalhes_encerrados", lambda ev: {})
+    monkeypatch.setattr(elastic, "ativo", lambda cfg: True)
+    chamadas = []
+    monkeypatch.setattr(elastic, "jobrunner_pid", lambda *a: chamadas.append(a) and None)
+    from types import SimpleNamespace
+    h = encerrados.historico(SimpleNamespace(servers=[], defaults={}), agora=agora)
+    assert len(h["itens"]) == 5 and len(chamadas) == 1
