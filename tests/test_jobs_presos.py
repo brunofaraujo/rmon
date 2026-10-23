@@ -43,6 +43,10 @@ class Cursor:
             if self.b.falha_itens:
                 raise RuntimeError("deadlock")
             self._r = [self.b.aberta] if self.b.aberta else []
+        elif "LEFT JOIN dbo.RRPTREPORT R" in sql:
+            # 20/10: o TOTVS-074 da kellygomes, sem filtro (sem "((" no VALORPARAMETROS)
+            self._r = [(2450147, 111, "TOTVS-074", "Ficha Matrícula e Contrato de Prestação de Serviço",
+                        self.b.filtro)]
         elif "LEFT JOIN dbo.GJOBX J" in sql:
             if self.b.falha_itens:
                 raise RuntimeError("deadlock")
@@ -67,6 +71,7 @@ class Banco:
     def __init__(self, contagem=(0, 1, 0, 194), espera=(1, 87), itens=LINHAS):
         self.contagem, self.espera, self.itens = contagem, espera, list(itens)
         self.aberta = None
+        self.filtro = None
         self.falha_itens = False
         self.sqls = []
 
@@ -97,8 +102,13 @@ def test_fila_traz_quais_jobs_estao_presos(banco):
                      "inicio": "2026-10-20 08:32:10", "espera_min": None}
     assert aguardando["tipo"] == "aguardando" and aguardando["pid"] is None
     assert aguardando["espera_min"] == 87 and "Cancelamento" in aguardando["texto"]
-    sql = banco.sqls[-1]
+    sql = banco.sqls[-2]
     assert f"TOP {jobstats.ITENS_MAX}" in sql and "E.EMCANCELAMENTO IS NULL" in sql
+    # o relatorio e o filtro vem junto, so para o "Gerar Relatório"
+    assert preso["relatorio"] == {"id": 111, "codigo": "TOTVS-074",
+                                  "descricao": "Ficha Matrícula e Contrato de Prestação de Serviço"}
+    assert preso["sem_filtro"] is True and "relatorio" not in aguardando
+    assert banco.sqls[-1].endswith("WHERE J.IDJOB IN (%s)")
 
 
 def test_cancelado_antes_de_comecar_e_residuo(banco):
@@ -109,7 +119,7 @@ def test_cancelado_antes_de_comecar_e_residuo(banco):
     jobstats.queue("SRV11")
     regra = ("NOT (COALESCE({p}STATUS, -1) = 3 AND {p}DATAINIEXEC IS NULL "
              "AND COALESCE({p}TEXTOSTATUS, '') LIKE '%%rotina de cancelamento%%')")
-    contagem, _, espera, lista = banco.sqls[1:]
+    contagem, _, espera, lista = banco.sqls[1:5]
     assert regra.format(p="") in contagem and "THEN 1 ELSE 0 END viva" in contagem
     assert regra.format(p="") in espera
     assert regra.format(p="E.") in lista

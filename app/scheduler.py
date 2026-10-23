@@ -702,6 +702,19 @@ def job_problems(jb: dict | None, th: dict, fila_hist: list[dict] | None = None,
     return p
 
 
+def filtro_curto(it: dict) -> str | None:
+    """"sem filtro" / "filtro só por coligada" num relatorio da fila; None se nao e o caso."""
+    if it.get("classe") != jobstats.RELATORIO or "sem_filtro" not in it:
+        return None
+    if it.get("sem_filtro"):
+        return "sem filtro"
+    campos = it.get("campos") or []
+    if campos and set(campos) <= jobstats.CAMPOS_LARGOS:
+        nomes = {"CODCOLIGADA": "coligada", "CODFILIAL": "filial", "CODTIPOCURSO": "tipo de curso"}
+        return "filtro só por " + " e ".join(nomes.get(c, c) for c in campos)
+    return None
+
+
 def _qual_job(itens) -> str:
     """" - 'Gerar Relatório' de fulano (job 2450153, PID 8188) e mais 1": o
     alerta diz o que parar. O texto so e montado quando o alerta abre (a chave
@@ -710,7 +723,10 @@ def _qual_job(itens) -> str:
     if not itens:
         return ""
     it = itens[0]
-    texto = (f" — '{it.get('nome') or it.get('classe') or '?'}' de {it.get('usuario') or '?'}"
+    rel = (it.get("relatorio") or {}).get("codigo")
+    filtro = filtro_curto(it)
+    texto = (f" — '{it.get('nome') or it.get('classe') or '?'}'" + (f" {rel}" if rel else "")
+             + (f" ({filtro})" if filtro else "") + f" de {it.get('usuario') or '?'}"
              f" (job {it.get('idjob')}" + (f", PID {it['pid']}" if it.get("pid") else "") + ")")
     if len(itens) > 1:
         texto += f" e mais {len(itens) - 1}"

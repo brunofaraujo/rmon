@@ -209,7 +209,8 @@
     var txt = p
       ? "<b>job " + (aguarda ? "aguardando" : "preso") + (idade ? " há " + idade : "") + "</b>" +
         '<span class="ln"><span class="nm">' + esc(p.n) + "</span>" +
-        (p.u ? '<span class="us">' + esc(p.u) + "</span>" : "") + "</span>"
+        (p.u ? '<span class="us">' + esc(p.u) + "</span>" : "") +
+        (p.f ? '<span class="fl">' + esc(p.f) + "</span>" : "") + "</span>"
       : "<b>" + s.jobs.qs + " job(s) preso(s)" + (idade ? " há " + idade : "") + "</b>";
     var resto = p ? s.jobs.qs - 1 : 0;
     var corpo = '<span class="ic">&#9203;</span><span class="tx">' + txt + "</span>" +

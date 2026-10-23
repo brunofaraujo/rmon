@@ -20,8 +20,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (__version__, db, elastic, encerrados, execution, fontes, incus, inventory, jobstats,
-               limite_jr, manutencao, nlb, nomes, notify, packages, scheduler)
+from . import (__version__, db, diagnostico, elastic, encerrados, execution, fontes, incus, inventory,
+               jobstats, limite_jr, manutencao, nlb, nomes, notify, packages, scheduler)
 from .collector import (jobrunner_alvo, jobrunner_settings, kill_jobrunner, list_sessions,
                         logoff_session, service_action)
 from .config import PAPEIS, load_inventory, load_settings
@@ -349,10 +349,19 @@ def _tv_thresholds() -> dict:
 def _presos_tv(jobs: dict | None) -> list[dict]:
     """Jobs presos de um servidor no formato curto do mural."""
     itens = ((jobs or {}).get("queue") or {}).get("items") or []
-    return [{"n": it.get("nome") or it.get("classe") or f"job {it.get('idjob')}",
+    saida = []
+    for it in itens:
+        if not isinstance(it, dict):
+            continue
+        p = {"n": ((it.get("relatorio") or {}).get("codigo") or it.get("nome") or it.get("classe")
+                   or f"job {it.get('idjob')}"),
              "u": it.get("usuario"), "j": it.get("idjob"), "t": it.get("tipo"),
              "m": it.get("idade_min") if it.get("tipo") == "presa" else it.get("espera_min")}
-            for it in itens if isinstance(it, dict)]
+        filtro = scheduler.filtro_curto(it)
+        if filtro:
+            p["f"] = filtro
+        saida.append(p)
+    return saida
 
 
 def _presos_texto(presos: list[dict]) -> str:
@@ -863,6 +872,8 @@ def _jobs_presos(itens: list | None, latest: dict | None = None) -> list[dict]:
                  sem_encerrar=motivo, pedidos=pedidos[(it.get("usuario"), it.get("nome"))],
                  minutos=it.get("idade_min") if it.get("tipo") == "presa" else it.get("espera_min"))
         saida.append(x)
+    # o porque: o pedido (filtro), o historico do relatorio ou da rotina e o processo
+    diagnostico.anotar(saida, inv)
     return saida
 
 

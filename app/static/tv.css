@@ -260,6 +260,7 @@ a.tvc-job:hover { border-color: var(--red); background: rgba(255, 90, 90, .2); }
 .tvc-job.aguarda .tx b { color: #ffd689; }
 .tvc-job .nm { font-weight: 700; }
 .tvc-job .us { color: var(--muted); margin-left: .35em; }
+.tvc-job .fl { color: #ffd689; margin-left: .35em; font-weight: 700; }
 .tvc-job .us::before { content: "\00b7\00a0"; }
 .tvc-job .mais { flex: none; font-weight: 800; color: var(--muted); font-size: .9em; }
 html[data-theme="light"] .tvc-job .tx b { color: #b42318; }

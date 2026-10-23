@@ -184,7 +184,159 @@ def _itens(cur, col: str | None, viva: str, w: int, z: int, servidor: str | None
             "nome": (r[12] or r[13] or "").strip() or None, "classe": r[13],
             "tipo": "presa" if rodando else "aguardando",
         })
+    try:
+        _relatorio_dos_itens(cur, saida)
+    except Exception as exc:  # noqa: BLE001 - sem o relatorio, a lista vale do mesmo jeito
+        log.warning("jobstats.queue (relatório dos itens): %s", exc)
     return saida
+
+
+# VALORPARAMETROS lido no proprio SQL, sem trazer os 16 KB de cada job: o
+# RRPTREPORT.ID e o int32 LE 30 bytes depois da marca 08 08 + 11529 (medido em
+# 10/2026 no SENAI007, TOTVS-074 e SENAI-EP.002; e o que parametros_do_job acha
+# varrendo o blob em Python) e o filtro e o trecho a partir de "((".
+_PAR = "CAST(J.VALORPARAMETROS AS varbinary(max))"
+_PAR_TXT = f"CAST({_PAR} AS varchar(max))"
+_MARCA_SQL = f"CHARINDEX(0x0808092D0000, {_PAR})"
+_RID_SQL = (f"CASE WHEN {_MARCA_SQL} > 0 THEN "
+            f"CAST(CAST(REVERSE(SUBSTRING({_PAR}, {_MARCA_SQL} + 30, 4)) AS binary(4)) AS int) END")
+_FILTRO_SQL = (f"CASE WHEN CHARINDEX('((', {_PAR_TXT}) > 0 "
+               f"THEN SUBSTRING({_PAR_TXT}, CHARINDEX('((', {_PAR_TXT}) + 2, 400) END")
+RELATORIO = "RptProcGenerateReport"
+# campos que nao estreitam um relatorio escolar: filtrar so por eles e pedir a
+# instituicao inteira (13/10 e 23/10: STURMADISC.CODCOLIGADA = '3' e mais nada)
+CAMPOS_LARGOS = frozenset({"CODCOLIGADA", "CODFILIAL", "CODTIPOCURSO"})
+
+
+def corta_filtro(texto: Any) -> str | None:
+    """O filtro como o RM gravou, ate o "))" que fecha, em uma linha."""
+    if texto is None:
+        return None
+    t = str(texto)
+    fim = t.find("))")
+    t = t[:fim] if fim >= 0 else t[:300] + "…"
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in t).split()) or None
+
+
+def campos_do_filtro(filtro: str | None) -> list[str]:
+    """Campos usados no filtro: "STURMA.CODTURMA = 'X' AND ..." -> ["CODTURMA", ...]."""
+    if not filtro:
+        return []
+    return sorted(set(re.findall(r"\.([A-Z_][A-Z0-9_]*)\s*(?:=|<>|>|<|\bIN\b|\bLIKE\b|\bBETWEEN\b)",
+                                 filtro.upper())))
+
+
+def _relatorio_dos_itens(cur, itens: list[dict[str, Any]]) -> None:
+    """Para os relatorios da lista: qual e (RRPTREPORT) e o filtro usado."""
+    ids = [int(i["idjob"]) for i in itens if i.get("classe") == RELATORIO and i.get("idjob") is not None]
+    if not ids:
+        return
+    cur.execute(
+        f"""SELECT J.IDJOB, R.ID, R.CODIGO, R.DESCRICAO, {_FILTRO_SQL}
+              FROM dbo.GJOBX J LEFT JOIN dbo.RRPTREPORT R ON R.ID = {_RID_SQL}
+             WHERE J.IDJOB IN ({", ".join(["%s"] * len(ids))})""", tuple(ids))
+    por_job = {int(r[0]): r for r in cur.fetchall()}
+    for it in itens:
+        r = por_job.get(int(it["idjob"])) if it.get("idjob") is not None else None
+        if not r:
+            continue
+        filtro = corta_filtro(r[4])
+        if r[1] is not None:
+            it["relatorio"] = {"id": int(r[1]), "codigo": (r[2] or "").strip(),
+                               "descricao": (r[3] or "").strip()}
+        it.update(sem_filtro=filtro is None, filtro=filtro, campos=campos_do_filtro(filtro))
+
+
+def _estat(duracoes: list[Any]) -> dict[str, Any]:
+    d = sorted(int(x) for x in duracoes if x is not None and int(x) >= 0)
+    if not d:
+        return {"concluidas": 0, "mediana_s": None, "p90_s": None, "min_s": None, "max_s": None}
+    return {"concluidas": len(d), "mediana_s": d[len(d) // 2], "min_s": d[0],
+            "p90_s": d[min(len(d) - 1, int(len(d) * 0.9))], "max_s": d[-1]}
+
+
+def _fechar(conn) -> None:
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def historico_relatorio(rid: int, idjob_ref: int) -> dict[str, Any] | None:
+    """Os pedidos do mesmo relatorio em ~30 dias: quantos, quantos concluiram,
+    em quanto tempo e com que campos de filtro (`grupos`, do mais comum).
+
+    E o que diz se o pedido preso foge do normal: o SENAI-EP.002 e pedido por
+    turma e periodo e conclui em 16 s (42 pedidos); o SENAI007 foi pedido 4
+    vezes so com a coligada, e nenhum concluiu. O IDJOB e sequencial (~3.500
+    por dia): a busca vai pela chave, dos 100 mil anteriores ao job.
+    """
+    try:
+        conn = _connect(30)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.historico_relatorio: %s", exc)
+        return None
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor()
+        col = _coluna_inicio(cur) or "RECCREATEDON"
+        cur.execute(
+            f"""SELECT E.STATUS, DATEDIFF(second, E.{col}, E.DATAFIMEXEC), {_FILTRO_SQL}
+                  FROM dbo.GJOBX J JOIN dbo.GJOBXEXECUCAO E ON E.IDJOB = J.IDJOB
+                 WHERE J.IDJOB BETWEEN %s AND %s AND J.CLASSEPROCESSO = %s AND {_RID_SQL} = %s""",
+            (int(idjob_ref) - 100000, int(idjob_ref) + 5000, RELATORIO, int(rid)))
+        rows = cur.fetchall()
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.historico_relatorio: %s", exc)
+        _fechar(conn)
+        return None
+    grupos: dict[tuple, dict[str, Any]] = {}
+    for status, dur, filtro in rows:
+        campos = tuple(campos_do_filtro(corta_filtro(filtro)))
+        g = grupos.setdefault(campos, {"campos": list(campos), "n": 0, "dur": []})
+        g["n"] += 1
+        if status in (2, 6):
+            g["dur"].append(dur)
+    saida = [{"campos": g["campos"], "n": g["n"], **_estat(g["dur"])}
+             for g in sorted(grupos.values(), key=lambda g: -g["n"])]
+    return {"n": len(rows), **_estat([d for st, d, _ in rows if st in (2, 6)]), "grupos": saida}
+
+
+def historico_rotina(idjob: int, classe: str | None) -> dict[str, Any] | None:
+    """Quanto a mesma rotina costuma levar: as execucoes anteriores do MESMO job
+    (recorrente: a Exportação de Dados das 12:30 leva 20 a 45 min todo dia) e as
+    da mesma classe nos ultimos 14 dias. So as que concluiram (status 2 ou 6)."""
+    try:
+        conn = _connect(20)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.historico_rotina: %s", exc)
+        return None
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor()
+        col = _coluna_inicio(cur) or "RECCREATEDON"
+        cur.execute(f"""SELECT TOP 20 DATEDIFF(second, {col}, DATAFIMEXEC) FROM dbo.GJOBXEXECUCAO
+                         WHERE IDJOB = %s AND DATAFIMEXEC IS NOT NULL AND STATUS IN (2, 6)
+                         ORDER BY {col} DESC""", (int(idjob),))
+        mesmo = [r[0] for r in cur.fetchall()]
+        da_classe: list[Any] = []
+        if classe:
+            cur.execute(f"""SELECT TOP 300 DATEDIFF(second, E.{col}, E.DATAFIMEXEC)
+                              FROM dbo.GJOBXEXECUCAO E JOIN dbo.GJOBX J ON J.IDJOB = E.IDJOB
+                             WHERE J.CLASSEPROCESSO = %s AND E.STATUS IN (2, 6) AND E.{col} IS NOT NULL
+                               AND E.DATAFIMEXEC >= DATEADD(day, -14, GETDATE()) AND E.IDJOB <> %s
+                             ORDER BY E.DATAFIMEXEC DESC""", (classe, int(idjob)))
+            da_classe = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return {"mesmo_job": _estat(mesmo) if mesmo else None,
+                "classe": _estat(da_classe) if da_classe else None}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("jobstats.historico_rotina: %s", exc)
+        _fechar(conn)
+        return None
 
 
 def queue(servidor: str | None = None, parada_min: int = 30,
