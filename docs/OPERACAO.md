@@ -44,7 +44,7 @@ A lista de silenciados vive em [`app/logconf.py`](../app/logconf.py).
 |---|---|---|
 | `/` | Dashboard: resumo (online/offline, serviços parados, alertas) e cartão por servidor | login |
 | `/server/{name}` | Detalhe e histórico de um servidor | login |
-| `/jobs` | Estatísticas de jobs do RM (pool, por servidor, por solicitante, falhas) | login |
+| `/jobs` | Estatísticas de jobs do RM (pool, por servidor, por solicitante, falhas), jobs presos e histórico dos jobs encerrados pelo RMon | login |
 | `/ocorrencias` | Central de ocorrências: problemas abertos agora, linha do tempo do que abriu/resolveu (`alerts_log`) e os erros/críticos do Event Log | login |
 | `/pacotes` | Inventário TOTVS por ambiente, em seções (produto, customizações, bibliotecas, instaladores): **Resumo** (uma linha por item, hosts sob demanda) ou **Matriz** (item × host) | login (coletar: admin) |
 | `/pacotes/mudancas` | Linha do tempo de instalações, atualizações, regressões e remoções | login |
@@ -276,6 +276,29 @@ coisas: o processo ainda existe, ainda é um JobRunner e tem a mesma hora de in�
 coleta viu (PID reaproveitado não morre por engano). O RM perde aquela execução. A ação vai
 para a auditoria, para a linha do tempo e para o canal. Prefira cancelar o job no RM: o ✕
 é para quando não dá tempo.
+
+### Rever um job encerrado
+
+Em **Jobs** (`/jobs`), o bloco *Jobs encerrados pelo RMon* guarda cada encerramento dos
+últimos 30 dias, automático ou pelo botão, inclusive os que falharam. É o mesmo evento do
+alerta do canal, com o que se soube depois:
+
+- **o relatório** (código e nome no RM, lido do `VALORPARAMETROS`), o número do job e
+  **quem pediu**, com o nome completo do cadastro do RM;
+- **tempo**: quanto o job rodou até ser encerrado. A conta é feita no relógio do SQL Server,
+  que anda ~40 s à frente da VM;
+- **motivo** (a regra que disparou, com os números) e **memória**: quanto foi liberado, quanto
+  o servidor tinha em uso naquele minuto e a curva do processo até o fim. A curva junta as
+  leituras de 15 s do próprio RMon, as coletas e o Elasticsearch;
+- **filtro**: o filtro usado, ou o aviso **sem filtro**;
+- **no RM**: como o RM fechou a execução (em geral "falha crítica");
+- **depois**: se a mesma pessoa pediu o mesmo relatório de novo nas 24 h seguintes, e se deu
+  certo. Em 23/10 a maria refez o relatório encerrado e ele concluiu em 14 s. É o sinal de
+  que a regra foi dura demais com aquele relatório.
+
+Os encerramentos de antes do bloco existir (20 a 23/10) foram carregados da auditoria. As
+leituras das coletas e do Elastic ficam gravadas no registro depois de 3 minutos, porque a
+tabela de coletas só guarda 30 dias.
 
 ### Job preso: achar qual é e parar
 

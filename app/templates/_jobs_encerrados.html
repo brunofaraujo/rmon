@@ -1,0 +1,91 @@
+{# Processos de job que o RMon encerrou: o mesmo evento do alerta do canal, com
+   o que se soube depois. `h` vem de encerrados.historico. #}
+{% macro painel(h) %}
+<div class="panel encerrados" id="encerrados">
+  <h2>&#128721; Jobs encerrados pelo RMon <span class="badge-count">{{ h.itens | length }}</span>
+    <span class="muted small">últimos {{ h.dias }} dias &middot; {{ h.auto }} automático(s), {{ h.manual }} pelo botão{% if h.falhas %}, <span class="txt-red">{{ h.falhas }} sem conseguir encerrar</span>{% endif %}</span></h2>
+
+  {% if h.erro %}
+    <div class="alert small">Não foi possível ler o histórico: {{ h.erro }}</div>
+  {% elif not h.itens %}
+    <div class="alert ok small">Nenhum processo de job encerrado nos últimos {{ h.dias }} dias.</div>
+  {% else %}
+  {% if h.rm_erro %}<div class="alert small">O banco do RM não respondeu agora: o relatório, o nome de quem pediu e o tempo de execução ficam de fora até a próxima leitura.</div>{% endif %}
+  <div class="enc-lista">
+  {% for e in h.itens %}
+    {% set q = quando(e.ts) %}
+    <div class="enc {{ 'falhou' if not e.ok else ('manual' if e.origem == 'manual' else '') }}" id="enc-{{ e.id }}">
+      <div class="enc-quando" title="{{ e.ts | dt }}">
+        <b>{{ q.hora }}</b><span>{{ q.dia }}</span>
+        <em>{{ 'automático' if e.origem == 'auto' else 'manual' }}</em>
+      </div>
+
+      <div class="enc-corpo">
+        <div class="preso-titulo">{{ e.titulo }}
+          {% if e.relatorio and e.relatorio.codigo %}<span class="preso-num" title="Código do relatório no RM (RRPTREPORT.ID {{ e.relatorio.id }})">{{ e.relatorio.codigo }}</span>{% endif %}
+          {% if e.idjob %}<span class="preso-num" title="Número do job no RM (IDJOB){% if e.idexec %} &middot; execução {{ e.idexec }}{% endif %}">job {{ e.idjob }}</span>{% endif %}
+        </div>
+
+        <div class="preso-meta">
+          <span>Pedido por {% if e.usuario %}<a class="linkish" href="/sessions?user={{ e.usuario }}" title="Procurar a sessão deste usuário"><b>{{ e.usuario_nome or e.usuario }}</b></a>{% if e.usuario_nome %} ({{ e.usuario }}){% endif %}{% else %}<b>?</b>{% endif %}</span>
+          <span>em <a class="linkish" href="/server/{{ e.server }}"><b>{{ e.label }}</b></a>{% if e.executor %} <span class="mono" title="Executor gravado pelo RM">{{ e.executor }}</span>{% endif %}</span>
+          {% if e.pid %}<span class="mono">PID {{ e.pid }}</span>{% endif %}
+        </div>
+
+        <dl class="enc-fatos">
+          <dt>Tempo</dt>
+          <dd>{% if e.dur_s is not none %}rodou <b>{{ e.dur_s | duracao }}</b> até ser encerrado{% if e.inicio_ts %} (começou {{ e.inicio_ts | dt }}){% endif %}{% else %}<span class="muted">o banco do RM não informou o início</span>{% endif %}
+            {% if e.rm and e.rm.progresso is not none %} &middot; progresso no RM {{ e.rm.progresso }}%{% endif %}
+            {% if e.processo_reaproveitado %} <span class="muted" title="O RM reaproveita o processo de job entre execuções">&middot; processo aberto em {{ e.processo_desde | dt }}, já tinha rodado outros jobs</span>{% endif %}</dd>
+
+          <dt>Motivo</dt>
+          <dd><b>{{ e.regra_txt }}</b>{% if e.motivo %}: {{ e.motivo }}{% elif e.preso and e.dur_s is not none %}: preso há {{ e.dur_s | duracao }}{% endif %}</dd>
+
+          <dt>Memória</dt>
+          <dd>{% if e.ok %}{% if e.liberado_mb %}<b>{{ e.liberado_mb }} MB</b> liberados{% elif e.mb %}{{ e.mb }} MB no encerramento{% else %}<span class="muted">não medida</span>{% endif %}{% else %}{% if e.mb %}{{ e.mb }} MB e <b class="txt-red">continuou no ar</b>{% endif %}{% endif %}
+            {% if e.mem_pct is not none %} &middot; servidor com <b>{{ e.mem_pct | round | int }}%</b> da memória em uso{% if e.commit_pct is not none %} e {{ e.commit_pct | round | int }}% da reservada{% endif %} naquele minuto{% endif %}</dd>
+
+          <dt>Filtro</dt>
+          <dd>{% if e.sem_filtro %}<b class="txt-amber">&#9888; sem filtro</b>{% if e.filtro_obrigatorio == false %} <span class="muted">(o relatório não exige filtro no RM)</span>{% endif %}
+            {% elif e.filtro %}<span class="mono enc-filtro" title="{{ e.filtro }}">{{ e.filtro }}</span>
+            {% else %}<span class="muted">não informado</span>{% endif %}</dd>
+
+          {% if e.rm %}
+          <dt>No RM</dt>
+          <dd>{{ e.rm.status_txt }}{% if e.rm.mensagem %} <span class="muted">&ldquo;{{ e.rm.mensagem }}&rdquo;</span>{% endif %}</dd>
+          {% endif %}
+
+          {% if e.depois_txt %}
+          <dt>Depois</dt>
+          <dd>{{ e.depois_txt }}{% if e.depois %}:
+            {% for d in e.depois %}<span class="enc-depois {{ 'ok' if d.status in (2, 6) else ('erro' if d.status in (4, 5, 7) else '') }}" title="job {{ d.idjob }}">{{ d.inicio | hhmm }} {{ d.status_txt }}{% if d.dur_s is not none %} em {{ d.dur_s | duracao }}{% endif %}{% if d.sem_filtro %}, sem filtro{% endif %}</span>{% endfor %}
+            {% endif %}</dd>
+          {% endif %}
+
+          {% if not e.ok %}
+          <dt>Resultado</dt>
+          <dd class="txt-red">o RMon NÃO conseguiu encerrar: {{ e.retorno }}</dd>
+          {% endif %}
+        </dl>
+      </div>
+
+      <div class="enc-lado">
+        {% set g = e.grafico %}
+        {% if g %}
+        <svg class="enc-curva" viewBox="0 0 {{ g.w }} {{ g.h }}" preserveAspectRatio="none" role="img"
+             aria-label="Memória privada do processo até o encerramento: pico de {{ g.pico_mb }} MB">
+          <title>Memória privada do processo, de {{ g.t0 | dt }} a {{ g.t1 | dt }} ({{ g.n }} leituras do RMon e do Elastic): pico de {{ g.pico_mb }} MB</title>
+          <polygon points="{{ g.area }}" class="area"/>
+          <polyline points="{{ g.linha }}" class="linha"/>
+          <circle cx="{{ g.fim_x }}" cy="{{ g.fim_y }}" r="3" class="fim"/>
+        </svg>
+        <div class="enc-curva-leg"><span>memória do processo</span><b>pico {{ g.pico_mb }} MB</b></div>
+        {% endif %}
+        {% if e.idjob %}<button type="button" class="btn ghost copiar" data-copiar="{{ e.idjob }}" title="Copiar o número do job para procurar no Gerenciamento de Jobs do RM">Copiar nº {{ e.idjob }}</button>{% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}

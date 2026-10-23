@@ -749,7 +749,14 @@ def _referencia(amostras, agora: float) -> tuple[float, float] | None:
 
 def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, list[tuple[float, float]]] | None,
                           th: dict, agora: float) -> list[tuple[dict, str]]:
-    """JobRunners que o RMon encerra sozinho: [(processo, motivo)]. Funcao pura.
+    """JobRunners que o RMon encerra sozinho: [(processo, motivo)]. Funcao pura."""
+    return [(p, info["motivo"]) for p, info in _alvos_com_regra(jr, anterior, th, agora)]
+
+
+def _alvos_com_regra(jr: dict | None, anterior: dict[str, list[tuple[float, float]]] | None,
+                     th: dict, agora: float) -> list[tuple[dict, dict]]:
+    """[(processo, {"motivo", "regra", "mb", ...})]: o motivo e os numeros dele,
+    que vao para o historico de encerramentos (aba Jobs).
 
     Em 19/10 o mesmo relatorio derrubou o .222 e o .188 em minutos, sem as
     horas de crescimento lento dos casos de 06 e 13/10: o PID 7760 foi de 373 MB
@@ -786,7 +793,8 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, list[tuple[float,
         except (TypeError, ValueError):
             continue
         if limite_gb and mb / 1024 >= limite_gb:
-            alvos.append((proc, f"{mb / 1024:.1f} GB de memória privada (limite: {limite_gb:g} GB)"))
+            alvos.append((proc, {"motivo": f"{mb / 1024:.1f} GB de memória privada (limite: {limite_gb:g} GB)",
+                                 "regra": "memoria", "mb": round(mb), "limite_gb": limite_gb}))
             continue
         antes = _referencia(anterior.get(_jr_chave(proc)), agora)
         if not (ritmo and antes and mb >= piso_mb):
@@ -794,9 +802,12 @@ def jobrunners_a_encerrar(jr: dict | None, anterior: dict[str, list[tuple[float,
         minutos = (agora - antes[0]) / 60
         por_min = (mb - antes[1]) / minutos
         if por_min >= ritmo:
-            alvos.append((proc, f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
-                                f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
-                                f"{ritmo:g} MB/min acima de {piso_mb:g} MB)"))
+            alvos.append((proc, {"motivo": f"cresceu de {antes[1]:.0f} para {mb:.0f} MB em "
+                                           f"{max(1, round(minutos))} min ({por_min:.0f} MB/min; limite: "
+                                           f"{ritmo:g} MB/min acima de {piso_mb:g} MB)",
+                                 "regra": "ritmo", "mb": round(mb), "antes_mb": round(antes[1]),
+                                 "segundos": round(agora - antes[0]), "mb_min": round(por_min),
+                                 "limite_mb_min": ritmo, "piso_mb": piso_mb}))
     return alvos
 
 
@@ -831,8 +842,11 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
             t = _jr_encerrados.get(f"{server.name}|{_jr_chave(p)}")
             if t:
                 p["encerrado"] = t
-        alvos = [(p, m) for p, m in jobrunners_a_encerrar(jr, anterior, th, agora)
+        alvos = [(p, m) for p, m in _alvos_com_regra(jr, anterior, th, agora)
                  if f"{server.name}|{_jr_chave(p)}" not in _jr_matando]
+        # a curva ate o encerramento: as leituras dos ultimos 5 min, para o historico
+        for p, m in alvos:
+            m["amostras"] = [[round(t), round(v)] for t, v in sorted(hist.get(_jr_chave(p), []))]
         for p, _ in alvos:
             _jr_matando.add(f"{server.name}|{_jr_chave(p)}")
     if not alvos:
@@ -845,6 +859,19 @@ def encerrar_jobrunners(server, inv: Inventory, r: dict, th: dict, agora: float)
                 _jr_matando.discard(f"{server.name}|{_jr_chave(p)}")
 
 
+def _job_do_kill(ex: dict) -> dict:
+    """O que o banco do RM disse do job na hora do encerramento."""
+    return {k: ex.get(c) for k, c in (("idjob", "idjob"), ("nome", "nome"), ("classe", "classe"),
+                                      ("usuario", "usuario"), ("executor", "servidor"),
+                                      ("inicio", "inicio"), ("progresso", "progresso"),
+                                      ("filtro", "filtro")) if ex.get(c) is not None}
+
+
+def _liberado_mb(retorno: str) -> int | None:
+    m = re.search(r"\((\d+) MB de memória privada liberados\)", retorno or "")
+    return int(m.group(1)) if m else None
+
+
 def _encerrar(server, inv: Inventory, jr: dict, alvos: list, agora: float) -> list[str]:
     try:
         jobs = jobstats.executions_by_pid(jr.get("computer"), [p["pid"] for p, _ in alvos]) or {}
@@ -854,7 +881,8 @@ def _encerrar(server, inv: Inventory, jr: dict, alvos: list, agora: float) -> li
         jr["jobs"] = {**(jr.get("jobs") or {}), **jobs}
     processo = collector_jobrunner_settings(inv.defaults).get("process") or "RM.Host.JobRunner"
     msgs = []
-    for proc, motivo in alvos:
+    for proc, regra in alvos:
+        motivo = regra["motivo"]
         pid = int(proc["pid"])
         ex = jobs.get(str(pid)) or {}
         quem = (f"job {ex.get('idjob')} '{ex.get('nome') or ex.get('classe') or '?'}' de "
@@ -864,6 +892,11 @@ def _encerrar(server, inv: Inventory, jr: dict, alvos: list, agora: float) -> li
                     server.name, pid, motivo, ok, retorno)
         db.audit("rmon", "jobrunner_kill_auto",
                  f"{server.name} PID {pid} ({quem}; {motivo}) -> {ok}: {retorno}"[:900])
+        if ok or not retorno.startswith("o PID"):
+            db.record_job_kill(server.name, pid, "auto", "rmon", ok,
+                               {**regra, **_job_do_kill(ex), "retorno": retorno,
+                                "liberado_mb": _liberado_mb(retorno), "start": proc.get("start"),
+                                "ws_mb": proc.get("ws_mb"), "computer": jr.get("computer")}, ts=agora)
         if ok:
             proc["encerrado"] = agora
             with _jr_lock:

@@ -26,6 +26,7 @@ def limpo(monkeypatch):
     monkeypatch.setattr(scheduler, "_jr_falhou", set())
     monkeypatch.setattr(db, "audit", lambda *a, **k: None)
     monkeypatch.setattr(db, "record_alert", lambda *a: None)
+    monkeypatch.setattr(db, "record_job_kill", lambda *a, **k: None)
     monkeypatch.setattr(db, "get_config", lambda k, d=None: d)
     monkeypatch.setattr(manutencao, "ativas", lambda agora=None, janelas=None: {})
     monkeypatch.setattr(notify, "enabled", lambda: False)

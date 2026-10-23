@@ -290,6 +290,36 @@ def jobrunner_serie(cfg: dict, nome: str, processo: str, horas: int = 24) -> lis
     return pontos
 
 
+def jobrunner_pid(cfg: dict, nome: str, processo: str, pid: int, desde: float,
+                  ate: float) -> dict | None:
+    """Um JobRunner especifico entre dois instantes (epoch): para o historico de
+    encerrados. {"pontos": [{"t", "mb"}], "processo_desde": epoch | None}.
+
+    O Elastic so guarda os processos do topo do host, uma vez por minuto (no
+    SRV11, 10/2026): um estouro de 1 minuto tem um ponto ou nenhum, mas o
+    crescimento lento (as horas de 06 e 13/10) aparece inteiro. None = Elastic
+    fora do ar ou desligado; {} sem pontos = o processo nao chegou ao topo.
+    """
+    if not nome or pid is None:
+        return None
+    d = _buscar(cfg, cfg["process_index"], {
+        "size": 0,
+        "query": {"bool": {"filter": [
+            {"range": {"@timestamp": {"gte": int(desde * 1000), "lte": int(ate * 1000),
+                                      "format": "epoch_millis"}}},
+            _filtro_hosts([nome]), _filtro_processo(cfg, processo), {"term": {"process.pid": int(pid)}}]}},
+        "aggs": {"t": {"date_histogram": {"field": "@timestamp", "fixed_interval": "30s",
+                                          "min_doc_count": 1},
+                       "aggs": {"mem": {"max": {"field": "system.process.memory.size"}}}},
+                 "inicio": {"min": {"field": "process.cpu.start_time"}}}})
+    if d is None:
+        return None
+    ag = d.get("aggregations", {})
+    pontos = [{"t": float(b["key"]) / 1000, "mb": round(float(b["mem"]["value"]) / 2**20)}
+              for b in ag.get("t", {}).get("buckets", []) if (b.get("mem") or {}).get("value") is not None]
+    return {"pontos": pontos, "processo_desde": _epoch((ag.get("inicio") or {}).get("value"))}
+
+
 # ------------------------------------------------------------ desenho
 
 def grafico(pontos: list[dict], aviso_gb: float = 0, critico_gb: float = 0,

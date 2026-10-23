@@ -24,6 +24,11 @@ class Banco:
         self.ts: list[float] = []
         self.checks: dict[str, list[bool]] = {}
         self.config: dict = {}
+        self.kills: list[dict] = []
+
+    def record_job_kill(self, server, pid, origem, por, ok, dados=None, ts=None):
+        self.kills.append({"server": server, "pid": pid, "origem": origem, "por": por, "ok": ok,
+                           "dados": dict(dados or {}), "ts": ts})
 
     def get_config(self, chave, padrao=None):
         return self.config.get(chave, padrao)
@@ -88,7 +93,7 @@ def ambiente(monkeypatch):
     # vez de ficar esperando um PostgreSQL que nao existe
     monkeypatch.setattr(db, "_conn", _sem_banco_de_verdade)
     for nome in ("open_alerts", "open_alerts_tempos", "record_alert", "insert_check",
-                 "fail_streak", "get_config", "set_config", "acoes_desde"):
+                 "fail_streak", "get_config", "set_config", "acoes_desde", "record_job_kill"):
         monkeypatch.setattr(db, nome, getattr(banco, nome))
     monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
     monkeypatch.setattr(db, "broker_estado", lambda dias=1: {})

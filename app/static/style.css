@@ -574,6 +574,48 @@ details.ajuda p { margin: 0 0 .45rem; } details.ajuda p:last-child { margin-bott
   .preso-acoes { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; max-width: none; }
   .preso-acoes > * { flex: 1 1 10rem; }
 }
+/* ---------- Jobs encerrados pelo RMon: o alerta do canal, com o que se soube depois ---------- */
+.panel.encerrados > h2 { flex-wrap: wrap; }
+.panel.encerrados > h2 .muted { font-weight: 400; }
+.enc-lista { display: grid; gap: .6rem; }
+.enc { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr) 15rem; gap: .9rem; align-items: start;
+  padding: .75rem .9rem; border-radius: var(--radius-sm); background: var(--surface-2);
+  border: 1px solid var(--line); border-left: 4px solid var(--amber); }
+.enc.manual { border-left-color: var(--accent); }
+.enc.falhou { border-left-color: var(--red); }
+.enc:target { box-shadow: inset 0 0 0 1px var(--accent); }
+.enc-quando { display: flex; flex-direction: column; align-items: center; text-align: center; line-height: 1.15; padding-top: .1rem; }
+.enc-quando b { font-size: 1.35rem; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.enc-quando span { font-size: .78rem; color: var(--muted); margin-top: .1rem; }
+.enc-quando em { font-style: normal; font-size: .64rem; text-transform: uppercase; letter-spacing: .08em; margin-top: .4rem;
+  padding: .08rem .4rem; border-radius: 999px; color: var(--amber); border: 1px solid currentColor; opacity: .9; }
+.enc.manual .enc-quando em { color: var(--accent); }
+.enc.falhou .enc-quando em { color: var(--red); }
+.enc-fatos { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr); gap: .22rem .7rem; margin: .55rem 0 0;
+  font-size: .84rem; line-height: 1.45; }
+.enc-fatos dt { color: var(--faint); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; padding-top: .14rem; }
+.enc-fatos dd { margin: 0; color: var(--text); min-width: 0; }
+.enc-fatos dd .muted { color: var(--muted); }
+.enc-filtro { display: block; font-size: .78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.enc-depois { display: inline-block; margin: .1rem .3rem .1rem 0; padding: .02rem .45rem; border-radius: 999px;
+  font-size: .78rem; background: var(--surface-3); border: 1px solid var(--line-2); }
+.enc-depois.ok { color: var(--green); } .enc-depois.erro { color: var(--amber); }
+.enc-lado { display: flex; flex-direction: column; gap: .4rem; }
+.enc-curva { width: 100%; height: 54px; display: block; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.enc-curva .area { fill: var(--amber); opacity: .14; }
+.enc-curva .linha { fill: none; stroke: var(--amber); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.enc-curva .fim { fill: var(--amber); }
+.enc.manual .enc-curva .area, .enc.manual .enc-curva .fim { fill: var(--accent); }
+.enc.manual .enc-curva .linha { stroke: var(--accent); }
+.enc-curva-leg { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); margin-top: -.2rem; }
+.enc-curva-leg b { color: var(--text); font-variant-numeric: tabular-nums; }
+.enc-lado .btn.ghost { font-size: .8rem; padding: .35rem .7rem; color: var(--muted); justify-content: center; }
+@media (max-width: 900px) {
+  .enc { grid-template-columns: 4.4rem minmax(0, 1fr); }
+  .enc-lado { grid-column: 1 / -1; }
+  .enc-fatos { grid-template-columns: 1fr; gap: 0 .7rem; }
+  .enc-fatos dt { padding-top: .35rem; }
+}
 /* pilula do cartao do painel: o job preso pelo nome, sem abrir outra tela */
 .preso-linha { display: block; margin-top: .35rem; font-size: .78rem; color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

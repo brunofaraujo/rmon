@@ -43,7 +43,7 @@ def app_falso(monkeypatch):
                 "tv": {"username": "tv", "role": "viewer", "active": True,
                        "password_hash": hash_password(SENHA)}}
     estado = SimpleNamespace(config={}, alertas=[], auditoria=[], enviadas=[], mortes=[],
-                             coletas=[coleta()])
+                             coletas=[coleta()], kills=[], encerrados=[])
 
     def falha():
         raise AssertionError("o teste tentou abrir conexão com o PostgreSQL")
@@ -55,6 +55,10 @@ def app_falso(monkeypatch):
     monkeypatch.setattr(db, "get_config", lambda k, d=None: estado.config.get(k, d))
     monkeypatch.setattr(db, "set_config", lambda k, v: estado.config.__setitem__(k, v))
     monkeypatch.setattr(db, "record_alert", lambda *a: estado.alertas.append(a))
+    monkeypatch.setattr(db, "record_job_kill", lambda *a, **k: estado.kills.append((a, k)))
+    monkeypatch.setattr(db, "recent_job_kills", lambda dias=30, lim=100: [dict(e) for e in estado.encerrados])
+    monkeypatch.setattr(db, "jobrunner_nas_coletas", lambda *a: [])
+    monkeypatch.setattr(db, "job_kill_guardar", lambda *a: None)
     monkeypatch.setattr(db, "latest_per_server", lambda: [dict(c) for c in estado.coletas])
     monkeypatch.setattr(db, "history", lambda name, limit=120: [dict(c) for c in estado.coletas])
     monkeypatch.setattr(db, "broker_max", lambda dias=30: {})
