@@ -278,11 +278,29 @@ def fila_hist(n: int = 3) -> dict[str, list[dict]]:
     return hist
 
 
+# Ultima coleta de cada servidor descendo o indice (server, ts DESC): uma busca
+# para achar o proximo nome e outra para a linha mais nova dele. O DISTINCT ON
+# equivalente ordenava a tabela inteira (com os jsonb) em disco a cada chamada -
+# ~600 MB e 4 s com 30 dias de historico; com painel, mural e ciclo chamando
+# juntos, o disco saturou em 03/11 e o painel nao abria mais depois do login.
+_ULTIMA_COLETA = """
+    WITH RECURSIVE s AS (
+        (SELECT server FROM checks ORDER BY server LIMIT 1)
+        UNION ALL
+        SELECT (SELECT c.server FROM checks c WHERE c.server > s.server
+                 ORDER BY c.server LIMIT 1)
+          FROM s WHERE s.server IS NOT NULL
+    )
+    SELECT u.* FROM s, LATERAL (
+        SELECT * FROM checks c WHERE c.server = s.server ORDER BY c.ts DESC LIMIT 1
+    ) u
+    WHERE s.server IS NOT NULL
+    ORDER BY u.server"""
+
+
 def latest_per_server() -> list[dict]:
     with _conn() as c:
-        rows = c.execute(
-            "SELECT DISTINCT ON (server) * FROM checks ORDER BY server, ts DESC"
-        ).fetchall()
+        rows = c.execute(_ULTIMA_COLETA).fetchall()
     return _epoch(rows)
 
 
