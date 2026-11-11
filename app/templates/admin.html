@@ -42,7 +42,7 @@
 
       <h2>Jobs do RM</h2>
       <div class="metrics-2" style="margin:.6rem 0 1rem">
-        {{ campo('jobs_failed', 'Aviso de jobs com erro a partir de', 'Execuções com erro na janela que acendem um aviso em âmbar na tela. Não é enviado ao Slack/Telegram.', 1, 1000) }}
+        {{ campo('jobs_failed', 'Aviso de jobs com erro a partir de', 'Execuções com erro na janela que acendem um aviso em âmbar na tela. Não é enviado ao Telegram.', 1, 1000) }}
         {{ campo('jobs_all_failed', 'Falha em bloco: execuções sem sucesso', 'Tantas execuções na janela e NENHUMA com sucesso: falha em bloco, é enviado.', 1, 1000) }}
         {{ campo('jobs_stuck_min', 'Fila parada depois de (min)', 'Minutos sem nenhuma conclusão; também a idade a partir da qual uma execução em andamento conta como presa', 5, 1440) }}
         {{ campo('jobs_stuck_jobs', 'Execuções presas para alertar', 'Quantas execuções presas (ou com a hora vencida sem ninguém iniciar) para enviar o alerta. Uma sozinha é ruído conhecido do RM.', 1, 1000) }}
@@ -60,7 +60,7 @@
         <summary>Quando um problema de jobs vira alerta</summary>
         <div>
           <p>Job que termina com erro quase sempre é validação ou regra de negócio da aplicação: fica em âmbar na tela e no histórico,
-            <b>sem</b> Slack/Telegram.</p>
+            <b>sem</b> Telegram.</p>
           <p>São enviados a <b>fila parada</b> e a <b>falha em bloco</b>. Fila parada exige as três coisas juntas: nenhuma conclusão na
             janela, execuções presas (ou esperando para começar) acima do mínimo, e a mesma leitura repetida nas coletas seguintes.</p>
         </div>

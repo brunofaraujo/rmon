@@ -93,7 +93,7 @@ app/
   db.py           psycopg3: schema, checks, users, audit, alerts, app_config
   jobstats.py     query()/pool_summary() sobre GJOBXEXECUCAO (pymssql)
   nlb.py          drenagem/reingresso do NLB: view() + evaluate() (pura) + run_cycle()
-  notify.py       send() -> Telegram/Slack (inerte se não configurado)
+  notify.py       send() -> Telegram (inerte se não configurado)
   security.py     hash_password()/verify_password() (pbkdf2, stdlib)
   templates/      Jinja2 (base, dashboard, tv, server, jobs, sessions, admin, logs…)
   static/         style.css; tv.css + tv.js (mural de TV, sem dependencias externas)

@@ -124,7 +124,7 @@ RMon a devolve quando estiver apta.
 - Manutenção (hold ou janela) não é tocada. No modo `alert` só avisa "reiniciaria a VM".
 - A tela `/nlb` mostra em cada nó o que acontece se ele travar ("reset da VM X" ou "só alerta
   crítico") e o estado do canal com o hypervisor, conferido de hora em hora (`listar`, só
-  leitura; 10 min se falhou). Falha e volta do canal viram mensagem no Slack/Telegram.
+  leitura; 10 min se falhou). Falha e volta do canal viram mensagem no Telegram.
 
 ### Pré-requisitos
 
@@ -172,7 +172,7 @@ Suspenso (1013) recebe `nlb.exe resume` antes do `start`.
 | `auto` | sim | o que fez | sim (`drainstop` / `start`) |
 
 Toda decisão vai para o `alerts_log` (`kind = 'nlb'`, aparece em Ocorrências) e para o
-`audit_log` (usuário `rmon-nlb`, ações `nlb_*`). Mensagem no Slack/Telegram só nas
+`audit_log` (usuário `rmon-nlb`, ações `nlb_*`). Mensagem no Telegram só nas
 **transições** — a mesma situação não se repete a cada minuto; falha de execução avisa
 na primeira vez e é tentada de novo a cada `retry_min` (5 min).
 

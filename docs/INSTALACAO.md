@@ -75,7 +75,6 @@ sudo deploy/definir-winrm.sh fin            # credencial WinRM do perfil 'fin'
 sudo deploy/definir-winrm.sh rh             # ... e de outros perfis
 sudo deploy/definir-sql.sh                  # login SQL (somente-leitura) p/ estatísticas de jobs
 sudo deploy/definir-telegram.sh             # alerta via Telegram (+ mensagem de teste)
-sudo deploy/definir-slack.sh                # alerta via Slack (+ mensagem de teste)
 ```
 
 ## 6. Primeiro acesso

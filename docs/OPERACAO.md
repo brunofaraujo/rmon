@@ -131,7 +131,6 @@ sudo deploy/definir-senha-admin.sh     # troca a senha do admin
 sudo deploy/definir-winrm.sh <perfil>  # rotaciona a credencial WinRM de um perfil
 sudo deploy/definir-sql.sh             # troca o login SQL
 sudo deploy/definir-telegram.sh        # (re)configura Telegram
-sudo deploy/definir-slack.sh           # (re)configura Slack
 ```
 
 ## Atualizar a aplicação
@@ -171,7 +170,7 @@ gunzip -c rmon-AAAA-MM-DD.sql.gz | sudo runuser -u postgres -- psql rmon
 | Servidor "sem contato" | credencial do perfil (`definir-winrm.sh`), rede/porta WinRM, `descobrir.py` |
 | "Sem contato" intermitente (alterna com "resolvido") | host engasgando no WinRM, não queda: ver *Coleta instável* abaixo |
 | Jobs vazios | `RMON_SQL_*` configurado? bloco `jobs:` no servidor? login com acesso à base RM? |
-| Alerta não chega | canal configurado? `journalctl` mostra "falha Telegram/Slack"? |
+| Alerta não chega | canal configurado? `journalctl` mostra "falha Telegram"? |
 | Serviço não sobe | `RMON_DB_DSN` válido? PostgreSQL ativo (`systemctl status postgresql`)? |
 
 Descoberta de serviços nos alvos (útil ao ajustar o inventário):
@@ -636,7 +635,7 @@ resolve essa falha; não resolve o broker incompleto.
 
 A coleta lê tamanho e data de `_BrokerCustom.dat`/`_Broker.dat` em cada host e compara
 com o maior tamanho que aquele host já teve; abaixo de `broker_min_pct` (padrão 60%) sai
-alerta `broker:_BrokerCustom.dat` no Telegram/Slack e uma tarja no card do servidor.
+alerta `broker:_BrokerCustom.dat` no Telegram e uma tarja no card do servidor.
 
 O veredito só é dado quando o arquivo **parou de crescer** — duas coletas seguidas com o
 mesmo tamanho e a mesma data. Isso vale um ciclo de espera (~1 min), não uma janela fixa:

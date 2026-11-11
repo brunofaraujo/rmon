@@ -86,7 +86,7 @@ def ip(chave: str | None) -> str:
 
 
 def com_ip(chave: str | None) -> str:
-    """Para mensagens fora da tela (Slack/Telegram): "SRV06N (10.10.10.34)"."""
+    """Para mensagens fora da tela (Telegram): "SRV06N (10.10.10.34)"."""
     cfg = _cfg(chave or "")
     nome = titulo(chave)
     return f"{nome} ({cfg.host})" if cfg is not None else nome

@@ -46,7 +46,7 @@ defaults:                          # aplicados a todos os servidores (sobrescrev
     jobrunner_kill_carga_mb: 150   # ... e em carga (acima de 150 MB)
     jobrunner_kill_carga_s: 60     # ... há 60+ s (0 em qualquer um desliga a condição)
     lembrete_h: 4                  # crítico (vermelho) ainda aberto é notificado de novo a cada 4h (0 desliga)
-    resumo_hora: 8                 # hora do resumo diário no Telegram/Slack (-1 desliga)
+    resumo_hora: 8                 # hora do resumo diário no Telegram (-1 desliga)
     boot_janela_min: 30            # serviço automático parado cujo alerta abriu até 30 min após o boot = "não subiu após o reboot"
     boot_iniciar_min: 10           # guardião: serviço monitorado parado volta sozinho a qualquer hora, a partir de 10 min de uptime (0 desliga: só avisa)
     autocorrecao_teto_min: 30      # guardião nunca desiste: espera 2, 5, 10, 15 e daí 30 min entre tentativas (teto)
@@ -232,7 +232,7 @@ com `*`. A linha do tempo confiável é a de `/pacotes/mudancas`, montada pelo
 diff entre coletas: instalação, atualização, **regressão** de versão e remoção,
 com data e hora.
 
-Mudança de item gera registro em `alerts_log` e notificação (Telegram/Slack),
+Mudança de item gera registro em `alerts_log` e notificação (Telegram),
 quando configurada. Não é alerta de falha: é rastreabilidade — software que muda
 sem ninguém ter mexido é a primeira coisa que se procura quando o servidor passa
 a se comportar diferente.
@@ -400,7 +400,6 @@ parser Python próprio (o `systemd` **não** usa `EnvironmentFile` — ver
 | `RMON_WINRM_USER` / `_PASSWORD` | Par legado, usado por servidores **sem** `cred` |
 | `RMON_SQL_HOST`/`_PORT`/`_DB`/`_USER`/`_PASSWORD` | Login (somente-leitura) do SQL Server p/ estatísticas de jobs |
 | `RMON_TELEGRAM_TOKEN` / `RMON_TELEGRAM_CHAT_ID` | Alerta via Telegram |
-| `RMON_SLACK_WEBHOOK` | Alerta via Slack (Incoming Webhook) |
 | `RMON_ES_URL` / `RMON_ES_API_KEY` | Elasticsearch opcional, só leitura (ver [Elasticsearch](#elasticsearch-opcional-só-leitura)). Vazio = tudo pelo WinRM |
 | `RMON_ES_CA` | PEM da CA do Elasticsearch (`off` desliga a verificação de TLS, não recomendado) |
 | `RMON_CONFIG` | Caminho do `servers.yaml` (padrão `/opt/rmon/config/servers.yaml`) |
@@ -418,7 +417,6 @@ sudo deploy/definir-senha-admin.sh
 sudo deploy/definir-winrm.sh <perfil>
 sudo deploy/definir-sql.sh
 sudo deploy/definir-telegram.sh
-sudo deploy/definir-slack.sh
 sudo deploy/definir-elastic.sh
 ```
 
@@ -503,17 +501,17 @@ Disparados pelo `scheduler` **apenas nas transições** de estado (problema leva
 resolveu), evitando repetição. Condições avaliadas a cada ciclo: servidor sem contato,
 serviço fora de `Running`, `app_health` falhando ou lento, disco/memória acima do
 limiar, broker truncado e problemas de jobs. Configure os limiares em `defaults.alerts`
-(inventário) ou na tela **Admin**; os canais (Telegram/Slack) via helpers. Se nenhum
-canal estiver configurado, o envio é inerte (sem erro).
+(inventário) ou na tela **Admin**; o canal (Telegram) via helper. Se ele não
+estiver configurado, o envio é inerte (sem erro).
 
-### Aviso × alerta (o que vai para o Slack/Telegram)
+### Aviso × alerta (o que vai para o Telegram)
 
 Nem todo problema merece notificação. Um job do RM que termina com erro quase sempre é
 **validação ou regra de negócio da aplicação** (dado errado no cadastro, competência
 fechada) — quem resolve é quem pediu o job, no horário dele. Notificar isso só ensina o
 time a ignorar o canal.
 
-| Chave | Natureza | Slack/Telegram | Cor |
+| Chave | Natureza | Telegram | Cor |
 |---|---|---|---|
 | `JOBS` | jobs terminaram com erro na janela | **não** | âmbar |
 | `JOBSQL` | o RMon não conseguiu ler os jobs no SQL | **não** | âmbar |
