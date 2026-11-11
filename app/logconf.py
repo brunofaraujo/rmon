@@ -21,7 +21,7 @@ FORMATO = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 # linhas por disparo ("Running job" + "executed successfully") e o httpx uma
 # por requisicao do coletor - juntos, metade do volume diario, sem nada que a
 # propria aplicacao ja nao registre: o scheduler anota o resultado da coleta e
-# o notify.py anota as falhas de Telegram/Slack.
+# o notify.py anota as falhas de Telegram.
 BIBLIOTECAS_TAGARELAS = ("apscheduler", "httpx", "httpcore")
 
 # Rotas de polling: as TVs batem em /api/tv a cada 15s e o healthz responde ao

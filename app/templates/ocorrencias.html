@@ -38,7 +38,7 @@
       <span class="pill {{ 'red' if a.crit else 'amber' }} tag"><span class="d"></span>{{ a.label }}</span>
       <a class="who linkish" href="/server/{{ a.server }}" title="{{ descricao(a.server) }} &middot; abrir este servidor">{{ a.server | nome }}</a>
       <span>
-        {% if not a.notifica %}<span class="pill small" title="Aparece aqui, mas não é enviado ao Slack/Telegram: não é falha do servidor">só no painel</span>{% endif %}
+        {% if not a.notifica %}<span class="pill small" title="Aparece aqui, mas não é enviado ao Telegram: não é falha do servidor">só no painel</span>{% endif %}
         {% if a.key.startswith('JOB') %}<a class="pill blue chip-link" href="/jobs">ver jobs</a>{% endif %}
         {% if a.key.startswith('svc:') %}<a class="pill blue chip-link" href="/server/{{ a.server }}">ver serviços</a>{% endif %}
       </span>

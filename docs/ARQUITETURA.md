@@ -15,7 +15,7 @@ flowchart TD
         SCH["app.scheduler<br/>APScheduler (interval)"]
         COL["app.collector<br/>pywinrm + httpx"]
         JOB["app.jobstats<br/>pymssql"]
-        NOT["app.notify<br/>Telegram/Slack"]
+        NOT["app.notify<br/>Telegram"]
         DB["app.db<br/>psycopg3"]
     end
     MAIN --> DB
@@ -155,7 +155,7 @@ qualquer outra rota volta para `/`; POST e `/api/*` recebem `403`. Como a regra 
 middleware, uma rota nova nasce fechada para o `viewer` — não há como esquecer o guard.
 
 A severidade exibida no mural reutiliza `scheduler.problems()`, a **mesma** função que
-decide os alertas do Telegram/Slack: o que acende vermelho na TV é exatamente o que
+decide os alertas do Telegram: o que acende vermelho na TV é exatamente o que
 dispara notificação. Sem contato, serviço parado, app fora do ar e jobs falhando contam
 como críticos; memória, disco e app lento como avisos.
 

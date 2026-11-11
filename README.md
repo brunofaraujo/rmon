@@ -38,7 +38,7 @@ servidores monitorados.
 
 ### O que ele faz
 
-- 🔔 **Alertas** por Telegram e/ou Slack — disparados só nas **transições** (levantou/resolveu), sem spam.
+- 🔔 **Alertas** por Telegram — disparados só nas **transições** (levantou/resolveu), sem spam.
 - 📦 **Inventário e versionamento TOTVS**: matriz item × host em `/pacotes`, **por ambiente** (SGE/Financeiro e RH não se misturam) — versão do RM, customizações e bibliotecas de cada servidor, quem está atrás da maior versão do parque, e a linha do tempo de tudo que foi instalado, atualizado, **regrediu** ou removido. Software de terceiros fica fora. Exporta CSV.
 - ⬇️ **Versões disponíveis**: os pacotes baixados do TDN ficam numa pasta que o RMon **só lê**; o nome do arquivo vira "disponível" na matriz, ao lado do que está instalado em cada host. O painel não acessa o portal da TOTVS nem guarda credencial de ninguém.
 - 🔒 **Instalação com pré-voo**: antes de qualquer coisa, o painel confere sessões RDP, espaço, serviços, integridade do pacote e alcance de rede — e mostra o comando exato. A execução real nasce **desarmada**: exige trava no YAML, host numa lista explícita e confirmação digitada. Não existe comando livre, e só instalador (`.exe`/`.msi`): o que o RMon instala tem de ser desinstalável pelo Painel de Controle, e ele confere isso no registro depois de rodar.
@@ -67,7 +67,7 @@ flowchart LR
     COL -- "WinRM" --> W2["Windows: Job Server"]
     COL -- "TDS 1433 (pymssql)" --> SQL[("SQL Server<br/>GJOBXEXECUCAO")]
     COL -- "HTTP health" --> APPRM["Endpoint RM"]
-    SCH -- "alertas" --> TG["Telegram / Slack"]
+    SCH -- "alertas" --> TG["Telegram"]
     USER["Operador (navegador)"] -- "HTTPS :443" --> NGX
 ```
 
@@ -82,7 +82,7 @@ app/                 Backend FastAPI + templates (Jinja2) + estáticos
   scheduler.py       Polling periódico, detecção de problemas e alertas
   db.py              Camada PostgreSQL (psycopg3) + schema
   jobstats.py        Estatísticas de jobs do RM (SQL Server)
-  notify.py          Envio de alertas (Telegram / Slack)
+  notify.py          Envio de alertas (Telegram)
   config.py          Carga de .env + inventário YAML
   security.py        Hash de senha (pbkdf2, stdlib)
 config/
@@ -90,7 +90,7 @@ config/
 deploy/
   instalar.sh        Instalador idempotente (Ubuntu): provisiona tudo
   rmon.service       Unit systemd (com sandbox/endurecimento)
-  definir-*.sh       Helpers p/ gravar segredos no .env (senha, WinRM, SQL, Telegram, Slack)
+  definir-*.sh       Helpers p/ gravar segredos no .env (senha, WinRM, SQL, Telegram)
   usuarios.py        CLI de usuários do painel
   descobrir.py       Descoberta de serviços RM/SQL/IIS nos alvos
 docs/                Documentação técnica (instalação, config, operação, arquitetura)

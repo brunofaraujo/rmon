@@ -125,7 +125,7 @@ CRITICOS = frozenset({"DOWN", "APP", "JOBQUEUE", "JOBFAIL"})
 
 
 def notifica(chave: str) -> bool:
-    """Este problema merece Slack/Telegram?"""
+    """Este problema vai para o Telegram?"""
     return chave not in AVISOS
 
 
