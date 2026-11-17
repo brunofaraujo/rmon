@@ -345,6 +345,47 @@ digitado na tela entra numa linha de comando. Uma ação é descartada (com avis
 no log) se o `id` tiver formato estranho, se `dest` não for uma subpasta
 simples, ou se `args` contiver `;`, `&`, `|`, `<`, `>`, `` ` `` ou `$`.
 
+### Parar serviços antes do instalador (`stop_services`)
+
+O instalador dos pacotes TOTVS para o RM.Host sozinho, mas **não espera os
+processos saírem**: no .223 em 17/11/2026 a cópia começou 3 s depois de parar o
+`RM.Host.Cleanner`, achou uma DLL de customização em uso e, em modo silencioso
+(sem a janela de "Repetir"), abortou e desfez a instalação — deixando o Cleanner
+parado. Para pacotes que mexem na pasta do RM, declare na ação:
+
+```yaml
+- id: inno-silencioso
+  label: "Instalador TOTVS (Inno Setup) silencioso"
+  args: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /LOG"
+  extensions: [".exe"]
+  timeout_sec: 900
+  stop_services: ["RM.Host*"]   # padrões de nome de serviço
+  stop_wait_sec: 180            # padrão 180, máximo 900
+```
+
+Com isso, **depois** de baixar e conferir o pacote, o RMon:
+
+1. para os serviços que casam com o padrão e estão rodando;
+2. espera até não restar **nenhum processo rodando da pasta deles** (no RM, a
+   `RM.Net`: JobRunners, Cleanner, o próprio host). A espera é por pasta, não
+   por nome, porque são esses processos que seguram as DLLs;
+3. se o prazo vencer, **não roda o instalador** e diz quem ficou;
+4. roda o instalador;
+5. **religa o que estava rodando antes**, tenha dado certo ou não.
+
+O pré-voo mostra a checagem `parada`: o que seria parado, a pasta e quantos
+processos rodam dela agora. O comando previsto aparece como
+`parar RM.Host* e esperar os processos saírem (até 180 s) → ... → religar o que estava rodando`.
+
+### Manutenção durante a instalação
+
+Toda tarefa **real** abre uma janela de manutenção no host enquanto roda (motivo
+`instalação #N: ...`, aberta por `RMon`). Com ela o guardião não religa o RM.Host
+no meio da cópia, o NLB fica em hold e os serviços parados não viram mensagem.
+Terminada a instalação, a janela fica aberta mais 3 minutos para o RM.Host
+assentar; no fim sai a mensagem de sempre ("voltou limpo" ou o que seguiu
+aberto). Janela já aberta por alguém no painel é respeitada como está.
+
 ### Só instalador, e só o que se desinstala
 
 O RMon **não copia arquivo solto** para dentro da instalação do RM. Uma DLL
