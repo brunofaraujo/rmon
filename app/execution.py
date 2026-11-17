@@ -65,6 +65,10 @@ EXTENSOES_INSTALADOR = (".exe", ".msi")
 
 # Um id de acao entra em nome de arquivo e em log: mantenha-o sem surpresas.
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
+# Padrao de nome de servico a parar antes do instalador ("RM.Host*")
+_SVC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._* -]{0,79}$")
+# Quanto esperar, depois de parar os servicos, os processos sairem de fato
+STOP_WAIT_PADRAO = 180
 
 # Checagens que, reprovadas, impedem a tarefa. As demais sao avisos.
 DURAS = {"habilitado", "host_liberado", "acao", "pacote", "janela", "sessoes",
@@ -109,6 +113,16 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
             log.warning("ação %s ignorada: só instalador (%s), e não %s", ident,
                         ", ".join(EXTENSOES_INSTALADOR), ", ".join(invalidas))
             continue
+        # Servicos a parar antes do instalador. O instalador da TOTVS ate para o
+        # RM.Host sozinho, mas nao espera os processos sairem: no .223 em
+        # 17/11 a copia comecou 3 s depois de parar o Cleanner, achou a DLL de
+        # customizacao em uso e, sem janela para "Repetir", abortou tudo.
+        parar = [str(p).strip() for p in _as_list(raw.get("stop_services")) if str(p).strip()]
+        ruins = [p for p in parar if not _SVC_RE.match(p)]
+        if ruins:
+            log.warning("ação %s ignorada: nome de serviço inválido em stop_services (%r)",
+                        ident, ruins[0])
+            continue
         saida[ident] = {
             "id": ident,
             "label": str(raw.get("label") or ident)[:120],
@@ -116,8 +130,17 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
             "args": args[:200],
             "extensions": extensoes or list(EXTENSOES_INSTALADOR),
             "timeout_sec": max(30, min(int(raw.get("timeout_sec", 900) or 900), 7200)),
+            "stop_services": parar,
+            "stop_wait_sec": max(10, min(int(raw.get("stop_wait_sec", STOP_WAIT_PADRAO)
+                                             or STOP_WAIT_PADRAO), 900)),
         }
     return saida
+
+
+def prazo_total(acao: dict) -> int:
+    """Tempo da chamada inteira: instalador + parar/esperar + religar."""
+    extra = (acao["stop_wait_sec"] + 180) if acao.get("stop_services") else 0
+    return int(acao["timeout_sec"]) + extra
 
 
 def na_janela(janela: str, agora: time.struct_time | None = None) -> bool:
@@ -181,7 +204,9 @@ $ErrorActionPreference = 'SilentlyContinue'
 $destino = '__DESTINO__'
 $temp = '__TEMP__'
 $svcPatterns = @(__SERVICOS__)
+$pararPatterns = @(__PARAR__)
 $url = '__URL__'
+__PASTAS_FN__
 
 $sessoes = 0
 try { $qu = @(quser 2>$null); if ($qu.Count -gt 1) { $sessoes = $qu.Count - 1 } } catch { }
@@ -202,6 +227,16 @@ foreach ($p in $svcPatterns) {
     }
 }
 
+# O que a execucao pararia, e quantos processos hoje rodam das pastas deles
+$parar = @()
+$pastasParar = @()
+if ($pararPatterns.Count) {
+    $alvos = Get-ServicosParar $pararPatterns
+    foreach ($s in $alvos) { $parar += [pscustomobject]@{ nome = $s.Name; estado = $s.State } }
+    $pastasParar = @(Get-PastasServicos $alvos)
+}
+$procsParar = @(Get-ProcessosDe $pastasParar).Count
+
 # O host consegue baixar o pacote do proprio RMon? Descobrir isso agora evita
 # uma tarefa que falharia so na hora de instalar.
 $baixa = $null
@@ -220,7 +255,40 @@ if ($url) {
     destino_existe = [bool]($destino -and (Test-Path -LiteralPath $destino))
     temp_pai_existe = [bool](Test-Path -LiteralPath (Split-Path -Parent $temp))
     servicos = @($servicos); http = $baixa
+    parar = @($parar); pastas_parar = @($pastasParar); processos_parar = $procsParar
 } | ConvertTo-Json -Depth 4 -Compress
+"""
+
+# Usado pelo pre-voo e pela execucao: quais servicos casam com stop_services,
+# de que pasta rodam e que processos ainda estao vivos nessas pastas. A espera
+# e por PASTA, nao por nome: o RM.Host.Service sai, mas os JobRunner e o
+# Cleanner, que rodam da mesma RM.Net, podem seguir segurando as DLLs.
+_PS_PASTAS = r"""
+function Get-ServicosParar($padroes) {
+    @(Get-CimInstance Win32_Service | Where-Object {
+        $n = $_.Name; @($padroes | Where-Object { $n -like $_ }).Count -gt 0 })
+}
+function Get-PastasServicos($svcs) {
+    $pastas = @()
+    foreach ($s in $svcs) {
+        $exe = "$($s.PathName)".Trim()
+        if ($exe.StartsWith('"')) { $exe = $exe.Substring(1, $exe.IndexOf('"', 1) - 1) }
+        else { $exe = ($exe -split ' ')[0] }
+        $pasta = Split-Path -Parent $exe
+        # servico hospedado no svchost nao tem pasta "dele": esperar o
+        # System32 esvaziar seria esperar para sempre
+        if (-not $pasta -or $pasta.StartsWith($env:windir, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($pastas -notcontains $pasta) { $pastas += $pasta }
+    }
+    return $pastas
+}
+function Get-ProcessosDe($pastas) {
+    if (-not $pastas -or -not @($pastas).Count) { return @() }
+    @(Get-CimInstance Win32_Process | Where-Object {
+        $p = "$($_.ExecutablePath)"
+        $p -and @($pastas | Where-Object {
+            $p.StartsWith($_ + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0 })
+}
 """
 
 
@@ -230,15 +298,17 @@ def _check(nome: str, ok: bool, texto: str, dura: bool | None = None) -> dict:
 
 
 def _remoto(server: ServerConfig, wc: WinRMConfig, destino: str, temp: str,
-            servicos: list[str], url: str) -> dict[str, Any]:
+            servicos: list[str], url: str, parar: list[str] | None = None) -> dict[str, Any]:
     """Roda as checagens no host. Tudo somente-leitura."""
     user, pw = credential_for(server.cred)
     if not (user and pw):
         return {"erro": f"sem credencial para o perfil '{server.cred}'"}
     script = (_PS_CHECAGENS
+              .replace("__PASTAS_FN__", _PS_PASTAS)
               .replace("__DESTINO__", destino.replace("'", "''"))
               .replace("__TEMP__", temp.replace("'", "''"))
               .replace("__SERVICOS__", ",".join(_ps_str(s) for s in servicos))
+              .replace("__PARAR__", ",".join(_ps_str(s) for s in (parar or [])))
               .replace("__URL__", url.replace("'", "''")))
     try:
         r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=120)
@@ -320,7 +390,8 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
         destino = ""
         temp = str(cfg.get("temp_dir") or DEFAULTS["temp_dir"])
         dados = _remoto(server, wc, destino, temp,
-                        list(cfg.get("require_services_stopped") or []), url_check)
+                        list(cfg.get("require_services_stopped") or []), url_check,
+                        (acao or {}).get("stop_services") or [])
         if dados.get("erro"):
             checagens.append(_check("host", False, f"host inacessível: {dados['erro']}"))
         else:
@@ -346,6 +417,8 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
                 else (f"{len(parados)} serviço(s) ainda rodando: "
                       + ", ".join(s["nome"] for s in parados[:5]) if parados
                       else "serviços exigidos estão parados")))
+            if acao and acao.get("stop_services"):
+                checagens.append(checagem_parada(acao, dados))
             # O pacote viaja da VM para o host por HTTP, entao "o host alcanca o
             # RMon?" decide se a instalacao e possivel. Em seco isso e so um
             # aviso; para valer, e impedimento - melhor barrar aqui do que
@@ -372,13 +445,39 @@ def preflight(task: dict, server: ServerConfig | None, wc: WinRMConfig,
             "bloqueios": [c["nome"] for c in bloqueios]}
 
 
+def checagem_parada(acao: dict, dados: dict) -> dict:
+    """O que a execucao vai parar no host, e quanto tera de esperar.
+
+    Aviso, nao impedimento: padrao que nao casa com nada so quer dizer que nada
+    sera parado - o instalador roda como rodaria sem a opcao.
+    """
+    alvos = [s for s in _as_list(dados.get("parar")) if isinstance(s, dict)]
+    pastas = [str(p) for p in _as_list(dados.get("pastas_parar"))]
+    procs = int(dados.get("processos_parar") or 0)
+    padroes = ", ".join(acao["stop_services"])
+    if not alvos:
+        return _check("parada", False,
+                      f"nenhum serviço casa com {padroes}: nada será parado antes do instalador",
+                      dura=False)
+    rodando = [s["nome"] for s in alvos if str(s.get("estado")) == "Running"]
+    texto = (f"para {', '.join(rodando) or 'nada (já parados)'} e espera até "
+             f"{acao['stop_wait_sec']} s não restar processo de {', '.join(pastas) or '?'} "
+             f"(agora: {procs}); no fim, religa o que estava rodando")
+    return _check("parada", True, texto, dura=False)
+
+
 def comando_previsto(acao: dict, temp: str, nome_arquivo: str) -> str:
     """O que rodaria no host, exatamente como rodaria."""
     origem = temp.rstrip(chr(92)) + chr(92) + nome_arquivo
     args = f" {acao['args']}" if acao["args"] else ""
     if nome_arquivo.lower().endswith(".msi"):
-        return f"msiexec.exe /i '{origem}'{args}"
-    return f"'{origem}'{args}"
+        cmd = f"msiexec.exe /i '{origem}'{args}"
+    else:
+        cmd = f"'{origem}'{args}"
+    if acao.get("stop_services"):
+        return (f"parar {', '.join(acao['stop_services'])} e esperar os processos saírem "
+                f"(até {acao['stop_wait_sec']} s) → {cmd} → religar o que estava rodando")
+    return cmd
 
 
 # ---------- execucao ----------
@@ -397,6 +496,10 @@ $saida = ''
 $codigo = $null
 $destino = $null
 $antes = $null
+$parar = @(__PARAR__)
+$espera = __ESPERA__
+$religar = New-Object System.Collections.ArrayList
+__PASTAS_FN__
 
 # Foto das chaves de desinstalacao. Tirada antes e depois, ela responde a
 # pergunta que importa: o que foi instalado aparece em "Programas e Recursos"
@@ -430,6 +533,8 @@ try {
     if ($hash -ne $sha) { throw "sha256 nao confere: esperado $sha, veio $hash" }
     [void]$passos.Add('sha256 conferido')
 
+__PARADA__
+
 __COMANDO__
 
     [void]$passos.Add('instalador encerrado')
@@ -437,6 +542,25 @@ __COMANDO__
     $saida = "$saida`n$($_.Exception.Message)"
     if ($null -eq $codigo) { $codigo = -1 }
 } finally {
+    # Religa o que o RMon parou - deu certo ou nao. Instalacao abortada que
+    # deixa o servidor sem o RM.Host e pior que a instalacao nao feita.
+    if ($religar.Count) {
+        foreach ($n in $religar) {
+            try {
+                $svc = Get-Service -Name $n
+                if ($svc.Status -eq 'Stopped') { $svc.Start() }
+            } catch { $saida = "$saida`nnão consegui religar ${n}: $($_.Exception.Message)" }
+        }
+        $limite = (Get-Date).AddSeconds(120)
+        foreach ($n in $religar) {
+            $resta = $limite - (Get-Date)
+            if ($resta.TotalSeconds -gt 0) {
+                try { (Get-Service -Name $n).WaitForStatus('Running', $resta) } catch { }
+            }
+        }
+        [void]$passos.Add('religado: ' + (($religar | ForEach-Object {
+            "$_ (" + (Get-Service -Name $_ -ErrorAction SilentlyContinue).Status + ")" }) -join ', '))
+    }
     # Mesmo se deu erro: o que ficou registrado no Windows tem de ser dito.
     if ($antes) {
         $depois = Get-Instalados
@@ -477,6 +601,36 @@ _PS_RODA = r"""    $argumentos = __ARGS__
     $saida = 'instalador encerrado com codigo ' + $codigo"""
 
 
+# Para os servicos e espera as pastas deles esvaziarem. So entra no script
+# quando a acao declara stop_services. Vem DEPOIS do download e do sha256:
+# nada e parado por causa de um pacote que nem chegou inteiro.
+_PS_PARA = r"""    $alvos = Get-ServicosParar $parar
+    $pastas = @(Get-PastasServicos $alvos)
+    foreach ($s in $alvos) {
+        if ($s.State -eq 'Running') {
+            [void]$religar.Add($s.Name)
+            (Get-Service -Name $s.Name).Stop()
+        }
+    }
+    foreach ($n in $religar) {
+        try { (Get-Service -Name $n).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) } catch { }
+    }
+    if ($religar.Count) { [void]$passos.Add('parado: ' + ($religar -join ', ')) }
+    $inicio = Get-Date
+    $limite = $inicio.AddSeconds($espera)
+    do {
+        $vivos = @(Get-ProcessosDe $pastas)
+        if (-not $vivos.Count) { break }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $limite)
+    if ($vivos.Count) {
+        $quem = ($vivos | Group-Object Name | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
+        throw "depois de $espera s ainda havia processo rodando de $($pastas -join ', '): $quem. O instalador NAO foi executado."
+    }
+    [void]$passos.Add('sem processo de ' + ($pastas -join ', ') + ' após ' +
+                      [int]((Get-Date) - $inicio).TotalSeconds + ' s')"""
+
+
 def _args_ps(args: str) -> str:
     """Argumentos do YAML como arranjo do PowerShell."""
     partes = [p for p in (args or "").split() if p]
@@ -486,7 +640,12 @@ def _args_ps(args: str) -> str:
 
 
 def _script_execucao(acao: dict, temp: str, nome: str, url: str, sha: str) -> str:
+    parar = list(acao.get("stop_services") or [])
     return (_PS_EXECUTA
+            .replace("__PASTAS_FN__", _PS_PASTAS)
+            .replace("__PARADA__", _PS_PARA if parar else "")
+            .replace("__PARAR__", ",".join(_ps_str(p) for p in parar))
+            .replace("__ESPERA__", str(int(acao.get("stop_wait_sec") or STOP_WAIT_PADRAO)))
             .replace("__TEMP__", _ps_str(temp))
             .replace("__NOME__", _ps_str(nome))
             .replace("__URL__", _ps_str(url))
@@ -526,7 +685,7 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
     script = _script_execucao(acao, temp, caminho.name, url_stage, sha256(caminho))
     try:
         r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=1,
-                              budget_sec=acao["timeout_sec"])
+                              budget_sec=prazo_total(acao))
         bruto = _decode(r.std_out).strip()
         import json
         dados = json.loads(bruto) if bruto else {}

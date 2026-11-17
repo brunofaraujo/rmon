@@ -57,7 +57,7 @@
       <select name="action" class="input" required>
         <option value="">Ação...</option>
         {% for id, a in acoes.items() %}
-        <option value="{{ id }}">{{ a.label }}</option>
+        <option value="{{ id }}">{{ a.label }}{% if a.stop_services %} — para {{ a.stop_services|join(', ') }} antes e religa depois{% endif %}</option>
         {% endfor %}
       </select>
     </div>
@@ -113,7 +113,7 @@
         <td class="muted small">
           {% if t.comando %}<div class="mono small">{{ t.comando }}</div>{% endif %}
           {% if t.error %}<div class="txt-red">{{ t.error }}</div>{% endif %}
-          {% if t.output %}<div>{{ t.output }}</div>{% endif %}
+          {% if t.output %}<div style="white-space: pre-line">{{ t.output }}</div>{% endif %}
           {% if t.checks %}
           <details>
             <summary class="muted small">verificações</summary>

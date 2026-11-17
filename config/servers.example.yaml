@@ -153,6 +153,10 @@ defaults:
     #     args: "/S"                # texto fixo; ; & | < > ` $ sao recusados
     #     extensions: [".exe"]
     #     timeout_sec: 1800
+    #     # para estes servicos e espera os processos da pasta deles sairem
+    #     # antes do instalador; religa no fim (docs/CONFIGURACAO.md)
+    #     stop_services: ["RM.Host*"]
+    #     stop_wait_sec: 180
     #   - id: pacote-msi
     #     label: "Pacote MSI silencioso"
     #     args: "/qn REBOOT=ReallySuppress"   # vai depois de: msiexec /i <pacote>

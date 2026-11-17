@@ -1795,6 +1795,51 @@ def _url_stage(settings: Settings, inv: Inventory, task_id: int, segundos: int) 
     return f"{base}/pacotes/stage/{task_id}?exp={expira}&sig={assinatura}"
 
 
+# Depois do instalador, quanto a janela ainda fica aberta: o RM.Host leva perto
+# de um minuto em Start Pending, e o fim da janela e quem diz "voltou limpo".
+ASSENTAR_APOS_INSTALAR_MIN = 3
+
+
+def _motivo_tarefa(task: dict) -> str:
+    return (f"instalação #{task['id']}: {task.get('produto') or '?'} "
+            f"{task.get('version') or ''}").strip()
+
+
+def _manutencao_da_tarefa(task: dict, prazo_s: int) -> bool:
+    """Instalacao real abre janela de manutencao no host enquanto roda.
+
+    O instalador para o RM.Host. Sem a janela, o guardiao religaria o servico
+    no meio da copia (no .223 em 17/11 ele religou 70 s depois), o NLB poderia
+    agir sobre o no e cada servico parado viraria mensagem no celular. Janela
+    ja aberta por alguem no painel fica como esta: quem abriu decide.
+    Devolve True se foi a tarefa que abriu.
+    """
+    try:
+        if task["server"] in manutencao.ativas(_agora()):
+            return False
+        minutos = int(prazo_s // 60) + 1 + ASSENTAR_APOS_INSTALAR_MIN
+        manutencao.iniciar(task["server"], minutos, _motivo_tarefa(task), "RMon")
+        log.info("tarefa %d: manutenção aberta em %s por até %d min",
+                 task["id"], task["server"], minutos)
+        return True
+    except Exception:  # noqa: BLE001 - sem janela, a instalacao segue como antes
+        log.exception("tarefa %d: não consegui abrir a manutenção de %s",
+                      task["id"], task["server"])
+        return False
+
+
+def _fim_manutencao_da_tarefa(task: dict, abriu: bool) -> None:
+    """Encurta a janela que a tarefa abriu para alguns minutos a partir de agora."""
+    if not abriu:
+        return
+    try:
+        manutencao.iniciar(task["server"], ASSENTAR_APOS_INSTALAR_MIN,
+                           _motivo_tarefa(task), "RMon")
+    except Exception:  # noqa: BLE001 - a janela vence sozinha no prazo original
+        log.exception("tarefa %d: não consegui encurtar a manutenção de %s",
+                      task["id"], task["server"])
+
+
 def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     """Processa UMA tarefa da fila por vez.
 
@@ -1812,7 +1857,7 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     instalado = next((r["version"] for r in linhas if r["pkg_key"] == task.get("pkg_key")), None)
 
     acao = execution.actions_for(inv.defaults).get(task.get("action") or "")
-    prazo = acao["timeout_sec"] if acao else 900
+    prazo = execution.prazo_total(acao) if acao else 900
     base = str(execution.settings_for(inv.defaults).get("base_url") or "").rstrip("/")
     plano = execution.preflight(task, server, inv.winrm, inv.defaults, settings,
                                 instalado=instalado,
@@ -1839,7 +1884,11 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     log.warning("tarefa %d: EXECUTANDO em %s -> %s", task["id"], task["server"],
                 plano["comando"])
     url = _url_stage(settings, inv, task["id"], prazo + 600)
-    res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url)
+    janela = _manutencao_da_tarefa(task, prazo)
+    try:
+        res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url)
+    finally:
+        _fim_manutencao_da_tarefa(task, janela)
     db.finish_task(task["id"], "ok" if res.get("ok") else "failed",
                    checks=plano["checks"], comando=plano["comando"],
                    exit_code=res.get("exit_code"), output=res.get("output"),
