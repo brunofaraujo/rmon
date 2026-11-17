@@ -942,8 +942,18 @@ function Get-NlbLocalStatus {
 $antes = Get-NlbLocalStatus
 $out = @()
 __ACTION__
-Start-Sleep -Seconds 5
+# Logo depois do comando o no passa uns segundos em 1006 (convergindo) antes de
+# chegar em 1009 (drenando) ou 1005 (parado). Ler cedo demais deu "falha" num
+# drainstop que tinha funcionado (.188 em 17/11) - e sem o hold da manutencao.
+# Espera ate o estado sair do transitorio, no maximo ~30 s.
+$alvo = @(__ALVO__)
+$limite = (Get-Date).AddSeconds(30)
+Start-Sleep -Seconds 2
 $depois = Get-NlbLocalStatus
+while ($alvo -notcontains $depois -and (Get-Date) -lt $limite) {
+    Start-Sleep -Seconds 2
+    $depois = Get-NlbLocalStatus
+}
 [pscustomobject]@{ before = $antes; after = $depois; output = (($out -join ' ') -replace '\s+', ' ').Trim() } | ConvertTo-Json -Compress
 """
 _PS_NLB_ACTION = {
@@ -953,6 +963,9 @@ _PS_NLB_ACTION = {
                "$out += (& nlb.exe start 2>&1 | Out-String)"),
 }
 NLB_OK_AFTER = {"drain": {1005, 1009}, "rejoin": {1006, 1007, 1008}}
+# Estado que encerra a espera depois do comando. No rejoin, 1006 (convergindo)
+# ja e sucesso, mas vale esperar o convergido para o "depois" dizer a verdade.
+NLB_ESPERA = {"drain": {1005, 1009}, "rejoin": {1007, 1008}}
 
 
 def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool, str]:
@@ -967,9 +980,10 @@ def nlb_action(server: ServerConfig, wc: WinRMConfig, action: str) -> tuple[bool
     user, pw = credential_for(server.cred)
     if not user or not pw:
         return False, f"sem credencial (perfil '{server.cred}')"
-    script = _PS_NLB_TEMPLATE.replace("__ACTION__", _PS_NLB_ACTION[action])
+    script = (_PS_NLB_TEMPLATE.replace("__ACTION__", _PS_NLB_ACTION[action])
+              .replace("__ALVO__", ",".join(str(c) for c in sorted(NLB_ESPERA[action]))))
     try:
-        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=90)
+        r = _run_ps_resilient(server.host, wc, user, pw, script, attempts=2, budget_sec=120)
         if r.status_code != 0:
             return False, _decode(r.std_err)[:300] or "WinRM status != 0"
         data = json.loads(_decode(r.std_out) or "{}")
