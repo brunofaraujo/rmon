@@ -137,10 +137,27 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
     return saida
 
 
+# Prazo do download do pacote no host (Invoke-WebRequest -TimeoutSec)
+DOWNLOAD_SEC = 600
+# Parar os servicos (prazo unico para todos) e religar (idem), no host
+PARAR_SEC = 60
+RELIGAR_SEC = 120
+# Folga da chamada WinRM sobre a soma dos prazos do host: a chamada nao pode
+# vencer antes do script, senao o shell remoto morre antes do bloco que religa
+# os servicos.
+FOLGA_SEC = 120
+
+
 def prazo_total(acao: dict) -> int:
-    """Tempo da chamada inteira: instalador + parar/esperar + religar."""
-    extra = (acao["stop_wait_sec"] + 180) if acao.get("stop_services") else 0
-    return int(acao["timeout_sec"]) + extra
+    """Tempo da chamada inteira, sempre MAIOR que a soma dos prazos do host.
+
+    O instalador tem prazo proprio no host (timeout_sec): passou, e encerrado
+    e o script segue para o `finally` que religa os servicos. Se o prazo da
+    chamada vencesse antes, o pywinrm fecharia o shell e os servicos ficariam
+    parados.
+    """
+    extra = (PARAR_SEC + acao["stop_wait_sec"] + RELIGAR_SEC) if acao.get("stop_services") else 0
+    return int(acao["timeout_sec"]) + DOWNLOAD_SEC + extra + FOLGA_SEC
 
 
 def na_janela(janela: str, agora: time.struct_time | None = None) -> bool:
@@ -265,8 +282,14 @@ if ($url) {
 # Cleanner, que rodam da mesma RM.Net, podem seguir segurando as DLLs.
 _PS_PASTAS = r"""
 function Get-ServicosParar($padroes) {
+    # So servico com pasta propria: o que roda do diretorio do Windows (WinRM,
+    # svchost...) nunca e parado, mesmo que um padrao frouxo case com ele -
+    # parar o WinRM mataria a sessao antes de religar qualquer coisa.
     @(Get-CimInstance Win32_Service | Where-Object {
-        $n = $_.Name; @($padroes | Where-Object { $n -like $_ }).Count -gt 0 })
+        $n = $_.Name
+        $exe = "$($_.PathName)".Trim().TrimStart('"')
+        (-not $exe.StartsWith($env:windir, [StringComparison]::OrdinalIgnoreCase)) -and
+        @($padroes | Where-Object { $n -like $_ }).Count -gt 0 })
 }
 function Get-PastasServicos($svcs) {
     $pastas = @()
@@ -524,7 +547,7 @@ try {
     $destino = Join-Path $temp $nome
     [void]$passos.Add("preparo: $temp")
 
-    Invoke-WebRequest -Uri $url -OutFile $destino -UseBasicParsing -TimeoutSec 600
+    Invoke-WebRequest -Uri $url -OutFile $destino -UseBasicParsing -TimeoutSec __DOWNLOAD_SEC__
     [void]$passos.Add("baixado: $([math]::Round((Get-Item -LiteralPath $destino).Length / 1MB, 1)) MB")
 
     # Confere o pacote NO HOST antes de executar: download truncado ou trocado
@@ -551,7 +574,7 @@ __COMANDO__
                 if ($svc.Status -eq 'Stopped') { $svc.Start() }
             } catch { $saida = "$saida`nnão consegui religar ${n}: $($_.Exception.Message)" }
         }
-        $limite = (Get-Date).AddSeconds(120)
+        $limite = (Get-Date).AddSeconds(__RELIGAR_SEC__)
         foreach ($n in $religar) {
             $resta = $limite - (Get-Date)
             if ($resta.TotalSeconds -gt 0) {
@@ -589,13 +612,24 @@ _PS_RODA = r"""    $argumentos = __ARGS__
     if ([System.IO.Path]::GetExtension($destino).ToLower() -eq '.msi') {
         # .msi sempre pelo msiexec: e o que instala de fato e deixa o pacote
         # registrado para desinstalacao.
-        $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList (@('/i', $destino) + $argumentos) -Wait -PassThru
+        $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList (@('/i', $destino) + $argumentos) -PassThru
     } elseif ($argumentos.Count -gt 0) {
-        $proc = Start-Process -FilePath $destino -ArgumentList $argumentos -Wait -PassThru
+        $proc = Start-Process -FilePath $destino -ArgumentList $argumentos -PassThru
     } else {
         # -ArgumentList vazio e erro de parametro no PowerShell; sem argumentos,
         # a chamada simplesmente nao leva o parametro.
-        $proc = Start-Process -FilePath $destino -Wait -PassThru
+        $proc = Start-Process -FilePath $destino -PassThru
+    }
+    # Sem -Wait, o ExitCode so fica disponivel se o handle foi aberto antes
+    # de o processo sair (PowerShell 5.1); ler o Handle garante isso.
+    $null = $proc.Handle
+    # Prazo NO HOST: instalador parado numa janela que ninguem ve (ou lento
+    # demais) e encerrado aqui, e o script segue para o finally que religa os
+    # servicos. Esperar pelo prazo do WinRM mataria o shell antes disso.
+    if (-not $proc.WaitForExit(__TIMEOUT_MS__)) {
+        & taskkill.exe /T /F /PID $proc.Id 2>&1 | Out-Null
+        $codigo = -2
+        throw 'o instalador passou de __TIMEOUT_SEC__ s e foi encerrado (arvore de processos)'
     }
     $codigo = $proc.ExitCode
     $saida = 'instalador encerrado com codigo ' + $codigo"""
@@ -612,8 +646,12 @@ _PS_PARA = r"""    $alvos = Get-ServicosParar $parar
             (Get-Service -Name $s.Name).Stop()
         }
     }
+    $limite = (Get-Date).AddSeconds(__PARAR_SEC__)
     foreach ($n in $religar) {
-        try { (Get-Service -Name $n).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) } catch { }
+        $resta = $limite - (Get-Date)
+        if ($resta.TotalSeconds -gt 0) {
+            try { (Get-Service -Name $n).WaitForStatus('Stopped', $resta) } catch { }
+        }
     }
     if ($religar.Count) { [void]$passos.Add('parado: ' + ($religar -join ', ')) }
     $inicio = Get-Date
@@ -646,11 +684,17 @@ def _script_execucao(acao: dict, temp: str, nome: str, url: str, sha: str) -> st
             .replace("__PARADA__", _PS_PARA if parar else "")
             .replace("__PARAR__", ",".join(_ps_str(p) for p in parar))
             .replace("__ESPERA__", str(int(acao.get("stop_wait_sec") or STOP_WAIT_PADRAO)))
+            .replace("__PARAR_SEC__", str(PARAR_SEC))
+            .replace("__RELIGAR_SEC__", str(RELIGAR_SEC))
+            .replace("__DOWNLOAD_SEC__", str(DOWNLOAD_SEC))
             .replace("__TEMP__", _ps_str(temp))
             .replace("__NOME__", _ps_str(nome))
             .replace("__URL__", _ps_str(url))
             .replace("__SHA__", _ps_str(sha))
-            .replace("__COMANDO__", _PS_RODA.replace("__ARGS__", _args_ps(acao["args"]))))
+            .replace("__COMANDO__", _PS_RODA
+                      .replace("__ARGS__", _args_ps(acao["args"]))
+                      .replace("__TIMEOUT_MS__", str(int(acao["timeout_sec"]) * 1000))
+                      .replace("__TIMEOUT_SEC__", str(int(acao["timeout_sec"])))))
 
 
 def execute(task: dict, server: ServerConfig, wc: WinRMConfig,

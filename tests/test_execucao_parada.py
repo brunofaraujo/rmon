@@ -36,11 +36,30 @@ def test_nome_de_servico_com_injecao_descarta_a_acao():
     assert _acoes(stop_services=["$(calc)"]) == {}
 
 
-def test_prazo_da_chamada_cobre_parar_esperar_e_religar():
+def test_prazo_da_chamada_e_maior_que_a_soma_dos_prazos_do_host():
+    # se a chamada WinRM vencesse antes do script, o shell morreria antes do
+    # bloco que religa os servicos
     com = _acoes(stop_services=["RM.Host*"], stop_wait_sec=120)["inno-silencioso"]
     sem = _acoes()["inno-silencioso"]
-    assert execution.prazo_total(sem) == 900
-    assert execution.prazo_total(com) == 900 + 120 + 180
+    host_sem = 900 + execution.DOWNLOAD_SEC
+    host_com = host_sem + execution.PARAR_SEC + 120 + execution.RELIGAR_SEC
+    assert execution.prazo_total(sem) == host_sem + execution.FOLGA_SEC
+    assert execution.prazo_total(com) == host_com + execution.FOLGA_SEC
+
+
+def test_instalador_tem_prazo_no_host_e_e_encerrado_com_a_arvore():
+    a = _acoes(stop_services=["RM.Host*"])["inno-silencioso"]
+    s = execution._script_execucao(a, "C:\totvs\rmon-stage", "p.exe", "http://x/s", "ab")
+    assert "-Wait -PassThru" not in s and s.count("-PassThru") == 3
+    assert "$proc.WaitForExit(900000)" in s and "taskkill.exe /T /F /PID $proc.Id" in s
+    assert "$null = $proc.Handle" in s     # sem isso o ExitCode vem vazio no PS 5.1
+    assert "-TimeoutSec %d" % execution.DOWNLOAD_SEC in s
+
+
+def test_parada_nunca_pega_servico_do_diretorio_do_windows():
+    a = _acoes(stop_services=["Win*"])["inno-silencioso"]
+    s = execution._script_execucao(a, "C:\totvs\rmon-stage", "p.exe", "http://x/s", "ab")
+    assert "StartsWith($env:windir" in s.split("function Get-ServicosParar", 1)[1].split("function Get-PastasServicos")[0]
 
 
 def test_script_para_espera_e_religa_so_quando_declarado():
@@ -111,11 +130,12 @@ TASK = {"id": 9, "server": "fin-sge-web-223", "produto": "VTEX", "version": "12.
 def test_tarefa_real_abre_manutencao_e_encurta_no_fim(monkeypatch):
     t0 = 1_763_380_000.0
     _cfg(monkeypatch, t0)
-    assert scheduler._manutencao_da_tarefa(TASK, 1200) is True
+    aberta = scheduler._manutencao_da_tarefa(TASK, 1200)
     j = manutencao.todas()["fin-sge-web-223"]
+    assert aberta == j
     assert j["por"] == "RMon" and "instalação #9" in j["motivo"]
     assert j["ate"] == t0 + (20 + 1 + scheduler.ASSENTAR_APOS_INSTALAR_MIN) * 60
-    scheduler._fim_manutencao_da_tarefa(TASK, True)
+    scheduler._fim_manutencao_da_tarefa(TASK, aberta)
     j = manutencao.todas()["fin-sge-web-223"]
     assert j["ate"] == t0 + scheduler.ASSENTAR_APOS_INSTALAR_MIN * 60
     assert j["desde"] == t0    # mesma janela, so mais curta
@@ -128,4 +148,14 @@ def test_janela_aberta_por_alguem_fica_como_esta(monkeypatch):
     antes = dict(manutencao.todas()["fin-sge-web-223"])
     abriu = scheduler._manutencao_da_tarefa(TASK, 1200)
     scheduler._fim_manutencao_da_tarefa(TASK, abriu)
-    assert abriu is False and manutencao.todas()["fin-sge-web-223"] == antes
+    assert abriu is None and manutencao.todas()["fin-sge-web-223"] == antes
+
+
+def test_janela_estendida_no_painel_durante_a_instalacao_nao_e_encurtada(monkeypatch):
+    t0 = 1_763_380_000.0
+    _cfg(monkeypatch, t0)
+    aberta = scheduler._manutencao_da_tarefa(TASK, 1200)
+    manutencao.iniciar("fin-sge-web-223", 120, "aproveitar e trocar o disco", "bruno")
+    estendida = dict(manutencao.todas()["fin-sge-web-223"])
+    scheduler._fim_manutencao_da_tarefa(TASK, aberta)
+    assert manutencao.todas()["fin-sge-web-223"] == estendida

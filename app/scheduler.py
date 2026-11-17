@@ -1805,34 +1805,44 @@ def _motivo_tarefa(task: dict) -> str:
             f"{task.get('version') or ''}").strip()
 
 
-def _manutencao_da_tarefa(task: dict, prazo_s: int) -> bool:
+def _manutencao_da_tarefa(task: dict, prazo_s: int) -> dict | None:
     """Instalacao real abre janela de manutencao no host enquanto roda.
 
     O instalador para o RM.Host. Sem a janela, o guardiao religaria o servico
     no meio da copia (no .223 em 17/11 ele religou 70 s depois), o NLB poderia
     agir sobre o no e cada servico parado viraria mensagem no celular. Janela
     ja aberta por alguem no painel fica como esta: quem abriu decide.
-    Devolve True se foi a tarefa que abriu.
+    Devolve a janela que a tarefa abriu, ou None.
     """
     try:
         if task["server"] in manutencao.ativas(_agora()):
-            return False
+            return None
         minutos = int(prazo_s // 60) + 1 + ASSENTAR_APOS_INSTALAR_MIN
-        manutencao.iniciar(task["server"], minutos, _motivo_tarefa(task), "RMon")
+        j = manutencao.iniciar(task["server"], minutos, _motivo_tarefa(task), "RMon")
         log.info("tarefa %d: manutenção aberta em %s por até %d min",
                  task["id"], task["server"], minutos)
-        return True
+        return j
     except Exception:  # noqa: BLE001 - sem janela, a instalacao segue como antes
         log.exception("tarefa %d: não consegui abrir a manutenção de %s",
                       task["id"], task["server"])
-        return False
+        return None
 
 
-def _fim_manutencao_da_tarefa(task: dict, abriu: bool) -> None:
-    """Encurta a janela que a tarefa abriu para alguns minutos a partir de agora."""
-    if not abriu:
+def _fim_manutencao_da_tarefa(task: dict, janela: dict | None) -> None:
+    """Encurta a janela que a tarefa abriu para alguns minutos a partir de agora.
+
+    So se ela ainda for exatamente a da tarefa: alguem que estendeu ou trocou a
+    janela pelo painel durante a instalacao decide o fim dela.
+    """
+    if not janela:
         return
     try:
+        atual = manutencao.todas().get(task["server"]) or {}
+        if (atual.get("por") != janela.get("por") or atual.get("motivo") != janela.get("motivo")
+                or float(atual.get("ate") or 0) != float(janela.get("ate") or 0)):
+            log.info("tarefa %d: a manutenção de %s foi mudada no painel; fica como está",
+                     task["id"], task["server"])
+            return
         manutencao.iniciar(task["server"], ASSENTAR_APOS_INSTALAR_MIN,
                            _motivo_tarefa(task), "RMon")
     except Exception:  # noqa: BLE001 - a janela vence sozinha no prazo original
