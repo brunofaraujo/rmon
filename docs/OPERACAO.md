@@ -506,8 +506,22 @@ presas (tela **Sessões**) ou reiniciar o host resolve o sintoma.
 Sintoma: depois de instalar um pacote TOTVS, apagar o `_BrokerCustom.dat` e reiniciar o
 RM Host, o serviço sobe **com sucesso**, mas o arquivo é recriado com uma fração do
 tamanho normal (ex.: 50 KB no lugar de 560 KB) e as customizações não carregam para os
-usuários daquele servidor. Paliativo conhecido: copiar o arquivo de um host que gerou
-certo.
+usuários daquele servidor.
+
+### Causa confirmada (18/11/2026): a conta que gera
+
+O `RM.Host.Service` na `NetworkService` gera o `_BrokerCustom.dat` **sem a pasta
+`Custom`** (55.063 bytes, 8 de 8 tentativas no .190 em 17/11). O mesmo serviço, no
+mesmo servidor, rodando com a **conta de administração** gera o arquivo completo:
+.188 579.821, .190 580.706, .34 579.821 em 18/11. Não é o executável (serviço x
+console): é a conta.
+
+**Não copie o broker de um servidor para outro.** Regere no próprio host com a conta
+de administração. Instalação feita pelo RMon com `broker_regen: true` na ação faz
+isso sozinha logo depois do instalador (ver `docs/CONFIGURACAO.md`, "Regerar o broker
+com a conta de administração"); o resultado aparece na tela de Instalações.
+
+O histórico abaixo (agosto) é de antes dessa descoberta e fica como registro.
 
 ### Por que acontece
 

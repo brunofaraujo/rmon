@@ -57,7 +57,7 @@
       <select name="action" class="input" required>
         <option value="">Ação...</option>
         {% for id, a in acoes.items() %}
-        <option value="{{ id }}">{{ a.label }}{% if a.stop_services %} — para {{ a.stop_services|join(', ') }} antes e religa depois{% endif %}</option>
+        <option value="{{ id }}">{{ a.label }}{% if a.stop_services %} — para {{ a.stop_services|join(', ') }} antes e religa depois{% endif %}{% if a.broker_regen %}; regera o broker com a conta de administração{% endif %}</option>
         {% endfor %}
       </select>
     </div>
@@ -109,6 +109,14 @@
           {% elif t.status in ('failed', 'blocked') %}<span class="pill red">{{ task_label.get(t.status) }}</span>
           {% elif t.status == 'running' %}<span class="pill amber">{{ task_label.get(t.status) }}</span>
           {% else %}<span class="pill">{{ task_label.get(t.status, t.status) }}</span>{% endif %}
+          {% if t.broker %}
+          {% set b_ok = t.broker.completo and not t.broker.erro %}
+          <div style="margin-top:4px">
+            <span class="pill {{ 'green' if b_ok else 'red' }}" title="{{ texto_broker(t.broker) }}">
+              broker {{ 'completo' if b_ok else ('não regerado' if (t.broker.final or -1) <= 0 else 'incompleto') }}
+            </span>
+          </div>
+          {% endif %}
         </td>
         <td class="muted small">
           {% if t.comando %}<div class="mono small">{{ t.comando }}</div>{% endif %}

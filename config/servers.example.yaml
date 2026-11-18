@@ -157,6 +157,10 @@ defaults:
     #     # antes do instalador; religa no fim (docs/CONFIGURACAO.md)
     #     stop_services: ["RM.Host*"]
     #     stop_wait_sec: 180
+    #     # depois de instalar, regera o _BrokerCustom.dat com o RM.Host.Service
+    #     # na conta de administracao (com a NetworkService ele sai sem a pasta
+    #     # Custom); devolve a conta e religa tudo no fim (docs/CONFIGURACAO.md)
+    #     broker_regen: true
     #   - id: pacote-msi
     #     label: "Pacote MSI silencioso"
     #     args: "/qn REBOOT=ReallySuppress"   # vai depois de: msiexec /i <pacote>

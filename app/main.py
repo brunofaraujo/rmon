@@ -1731,6 +1731,7 @@ def catalogo_varrer(request: Request):
 TASK_LABEL = {"pending": "na fila", "running": "executando", "ok": "concluída",
               "failed": "falhou", "blocked": "bloqueada", "canceled": "cancelada"}
 templates.env.globals["task_label"] = TASK_LABEL
+templates.env.globals["texto_broker"] = execution.texto_broker
 
 
 def _exec_cfg() -> dict:

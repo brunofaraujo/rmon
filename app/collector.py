@@ -420,9 +420,16 @@ def _winrm_session(host: str, wc: WinRMConfig, user: str, pw: str) -> winrm.Sess
 # ProgressPreference desligado: os registros de progresso saem como CLIXML no
 # stderr, fazem o pywinrm reclamar de XML mal formado e, quando ha erro de
 # verdade, ocupam o comeco da mensagem que aparece no painel.
+#
+# O stdin e lido como UTF-8 de proposito: `[Console]::In` usa a pagina de
+# codigo do console (cp850 em pt-BR), e todo texto acentuado do script chegava
+# trocado - "após" virava "ap├│s" na saida das tarefas e o aviso de manutencao
+# por msg.exe saiu assim na tela dos usuarios do SGE em 18/11/2026.
 _BOOTSTRAP = b64encode(
     ("$ProgressPreference = 'SilentlyContinue'; "
-     "$s = [Console]::In.ReadToEnd(); Invoke-Expression $s").encode("utf_16_le")
+     "$s = (New-Object System.IO.StreamReader([Console]::OpenStandardInput(), "
+     "(New-Object System.Text.UTF8Encoding $false))).ReadToEnd(); "
+     "Invoke-Expression $s").encode("utf_16_le")
 ).decode("ascii")
 
 
