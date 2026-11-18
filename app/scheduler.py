@@ -1850,6 +1850,28 @@ def _fim_manutencao_da_tarefa(task: dict, janela: dict | None) -> None:
                       task["id"], task["server"])
 
 
+def _veredito_broker_da_tarefa(server: str, broker: dict | None,
+                               inv: Inventory) -> dict | None:
+    """O broker regerado esta completo? Mede contra o maior que o host ja teve.
+
+    Mesmo criterio do alerta de broker incompleto (broker_min_pct sobre a
+    referencia de broker_history_days), para a tarefa e o mural dizerem a
+    mesma coisa.
+    """
+    if not broker:
+        return None
+    th = _limiares(inv)
+    nome = (str(broker.get("arquivo") or "").replace("/", "\\").split("\\")[-1]
+            or execution.BROKER_ARQUIVO_PADRAO)
+    try:
+        ref = int((broker_reference(th.get("broker_history_days")).get(server) or {})
+                  .get(nome) or 0)
+    except Exception:  # noqa: BLE001 - sem referencia, vale o "gerou algo"
+        log.exception("referência do broker de %s indisponível", server)
+        ref = 0
+    return execution.veredito_broker(broker, ref, float(th.get("broker_min_pct", 60) or 0))
+
+
 def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     """Processa UMA tarefa da fila por vez.
 
@@ -1867,7 +1889,8 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
     instalado = next((r["version"] for r in linhas if r["pkg_key"] == task.get("pkg_key")), None)
 
     acao = execution.actions_for(inv.defaults).get(task.get("action") or "")
-    prazo = execution.prazo_total(acao) if acao else 900
+    # instalador + regeracao do broker: a janela de manutencao cobre os dois
+    prazo = execution.prazo_tarefa(acao) if acao else 900
     base = str(execution.settings_for(inv.defaults).get("base_url") or "").rstrip("/")
     plano = execution.preflight(task, server, inv.winrm, inv.defaults, settings,
                                 instalado=instalado,
@@ -1899,18 +1922,26 @@ def run_pending_tasks(inv: Inventory, settings: Settings) -> None:
         res = execution.execute(task, server, inv.winrm, inv.defaults, settings, url)
     finally:
         _fim_manutencao_da_tarefa(task, janela)
+    broker = _veredito_broker_da_tarefa(task["server"], res.get("broker"), inv)
+    saida = res.get("output") or ""
+    if broker:
+        saida = f"{saida}\n{execution.texto_broker(broker)}".strip()
     db.finish_task(task["id"], "ok" if res.get("ok") else "failed",
                    checks=plano["checks"], comando=plano["comando"],
-                   exit_code=res.get("exit_code"), output=res.get("output"),
-                   error=res.get("error"))
+                   exit_code=res.get("exit_code"), output=saida,
+                   error=res.get("error"), broker=broker)
     db.audit(task.get("created_by"), "install_task",
              f"{task['server']} {task.get('produto')} {task.get('version')} -> "
              f"{'ok' if res.get('ok') else 'falhou'}")
     if notify.enabled():
         marca = "\u2705" if res.get("ok") else "\u274C"
-        notify.send(f"{marca} RMonitor \u2014 {exibicao.titulo(task['server'])}: {task.get('produto')} "
-                    f"{task.get('version')} ({task['action']}) "
-                    f"{'concluído' if res.get('ok') else 'FALHOU: ' + str(res.get('error'))[:200]}")
+        texto = (f"{marca} RMonitor \u2014 {exibicao.titulo(task['server'])}: {task.get('produto')} "
+                 f"{task.get('version')} ({task['action']}) "
+                 f"{'concluído' if res.get('ok') else 'FALHOU: ' + str(res.get('error'))[:200]}")
+        if broker:
+            aviso = "" if broker.get("completo") and not broker.get("erro") else "⚠️ "
+            texto += f"\n{aviso}{execution.texto_broker(broker)}"
+        notify.send(texto)
 
 
 def build_scheduler(inv: Inventory, settings: Settings) -> BackgroundScheduler:

@@ -110,6 +110,8 @@ _SCHEMA = [
         exit_code integer, comando text, output text, error text, checks jsonb
     )""",
     "CREATE INDEX IF NOT EXISTS idx_install_tasks_fila ON install_tasks(status, id)",
+    # resultado da regeracao do broker depois do instalador (broker_regen)
+    "ALTER TABLE install_tasks ADD COLUMN IF NOT EXISTS broker jsonb",
     # processos de job (RM.Host.JobRunner) que o RMon encerrou: automatico ou
     # pelo botao. O resto (motivo, memoria, job, amostras) fica em `dados`.
     """CREATE TABLE IF NOT EXISTS job_kills (
@@ -895,15 +897,16 @@ def next_pending_task() -> dict | None:
 
 def finish_task(task_id: int, status: str, *, checks: Any = None, comando: str | None = None,
                 exit_code: int | None = None, output: str | None = None,
-                error: str | None = None) -> None:
+                error: str | None = None, broker: Any = None) -> None:
     with _conn() as c:
         c.execute(
             """UPDATE install_tasks
                   SET status=%s, finished_at=now(), checks=%s, comando=%s,
-                      exit_code=%s, output=%s, error=%s
+                      exit_code=%s, output=%s, error=%s, broker=%s
                 WHERE id=%s""",
             (status, Jsonb(checks) if checks is not None else None, comando,
-             exit_code, output, error, task_id),
+             exit_code, output, error, Jsonb(broker) if broker is not None else None,
+             task_id),
         )
 
 

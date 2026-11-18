@@ -377,6 +377,55 @@ O pré-voo mostra a checagem `parada`: o que seria parado, a pasta e quantos
 processos rodam dela agora. O comando previsto aparece como
 `parar RM.Host* e esperar os processos saírem (até 180 s) → ... → religar o que estava rodando`.
 
+### Regerar o broker com a conta de administração (`broker_regen`)
+
+O instalador apaga o `_BrokerCustom.dat`, e o `RM.Host.Service` rodando com a
+`NetworkService` o gera **sem a pasta `Custom`** (55.063 bytes no lugar de ~580 KB:
+as customizações não carregam). Gerado com a conta de administração, o arquivo sai
+completo — confirmado no .188, .190 e .34 em 18/11/2026. É a **conta**, não o
+executável. Declare na ação (exige `stop_services`):
+
+```yaml
+- id: inno-silencioso
+  ...
+  stop_services: ["RM.Host*"]
+  broker_regen: true                   # regera depois de instalar
+  broker_service: "RM.Host.Service"    # padrão; nome exato, sem curinga
+  broker_file: "_BrokerCustom.dat"     # padrão
+  broker_wait_sec: 300                 # espera máxima pelo arquivo (60-900)
+  broker_cred: ""                      # perfil de credencial; vazio = o do WinRM do host
+```
+
+Depois de uma instalação **bem-sucedida**, ainda dentro da janela de manutenção
+da tarefa, o RMon:
+
+1. concede à conta o direito **"Fazer logon como serviço"** no host, se ela não
+   tiver (o mesmo que o `services.msc` faz ao trocar a conta pela tela; sem isso o
+   Windows recusa a partida com o evento 7041);
+2. para os serviços de `stop_services` e espera os processos da pasta saírem;
+3. guarda o broker atual como `_BrokerCustom.dat.antes-regen-<data>` (ficam os 3
+   mais recentes);
+4. troca a conta do `broker_service` para a conta de administração, sobe o serviço
+   e espera o arquivo parar de crescer por 60 s;
+5. **sempre**, dê certo ou não: para o serviço, **devolve a conta original** e
+   religa o que estava rodando. Sem arquivo novo, devolve o anterior.
+
+Só serviço que roda com conta embutida do Windows (`NetworkService`,
+`LocalService`, `LocalSystem`) tem a conta trocada: de usuário de verdade não há
+senha a devolver depois.
+
+**A senha não vai no texto do script.** O log de script do PowerShell (evento
+4104, ligado por GPO nos servidores) grava o texto inteiro do que roda; a senha
+chega ao host por variável de ambiente do shell remoto e a troca usa o método WMI
+direto, não um cmdlet com a senha nos parâmetros.
+
+O resultado é medido contra o maior `_BrokerCustom.dat` que o host já teve
+(`alerts.broker_history_days` e `alerts.broker_min_pct`, os mesmos do alerta de
+broker incompleto) e aparece na tela de **Instalações** (selo "broker completo" /
+"broker incompleto" / "broker não regerado"), na saída da tarefa e no Telegram.
+Falha na regeração **não** desfaz a instalação: a tarefa segue "concluída", com o
+selo vermelho.
+
 ### Manutenção durante a instalação
 
 Toda tarefa **real** abre uma janela de manutenção no host enquanto roda (motivo

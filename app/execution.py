@@ -69,6 +69,22 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,39}$")
 _SVC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._* -]{0,79}$")
 # Quanto esperar, depois de parar os servicos, os processos sairem de fato
 STOP_WAIT_PADRAO = 180
+# Regeracao do broker (broker_regen): servico que gera, arquivo e espera maxima
+BROKER_SERVICO_PADRAO = "RM.Host.Service"
+BROKER_ARQUIVO_PADRAO = "_BrokerCustom.dat"
+BROKER_ESPERA_PADRAO = 300
+# O arquivo "parou de crescer" depois de tantos segundos sem mudar de tamanho
+BROKER_ESTAVEL_SEC = 60
+# Quanto esperar o servico ficar Running depois de trocar a conta
+BROKER_SUBIR_SEC = 180
+# Nome exato de servico (sem curinga: a conta de UM servico e trocada)
+_SVC_EXATO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,79}$")
+_ARQ_BROKER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}\.dat$")
+_PERFIL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# Contas embutidas do Windows: delas nao ha senha a devolver depois. Servico que
+# roda com usuario de verdade nao e mexido - a senha original se perderia.
+CONTAS_EMBUTIDAS = ("NT AUTHORITY\\NetworkService", "NT AUTHORITY\\LocalService",
+                    "LocalSystem", ".\\LocalSystem", "NT AUTHORITY\\SYSTEM")
 
 # Checagens que, reprovadas, impedem a tarefa. As demais sao avisos.
 DURAS = {"habilitado", "host_liberado", "acao", "pacote", "janela", "sessoes",
@@ -123,6 +139,28 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
             log.warning("ação %s ignorada: nome de serviço inválido em stop_services (%r)",
                         ident, ruins[0])
             continue
+        # Regerar o broker com a conta de administracao depois do instalador.
+        # Com o servico na NetworkService o _BrokerCustom.dat sai sem a pasta
+        # Custom (55.063 bytes, 8 de 8 no .190); com a conta de administracao
+        # sai completo (confirmado no .188, .190 e .34 em 18/11/2026).
+        regen = bool(raw.get("broker_regen"))
+        svc_broker = str(raw.get("broker_service") or BROKER_SERVICO_PADRAO).strip()
+        arq_broker = str(raw.get("broker_file") or BROKER_ARQUIVO_PADRAO).strip()
+        cred_broker = str(raw.get("broker_cred") or "").strip().lower()
+        if regen:
+            if not parar:
+                log.warning("ação %s: broker_regen precisa de stop_services (o que parar "
+                            "antes de regerar); regeração desligada", ident)
+                regen = False
+            elif not _SVC_EXATO_RE.match(svc_broker):
+                log.warning("ação %s ignorada: broker_service inválido (%r)", ident, svc_broker)
+                continue
+            elif not _ARQ_BROKER_RE.match(arq_broker):
+                log.warning("ação %s ignorada: broker_file inválido (%r)", ident, arq_broker)
+                continue
+            elif cred_broker and not _PERFIL_RE.match(cred_broker):
+                log.warning("ação %s ignorada: broker_cred inválido (%r)", ident, cred_broker)
+                continue
         saida[ident] = {
             "id": ident,
             "label": str(raw.get("label") or ident)[:120],
@@ -133,6 +171,12 @@ def actions_for(defaults: dict[str, Any] | None) -> dict[str, dict]:
             "stop_services": parar,
             "stop_wait_sec": max(10, min(int(raw.get("stop_wait_sec", STOP_WAIT_PADRAO)
                                              or STOP_WAIT_PADRAO), 900)),
+            "broker_regen": regen,
+            "broker_service": svc_broker,
+            "broker_file": arq_broker,
+            "broker_cred": cred_broker,
+            "broker_wait_sec": max(60, min(int(raw.get("broker_wait_sec", BROKER_ESPERA_PADRAO)
+                                               or BROKER_ESPERA_PADRAO), 900)),
         }
     return saida
 
@@ -158,6 +202,26 @@ def prazo_total(acao: dict) -> int:
     """
     extra = (PARAR_SEC + acao["stop_wait_sec"] + RELIGAR_SEC) if acao.get("stop_services") else 0
     return int(acao["timeout_sec"]) + DOWNLOAD_SEC + extra + FOLGA_SEC
+
+
+def prazo_broker(acao: dict) -> int:
+    """Tempo da chamada que regera o broker, MAIOR que a soma dos prazos do host.
+
+    Parar tudo e esperar os processos, subir o servico com a conta de
+    administracao, esperar o arquivo, parar de novo, e religar no fim. Pela
+    mesma razao do prazo_total: a chamada nao pode vencer antes do `finally`
+    que devolve a conta e religa os servicos.
+    """
+    if not acao.get("broker_regen"):
+        return 0
+    parar = PARAR_SEC + int(acao["stop_wait_sec"])
+    return (parar + BROKER_SUBIR_SEC + int(acao["broker_wait_sec"]) + parar
+            + PARAR_SEC + RELIGAR_SEC + FOLGA_SEC)
+
+
+def prazo_tarefa(acao: dict) -> int:
+    """Instalador + regeracao do broker: e o que a janela de manutencao cobre."""
+    return prazo_total(acao) + prazo_broker(acao)
 
 
 def na_janela(janela: str, agora: time.struct_time | None = None) -> bool:
@@ -697,6 +761,249 @@ def _script_execucao(acao: dict, temp: str, nome: str, url: str, sha: str) -> st
                       .replace("__TIMEOUT_SEC__", str(int(acao["timeout_sec"])))))
 
 
+# ---------- regeracao do broker com a conta de administracao ----------
+# A senha NAO entra no texto do script: o log de script do PowerShell (evento
+# 4104, ligado por GPO nos servidores) grava o texto inteiro. Ela chega por
+# variavel de ambiente do shell remoto, e a troca de conta usa o metodo WMI
+# direto (.Change), nao um cmdlet com a senha nos parametros.
+_PS_BROKER = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+$conta = __CONTA__
+$senha = $env:RMON_BROKER_SENHA
+$svcNome = __SERVICO__
+$arqNome = __ARQUIVO__
+$parar = @(__PARAR__)
+$espera = __ESPERA__
+$aguardar = __AGUARDAR__
+$embutidas = @(__EMBUTIDAS__)
+$passos = New-Object System.Collections.ArrayList
+$religar = New-Object System.Collections.ArrayList
+$erro = ''
+$antes = -1; $gerado = -1; $final = -1
+$contaOriginal = $null
+$trocou = $false
+$arq = $null; $bak = $null; $pastas = @()
+__PASTAS_FN__
+
+function Tam { if ($arq -and (Test-Path -LiteralPath $arq)) { (Get-Item -LiteralPath $arq).Length } else { -1 } }
+function Esperar-Parado($nomes) {
+    $limite = (Get-Date).AddSeconds(__PARAR_SEC__)
+    foreach ($n in @($nomes)) {
+        $resta = $limite - (Get-Date)
+        if ($resta.TotalSeconds -gt 0) { try { (Get-Service -Name $n).WaitForStatus('Stopped', $resta) } catch { } }
+    }
+    $inicio = Get-Date
+    $lim = $inicio.AddSeconds($espera)
+    do {
+        $vivos = @(Get-ProcessosDe $pastas)
+        if (-not $vivos.Count) { return [int]((Get-Date) - $inicio).TotalSeconds }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $lim)
+    $quem = ($vivos | Group-Object Name | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
+    throw "depois de $espera s ainda havia processo rodando de $($pastas -join ', '): $quem"
+}
+function Trocar-Conta($nome, $senhaConta) {
+    $w = [wmi]("Win32_Service.Name='" + $svcNome + "'")
+    $rv = $w.Change($null, $null, $null, $null, $null, $null, $nome, $senhaConta, $null, $null, $null).ReturnValue
+    if ($rv -ne 0) { throw "Win32_Service.Change devolveu $rv ao trocar a conta de $svcNome para $nome" }
+}
+
+try {
+    if (-not $senha) { throw 'a senha da conta de administração não chegou ao host' }
+    $svc = Get-CimInstance Win32_Service -Filter ("Name='" + $svcNome + "'")
+    if (-not $svc) { throw "o serviço $svcNome não existe neste servidor" }
+    $contaOriginal = "$($svc.StartName)"
+    if ($embutidas -notcontains $contaOriginal) {
+        throw "$svcNome roda com $contaOriginal, não com uma conta do Windows: a conta não é trocada"
+    }
+    $pastaSvc = @(Get-PastasServicos @($svc))
+    if (-not $pastaSvc.Count) { throw "não achei a pasta de $svcNome" }
+    $arq = Join-Path $pastaSvc[0] $arqNome
+    $antes = Tam
+
+    # Sem "Fazer logon como serviço" o Windows recusa a partida (evento 7041).
+    # E o mesmo que o services.msc faz ao trocar a conta pela tela.
+    $sid = (New-Object Security.Principal.NTAccount($conta)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $tmp = Join-Path $env:TEMP ('rmon-logonsvc-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $tmp -Force)
+    try {
+        & secedit.exe /export /areas USER_RIGHTS /cfg "$tmp\atual.inf" | Out-Null
+        $linha = @(Get-Content "$tmp\atual.inf" | Where-Object { $_ -like 'SeServiceLogonRight*' })[0]
+        $tem = $linha -and (@($linha -split '[=,]' | ForEach-Object { $_.Trim() }) -contains "*$sid")
+        if ($tem) { [void]$passos.Add('logon como serviço: a conta já tinha') }
+        else {
+            $nova = if ($linha) { "$linha,*$sid" } else { "SeServiceLogonRight = *$sid" }
+            @('[Unicode]', 'Unicode=yes', '[Version]', 'signature="$CHICAGO$"', 'Revision=1',
+              '[Privilege Rights]', $nova) | Set-Content "$tmp\novo.inf" -Encoding Unicode
+            & secedit.exe /configure /db "$tmp\novo.sdb" /cfg "$tmp\novo.inf" /areas USER_RIGHTS | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "secedit devolveu $LASTEXITCODE ao conceder logon como serviço" }
+            [void]$passos.Add('logon como serviço concedido à conta')
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+
+    $alvos = Get-ServicosParar $parar
+    $pastas = @(Get-PastasServicos $alvos)
+    foreach ($s in $alvos) {
+        if ($s.State -eq 'Running') { [void]$religar.Add($s.Name); (Get-Service -Name $s.Name).Stop() }
+    }
+    $seg = Esperar-Parado $religar
+    [void]$passos.Add("parado: $($religar -join ', ') (processos saíram em $seg s)")
+
+    if (Test-Path -LiteralPath $arq) {
+        $bak = $arq + '.antes-regen-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+        Move-Item -LiteralPath $arq -Destination $bak
+        # so os 3 backups mais recentes
+        Get-ChildItem -LiteralPath (Split-Path -Parent $arq) -Filter ($arqNome + '.antes-regen-*') |
+            Sort-Object Name -Descending | Select-Object -Skip 3 | Remove-Item -Force -ErrorAction SilentlyContinue
+        [void]$passos.Add("broker anterior guardado ($antes bytes)")
+    }
+
+    Trocar-Conta $conta $senha
+    $trocou = $true
+    $x = Get-Service -Name $svcNome
+    $x.Start()
+    $x.WaitForStatus('Running', [TimeSpan]::FromSeconds(__SUBIR_SEC__))
+    [void]$passos.Add("$svcNome no ar com a conta $conta")
+    $inicio = Get-Date
+    $lim = $inicio.AddSeconds($aguardar)
+    $ult = -2; $desde = Get-Date
+    while ((Get-Date) -lt $lim) {
+        Start-Sleep -Seconds 3
+        $t = Tam
+        if ($t -ne $ult) { $ult = $t; $desde = Get-Date }
+        elseif ($t -gt 0 -and ((Get-Date) - $desde).TotalSeconds -ge __ESTAVEL_SEC__) { break }
+    }
+    $gerado = Tam
+    [void]$passos.Add("gerado com a conta de administração: $gerado bytes em $([int]((Get-Date) - $inicio).TotalSeconds) s")
+    (Get-Service -Name $svcNome).Stop()
+    [void](Esperar-Parado @($svcNome))
+} catch {
+    $erro = $_.Exception.Message
+} finally {
+    # Sempre: a conta volta para a original ANTES de religar, e tudo o que
+    # estava rodando volta a rodar - deu certo ou nao.
+    if ($trocou) {
+        try {
+            $x = Get-Service -Name $svcNome
+            if ($x.Status -ne 'Stopped') {
+                $x.Stop()
+                try { $x.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(__PARAR_SEC__)) } catch { }
+            }
+            Trocar-Conta $contaOriginal ''
+            [void]$passos.Add("$svcNome de volta para $contaOriginal")
+        } catch {
+            $erro = "$erro`nNÃO consegui devolver a conta de ${svcNome} para ${contaOriginal}: $($_.Exception.Message)"
+        }
+    }
+    # Sem arquivo novo, devolve o anterior: melhor o que havia do que nenhum
+    if ($bak -and (Tam) -le 0 -and (Test-Path -LiteralPath $bak)) {
+        Copy-Item -LiteralPath $bak -Destination $arq -Force
+        [void]$passos.Add('broker anterior devolvido')
+    }
+    foreach ($n in $religar) {
+        try { $s = Get-Service -Name $n; if ($s.Status -eq 'Stopped') { $s.Start() } }
+        catch { $erro = "$erro`nnão consegui religar ${n}: $($_.Exception.Message)" }
+    }
+    $limite = (Get-Date).AddSeconds(__RELIGAR_SEC__)
+    foreach ($n in $religar) {
+        $resta = $limite - (Get-Date)
+        if ($resta.TotalSeconds -gt 0) { try { (Get-Service -Name $n).WaitForStatus('Running', $resta) } catch { } }
+    }
+    if ($religar.Count) {
+        [void]$passos.Add('religado: ' + (($religar | ForEach-Object {
+            "$_ (" + (Get-Service -Name $_ -ErrorAction SilentlyContinue).Status + ")" }) -join ', '))
+    }
+    $final = Tam
+}
+[pscustomobject]@{
+    passos = @($passos); erro = "$erro".Trim(); antes = $antes; gerado = $gerado; final = $final
+    conta_original = $contaOriginal; arquivo = "$arq"
+} | ConvertTo-Json -Depth 3 -Compress
+"""
+
+
+def _script_broker(acao: dict, conta: str) -> str:
+    return (_PS_BROKER
+            .replace("__PASTAS_FN__", _PS_PASTAS)
+            .replace("__CONTA__", _ps_str(conta))
+            .replace("__SERVICO__", _ps_str(acao["broker_service"]))
+            .replace("__ARQUIVO__", _ps_str(acao["broker_file"]))
+            .replace("__PARAR__", ",".join(_ps_str(p) for p in acao["stop_services"]))
+            .replace("__ESPERA__", str(int(acao["stop_wait_sec"])))
+            .replace("__AGUARDAR__", str(int(acao["broker_wait_sec"])))
+            .replace("__EMBUTIDAS__", ",".join(_ps_str(c) for c in CONTAS_EMBUTIDAS))
+            .replace("__PARAR_SEC__", str(PARAR_SEC))
+            .replace("__RELIGAR_SEC__", str(RELIGAR_SEC))
+            .replace("__SUBIR_SEC__", str(BROKER_SUBIR_SEC))
+            .replace("__ESTAVEL_SEC__", str(BROKER_ESTAVEL_SEC)))
+
+
+def regerar_broker(server: ServerConfig, wc: WinRMConfig, acao: dict) -> dict[str, Any]:
+    """Regera o broker com o servico rodando na conta de administracao.
+
+    A conta e a do perfil `broker_cred` da acao (padrao: a mesma do WinRM do
+    host). Devolve o que aconteceu; quem decide se o tamanho esta bom e o
+    scheduler, que conhece a referencia do host.
+    """
+    perfil = acao.get("broker_cred") or server.cred
+    conta, senha = credential_for(perfil)
+    wuser, wpw = credential_for(server.cred)
+    if not (conta and senha):
+        return {"ok": False, "erro": f"sem credencial para o perfil '{perfil}'", "passos": []}
+    if not (wuser and wpw):
+        return {"ok": False, "erro": f"sem credencial para o perfil '{server.cred}'", "passos": []}
+    try:
+        r = _run_ps_resilient(server.host, wc, wuser, wpw, _script_broker(acao, conta),
+                              attempts=1, budget_sec=prazo_broker(acao),
+                              env={"RMON_BROKER_SENHA": senha})
+        import json
+        bruto = _decode(r.std_out).strip()
+        dados = json.loads(bruto) if bruto else {}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "erro": f"{type(exc).__name__}: {exc}"[:500], "passos": []}
+    erro = str(dados.get("erro") or "").strip()
+    if not dados:
+        erro = _decode(r.std_err)[:500] or "o host não devolveu resultado"
+    gerado = int(dados.get("gerado") or -1)
+    return {
+        "ok": not erro and gerado > 0,
+        "erro": erro or None,
+        "passos": [str(x) for x in _as_list(dados.get("passos"))],
+        "antes": int(dados.get("antes") if dados.get("antes") is not None else -1),
+        "gerado": gerado,
+        "final": int(dados.get("final") if dados.get("final") is not None else -1),
+        "conta": conta,
+        "conta_original": dados.get("conta_original"),
+        "arquivo": dados.get("arquivo") or acao.get("broker_file"),
+    }
+
+
+def veredito_broker(res: dict, referencia: int, min_pct: float) -> dict:
+    """Completo ou nao, contra o maior tamanho que o host ja teve."""
+    final = int(res.get("final") or -1)
+    if not res.get("ok") or final <= 0:
+        return {**res, "completo": False, "referencia": referencia}
+    completo = referencia <= 0 or final >= referencia * (min_pct / 100.0)
+    return {**res, "completo": completo, "referencia": referencia}
+
+
+def texto_broker(b: dict) -> str:
+    """Uma linha para a saida da tarefa, o painel e o Telegram."""
+    if not b:
+        return ""
+    if b.get("erro") and int(b.get("final") or -1) <= 0:
+        return f"broker NÃO regerado: {b['erro']}"
+    ref = int(b.get("referencia") or 0)
+    tam = f"{int(b.get('final') or 0):,}".replace(",", ".")
+    alvo = f" (referência {ref:,})".replace(",", ".") if ref > 0 else ""
+    if b.get("completo") and not b.get("erro"):
+        return f"broker regerado com a conta de administração: {tam} bytes, completo{alvo}"
+    if b.get("erro"):
+        return f"broker com problema ({tam} bytes{alvo}): {b['erro']}"
+    return f"broker INCOMPLETO: {tam} bytes{alvo}"
+
+
 def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
             defaults: dict[str, Any], settings: Settings,
             url_stage: str) -> dict[str, Any]:
@@ -754,6 +1061,18 @@ def execute(task: dict, server: ServerConfig, wc: WinRMConfig,
                     "error": "o instalador terminou com sucesso mas nada apareceu em "
                              "Programas e Recursos: o resultado não seria reversível "
                              "pelo Painel de Controle"}
-        return {"ok": True, "exit_code": codigo, "output": texto[:4000], "error": None}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]}
+
+    # Instalou e se registrou. Regerar o broker e o passo seguinte: o
+    # instalador apaga o cache e o servico na NetworkService o gera sem a
+    # pasta Custom. Falha aqui nao desfaz a instalacao - vai como aviso.
+    broker = None
+    if acao.get("broker_regen"):
+        broker = regerar_broker(server, wc, acao)
+        linhas = broker.get("passos") or []
+        texto += "\n— broker —\n" + "\n".join(linhas)
+        if broker.get("erro"):
+            texto += f"\n{broker['erro']}"
+    return {"ok": True, "exit_code": codigo, "output": texto[:6000], "error": None,
+            "broker": broker}
